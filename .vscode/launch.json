@@ -1,0 +1,26 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Debug MacroDeck",
+      "type": "cppdbg",
+      "request": "launch",
+      "program": "${workspaceFolder}/build/MacroDeck.exe",
+      "args": [],
+      "cwd": "${workspaceFolder}/build",
+      "MIMode": "gdb",
+      "miDebuggerPath": "C:/msys64/ucrt64/bin/gdb.exe",
+      "preLaunchTask": "Build MacroDeck"
+    },
+    {
+      "name": "Debug self-test",
+      "type": "cppdbg",
+      "request": "launch",
+      "program": "${workspaceFolder}/build/selftest.exe",
+      "args": [],
+      "cwd": "${workspaceFolder}",
+      "MIMode": "gdb",
+      "miDebuggerPath": "C:/msys64/ucrt64/bin/gdb.exe"
+    }
+  ]
+}

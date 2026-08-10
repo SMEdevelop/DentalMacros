@@ -1,0 +1,42 @@
+#include <windows.h>
+
+// Explorer, the taskbar and the installer all show the icon with the lowest
+// resource id, so this one is 1. That is also the id ui_common.cpp asks for
+// when it gives modal dialogs their icon.
+//
+// app.ico is generated from the same drawing code the app uses at runtime -
+// run tools\make_icon.bat after changing drawAppIcon() in theme.cpp.
+// (An ICON and an RT_MANIFEST may share id 1: they are different resource
+// types.)
+1 ICON "app.ico"
+
+// The manifest brings in Common Controls v6 (modern control look) and marks
+// the process DPI aware.
+1 RT_MANIFEST "app.manifest"
+
+VS_VERSION_INFO VERSIONINFO
+FILEVERSION 1,0,0,0
+PRODUCTVERSION 1,0,0,0
+FILEFLAGSMASK 0x3fL
+FILEFLAGS 0x0L
+FILEOS VOS_NT_WINDOWS32
+FILETYPE VFT_APP
+FILESUBTYPE VFT2_UNKNOWN
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904b0"
+        BEGIN
+            VALUE "FileDescription", "MacroDeck - per-keyboard macro deck"
+            VALUE "FileVersion",     "1.0.0.0"
+            VALUE "InternalName",    "MacroDeck"
+            VALUE "OriginalFilename","MacroDeck.exe"
+            VALUE "ProductName",     "MacroDeck"
+            VALUE "ProductVersion",  "1.0.0.0"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x409, 1200
+    END
+END

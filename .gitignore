@@ -1,0 +1,24 @@
+# Build and packaging output. Everything here is reproducible from source
+# with build.bat / package.bat.
+/build/
+/dist/
+*.o
+*.obj
+*.res
+
+# Settings and data MacroDeck writes next to its own executable at runtime.
+# These belong to whoever is running it, not to the repository.
+macros.json
+macros.json.bak
+macros.json.bak.*
+/backups/
+/layouts/
+/images/
+
+# Editor and OS leftovers
+*.user
+*.suo
+.vs/
+Thumbs.db
+desktop.ini
+.DS_Store

@@ -1,0 +1,12 @@
+# Normalise text on commit, and be explicit about the files that must never
+# be treated as text - a mangled .ico or .png is a silently corrupt build.
+* text=auto
+
+*.bat text eol=crlf
+*.iss text eol=crlf
+
+*.ico binary
+*.png binary
+*.res binary
+*.exe binary
+*.zip binary

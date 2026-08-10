@@ -1,0 +1,69 @@
+MacroDeck - installing the portable copy
+=======================================
+
+This is the zip version. There is nothing to install: MacroDeck is a single
+executable with no dependencies.
+
+
+1. Put the folder somewhere you can write to
+--------------------------------------------
+MacroDeck keeps its settings in the same folder as MacroDeck.exe, so it has
+to live somewhere your account can write. Good choices:
+
+    C:\Users\<you>\Programs\MacroDeck
+    C:\Users\<you>\Documents\MacroDeck
+    a USB stick
+
+Do NOT put it in C:\Program Files - Windows will not let it save your macros
+there unless you run it as administrator.
+
+
+2. Run MacroDeck.exe
+--------------------
+The first time, Windows may show a blue box saying "Windows protected your
+PC". That appears for any program it has not seen before, not because
+anything is wrong. Click "More info", then "Run anyway".
+
+If instead you get "An Application Control policy has blocked this file",
+that is Smart App Control. See the "Before you start" section of README.md
+for what your options are.
+
+
+3. Start it automatically when you sign in
+------------------------------------------
+Open Settings inside MacroDeck and tick:
+
+    [x] Run MacroDeck when I sign in to Windows
+    [x] Start listening as soon as MacroDeck opens
+    [x] Start minimised to the notification area
+
+All three together mean it is running and watching your macro pad from the
+moment you log in, without a window in your way.
+
+(Copying this folder into the Startup folder does NOT work - Windows only
+runs items placed directly in it, and it will not look inside a subfolder.)
+
+
+4. Set up your macro keyboard
+-----------------------------
+Plug in the spare keyboard or numpad you want to dedicate to macros, click
+"Scan for keyboards", and pick it from the list.
+
+Careful: whichever keyboard you pick will stop typing into your programs
+while MacroDeck is listening. Pick the spare one, not the one you type on.
+
+If you ever get stuck with a keyboard that has gone silent, press
+Ctrl+Alt+Shift+M - that stops MacroDeck listening from anywhere in Windows
+and hands the keyboard straight back.
+
+
+Uninstalling
+------------
+Delete the folder. MacroDeck does not touch anything else, apart from one
+registry value if you ticked "Run MacroDeck when I sign in to Windows" -
+untick that first, or delete the "MacroDeck" value from:
+
+    HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Run
+
+
+Everything runs locally. There is no network code in this program.

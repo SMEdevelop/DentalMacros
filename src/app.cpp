@@ -1,0 +1,2355 @@
+#include "app.h"
+
+#include "config.h"
+#include "device.h"
+#include "dialogs.h"
+#include "engine.h"
+#include "gdiplus_inc.h"
+#include "keys.h"
+#include "theme.h"
+#include "ui_common.h"
+#include "util.h"
+#include "vision.h"
+#include "winman.h"
+
+#include <commctrl.h>
+#include <commdlg.h>
+#include <shellapi.h>
+#include <windowsx.h>
+
+#include <algorithm>
+#include <cmath>
+#include <cstdlib>
+#include <deque>
+#include <map>
+#include <mutex>
+#include <string>
+#include <vector>
+
+using namespace Gdiplus;
+
+namespace ui {
+namespace {
+
+constexpr UINT WM_APP_LOG = WM_APP + 1;
+constexpr UINT WM_APP_KEYEVENT = WM_APP + 2;
+constexpr UINT WM_APP_TRAY = WM_APP + 3;
+
+enum {
+    ID_TITLE_EDIT = 200,
+    ID_STEP_LIST,
+    ID_LOG_EDIT,
+    ID_BTN_ADD_STEP,
+    ID_BTN_EDIT_STEP,
+    ID_BTN_DEL_STEP,
+    ID_BTN_UP,
+    ID_BTN_DOWN,
+    ID_BTN_TEST,
+    ID_BTN_RECORD,
+    ID_BTN_ICON,
+    ID_BTN_COLOR,
+    ID_BTN_ENGINE,
+    ID_BTN_MENU,
+    ID_BTN_SETTINGS,
+    ID_DECK_COMBO,
+
+    IDM_IMPORT = 400,
+    IDM_SAVE,
+    IDM_RELOAD,
+    IDM_EXPORT,
+    IDM_BACKUP,
+    IDM_SNIP,
+    IDM_LAYOUTS,
+    IDM_OPEN_FOLDER,
+    IDM_ABOUT,
+    IDM_EXIT,
+
+    IDM_KB_RENAME = 430,
+    IDM_KB_BLOCK,
+    IDM_KB_REMATCH,
+    IDM_KB_REMOVE,
+
+    IDM_TILE_RENAME = 450,
+    IDM_TILE_ICON,
+    IDM_TILE_ICON_CLEAR,
+    IDM_TILE_COLOR,
+    IDM_TILE_COLOR_CLEAR,
+    IDM_TILE_TEST,
+    IDM_TILE_CLEAR,
+    IDM_TILE_REKEY,
+    IDM_TILE_DUPLICATE,
+    IDM_TILE_COPY_STEPS,
+    IDM_TILE_PASTE_STEPS,
+    IDM_TILE_REMOVE,
+
+    IDM_TRAY_SHOW = 480,
+    IDM_TRAY_TOGGLE,
+    IDM_TRAY_EXIT,
+};
+
+// The system-wide start/stop shortcut. Any id unique within this window will
+// do; RegisterHotKey ids are per-window.
+constexpr int kToggleHotkeyId = 1;
+
+// Design-pixel metrics.
+constexpr int kToolbarH = 60;
+constexpr int kSidebarW = 214;
+constexpr int kInspectorW = 344;
+constexpr int kLogH = 132;
+constexpr int kPad = 14;
+constexpr int kRowH = 30;
+
+struct DeckTile {
+    RECT rect{};
+    int slot = -1;          // preset slot index (-1 in flow mode)
+    std::string key;        // key this tile represents ("" = not yet assigned)
+    int binding = -1;       // index into keyboard.bindings, -1 if empty
+    bool addTile = false;   // the trailing "+" tile in flow mode
+};
+
+struct PaletteRow {
+    RECT rect{};
+    std::string actionId;
+};
+
+struct KbRow {
+    RECT rect{};
+    int index = -1;         // -1 = the "add keyboard" row
+};
+
+std::wstring W(const std::string& s) { return widen(s); }
+
+RectF toRectF(const RECT& r) {
+    return RectF((REAL)r.left, (REAL)r.top, (REAL)(r.right - r.left),
+                 (REAL)(r.bottom - r.top));
+}
+
+bool ptIn(const RECT& r, POINT p) {
+    return p.x >= r.left && p.x < r.right && p.y >= r.top && p.y < r.bottom;
+}
+
+// Width in device pixels of `text` in a control's own font, so a button can be
+// sized to whatever label it is currently wearing.
+int textWidthOf(HWND ctl, const std::string& text) {
+    HDC dc = GetDC(ctl);
+    if (!dc) return 0;
+    HGDIOBJ old = SelectObject(dc, (HFONT)SendMessageW(ctl, WM_GETFONT, 0, 0));
+    std::wstring w = widen(text);
+    SIZE sz{};
+    GetTextExtentPoint32W(dc, w.c_str(), (int)w.size(), &sz);
+    SelectObject(dc, old);
+    ReleaseDC(ctl, dc);
+    return sz.cx;
+}
+
+// -------------------------------------------------------------- icon cache
+class IconCache {
+public:
+    Image* get(const std::string& relPath) {
+        if (trim(relPath).empty()) return nullptr;
+        auto it = cache_.find(relPath);
+        if (it != cache_.end()) return it->second;
+        std::string full = joinPath(exeDir(), relPath);
+        if (!fileExists(full)) full = relPath;
+        Image* img = nullptr;
+        if (fileExists(full)) {
+            img = Image::FromFile(W(full).c_str());
+            if (img && img->GetLastStatus() != Ok) {
+                delete img;
+                img = nullptr;
+            }
+        }
+        cache_[relPath] = img;
+        return img;
+    }
+    void clear() {
+        for (auto& kv : cache_) delete kv.second;
+        cache_.clear();
+    }
+    ~IconCache() { clear(); }
+
+private:
+    std::map<std::string, Image*> cache_;
+};
+
+}  // namespace
+
+// ------------------------------------------------------------- main window
+namespace {
+
+class MainWindow {
+public:
+    bool create(HINSTANCE inst, int showCmd);
+    HWND hwnd() const { return hwnd_; }
+    static LRESULT CALLBACK wndProc(HWND, UINT, WPARAM, LPARAM);
+
+private:
+    // ---- lifecycle
+    void onCreate();
+    void onDestroy();
+    bool confirmExit();
+    void onDpiChanged(UINT dpi, const RECT* suggested);
+    void reportLoadProblems();
+
+    // ---- layout & painting
+    void layout();
+    void layoutDeck();
+    // The listen button's label changes width, so it is sized and placed
+    // together rather than pinned to a fixed box.
+    std::string engineButtonLabel() const;
+    void layoutEngineButton();
+    std::string listeningSummary() const;
+    void paint(HDC hdc);
+    void paintToolbar(Graphics& g);
+    void paintSidebar(Graphics& g);
+    void paintDeck(Graphics& g);
+    void paintTile(Graphics& g, const DeckTile& tile, cfg::Keyboard* kb);
+    void paintWelcome(Graphics& g);
+    void paintDragGhost(Graphics& g);
+
+    // ---- model helpers
+    cfg::Keyboard* currentKb();
+    cfg::Binding* selectedBinding();
+    const cfg::DeckPreset* currentPreset();
+    void selectKeyboard(const std::string& alias);
+    void selectTile(int tileIndex);
+    void refreshInspector();
+    void refreshDeckCombo();
+    void modelChanged(bool relayoutDeck = true);
+    void saveConfig();
+
+    // ---- commands
+    void addKeyboard();
+    void keyboardContextMenu(int index, POINT screenPt);
+    void tileContextMenu(int tileIndex, POINT screenPt);
+    void activateTile(int tileIndex);
+    void assignKeyToTile(int tileIndex);
+    void addStep(const std::string& presetAction = "");
+    void editStep();
+    void removeStep();
+    void moveStep(int delta);
+    void recordClicks();
+    void testRun();
+    void clearTile();
+    void deleteBinding();
+    void chooseTileIcon();
+    void chooseTileColor();
+    void toggleEngine();
+    void showMenu();
+    void importYaml();
+    void showLayouts();
+    void reloadConfig();
+    void exportConfig();
+    void backupNow();
+    void duplicateBinding(int tileIndex);
+    void copySteps();
+    void pasteSteps();
+
+    // ---- engine plumbing
+    void pushLog(const std::string& line);
+    void drainLogs();
+    void drainKeyEvents();
+
+    // ---- global shortcut
+    void applyToggleHotkey();
+    void releaseToggleHotkey();
+
+    // ---- tray
+    bool addTray();          // false if Windows refused the icon
+    void removeTray();
+    void trayMenu();
+    void showWindowAgain();
+
+    HWND hwnd_ = nullptr;
+    HINSTANCE inst_ = nullptr;
+    HICON icon_ = nullptr, iconSm_ = nullptr;
+
+    cfg::Config config_;
+    eng::Engine engine_;
+    IconCache icons_;
+
+    std::string currentAlias_;
+    int selectedTile_ = -1;
+    int hoverTile_ = -1;
+    int hoverPalette_ = -1;
+    int hoverKb_ = -1;
+
+    // regions
+    RECT rcToolbar_{}, rcSidebar_{}, rcDeck_{}, rcInspector_{}, rcLog_{};
+    RECT rcWelcomeBtn_{};
+    std::vector<DeckTile> tiles_;
+    std::vector<PaletteRow> palette_;
+    std::vector<KbRow> kbRows_;
+    int paletteScroll_ = 0;
+    int paletteContentH_ = 0;
+    // The auto deck keeps tiles a comfortable size and scrolls instead of
+    // shrinking them away to nothing once there are a lot of keys.
+    int deckScroll_ = 0;
+    int deckContentH_ = 0;
+    int deckViewH_ = 0;
+
+    // drag & drop from the palette
+    bool maybeDrag_ = false;
+    bool dragging_ = false;
+    std::string dragAction_;
+    POINT dragStart_{}, dragPos_{};
+
+    // controls
+    HWND titleEdit_ = nullptr, stepList_ = nullptr, logEdit_ = nullptr;
+    HWND deckCombo_ = nullptr;
+    HWND btnAddStep_ = nullptr, btnEditStep_ = nullptr, btnDelStep_ = nullptr;
+    HWND btnUp_ = nullptr, btnDown_ = nullptr, btnTest_ = nullptr;
+    HWND btnRecord_ = nullptr;
+    HWND btnIcon_ = nullptr, btnColor_ = nullptr;
+    HWND btnEngine_ = nullptr, btnMenu_ = nullptr, btnSettings_ = nullptr;
+    std::vector<HWND> inspectorLabels_;
+
+    // async plumbing
+    std::mutex logMu_;
+    std::deque<std::string> logQueue_;
+    std::mutex keyMu_;
+    std::deque<eng::MonitorEvent> keyQueue_;
+    std::string lastKeyText_;
+    std::map<std::string, DWORD> lastFire_;   // "alias|key" -> tick
+
+    bool trayAdded_ = false;
+    bool quitting_ = false;
+    bool hotkeyRegistered_ = false;
+    bool dailyBackupDone_ = false;
+    std::vector<cfg::Step> stepClipboard_;
+    std::vector<std::string> deckIds_;
+};
+
+MainWindow* g_main = nullptr;
+
+// ------------------------------------------------------------------ create
+bool MainWindow::create(HINSTANCE inst, int showCmd) {
+    inst_ = inst;
+    g_main = this;
+
+    icon_ = makeAppIcon(256);
+    iconSm_ = makeAppIcon(32);
+
+    WNDCLASSEXW wc{};
+    wc.cbSize = sizeof(wc);
+    wc.lpfnWndProc = &MainWindow::wndProc;
+    wc.hInstance = inst;
+    wc.lpszClassName = L"MacroDeckMain";
+    wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+    wc.hIcon = icon_;
+    wc.hIconSm = iconSm_;
+    wc.style = CS_HREDRAW | CS_VREDRAW;
+    RegisterClassExW(&wc);
+
+    // Centre on the primary monitor's work area, and never larger than it -
+    // the default size is bigger than a small laptop screen at 150% scaling.
+    RECT work = workAreaNear(nullptr);
+    int w = std::min<int>(S(1240), work.right - work.left);
+    int h = std::min<int>(S(830), work.bottom - work.top);
+    int sx = work.left + ((work.right - work.left) - w) / 2;
+    int sy = work.top + ((work.bottom - work.top) - h) / 2;
+
+    // WS_EX_CONTROLPARENT so IsDialogMessage in the main loop will walk into
+    // the child controls when the user presses Tab.
+    hwnd_ = CreateWindowExW(WS_EX_CONTROLPARENT, L"MacroDeckMain", L"MacroDeck",
+                            WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN, sx, sy, w, h,
+                            nullptr, nullptr, inst, this);
+    if (!hwnd_) return false;
+
+    applyDarkFrame(hwnd_);
+
+    // Start hidden only if there is actually a tray icon to come back from.
+    bool startHidden = config_.settings.startMinimized;
+    if (startHidden && !addTray()) {
+        startHidden = false;
+        pushLog("Windows would not provide a notification-area icon, so "
+                "MacroDeck opened its window instead of starting minimised.");
+    }
+    ShowWindow(hwnd_, startHidden ? SW_HIDE : showCmd);
+    UpdateWindow(hwnd_);
+    return true;
+}
+
+void MainWindow::onCreate() {
+    // DPI: everything downstream scales off this.
+    UINT dpi = GetDpiForWindow(hwnd_);
+    if (dpi >= 72 && dpi <= 480) setDpiScale(dpi / 96.0f);
+
+    config_.load(appPath("macros.json"));
+
+    engine_.setLog([this](const std::string& m) { pushLog(m); });
+    engine_.setMonitor([this](const eng::MonitorEvent& e) {
+        {
+            std::lock_guard<std::mutex> lk(keyMu_);
+            if (keyQueue_.size() > 200) keyQueue_.pop_front();
+            keyQueue_.push_back(e);
+        }
+        PostMessageW(hwnd_, WM_APP_KEYEVENT, 0, 0);
+    });
+    engine_.updateConfig(config_);
+
+    // ---- toolbar controls
+    btnEngine_ = makeButton(hwnd_, "Start Listening", 0, 0, 132, 34,
+                            ID_BTN_ENGINE);
+    setTone(btnEngine_, Tone::Good);
+    btnSettings_ = makeButton(hwnd_, "Settings", 0, 0, 92, 34, ID_BTN_SETTINGS);
+    btnMenu_ = makeButton(hwnd_, "More", 0, 0, 76, 34, ID_BTN_MENU);
+
+    // ---- deck controls
+    std::vector<std::string> deckLabels;
+    for (const auto& p : cfg::deckPresets()) {
+        deckIds_.push_back(p.id);
+        deckLabels.push_back(p.label);
+    }
+    deckCombo_ = makeCombo(hwnd_, 0, 0, 220, 28, ID_DECK_COMBO, deckLabels, 0);
+
+    // ---- inspector controls
+    titleEdit_ = makeEdit(hwnd_, "", 0, 0, 100, 26, ID_TITLE_EDIT);
+    btnIcon_ = makeButton(hwnd_, "Icon...", 0, 0, 90, 28, ID_BTN_ICON);
+    btnColor_ = makeButton(hwnd_, "Colour...", 0, 0, 90, 28, ID_BTN_COLOR);
+    stepList_ = makeList(hwnd_, 0, 0, 100, 100, ID_STEP_LIST);
+    btnAddStep_ = makeButton(hwnd_, "Add step", 0, 0, 90, 30, ID_BTN_ADD_STEP,
+                             true);
+    btnEditStep_ = makeButton(hwnd_, "Edit", 0, 0, 68, 30, ID_BTN_EDIT_STEP);
+    btnDelStep_ = makeButton(hwnd_, "Remove", 0, 0, 78, 30, ID_BTN_DEL_STEP);
+    btnUp_ = makeButton(hwnd_, "Up", 0, 0, 52, 30, ID_BTN_UP);
+    btnDown_ = makeButton(hwnd_, "Down", 0, 0, 62, 30, ID_BTN_DOWN);
+    btnTest_ = makeButton(hwnd_, "Test run", 0, 0, 100, 30, ID_BTN_TEST);
+    btnRecord_ = makeButton(hwnd_, "Record clicks...", 0, 0, 100, 30,
+                            ID_BTN_RECORD);
+
+    // ---- log
+    logEdit_ = makeEdit(hwnd_, "", 0, 0, 100, 100, ID_LOG_EDIT, true, true);
+
+    if (!config_.keyboards.empty()) selectKeyboard(config_.keyboards[0].alias);
+
+    reportLoadProblems();
+    applyToggleHotkey();
+
+    layout();
+    refreshInspector();
+
+    if (config_.settings.startEngineOnLaunch && !config_.keyboards.empty())
+        toggleEngine();
+}
+
+void MainWindow::reportLoadProblems() {
+    for (const std::string& w : config_.loadWarnings)
+        pushLog("macros.json: " + w);
+
+    if (config_.loadError.empty()) {
+        pushLog(config_.keyboards.empty() ? "MacroDeck ready."
+                                          : "Loaded macros.json.");
+        return;
+    }
+
+    pushLog("Could not read macros.json: " + config_.loadError);
+    showMessage(hwnd_, "Configuration problem",
+                "macros.json could not be read:\n\n" + config_.loadError +
+                    "\n\nMacroDeck opened with an empty setup and has not "
+                    "touched your file. Fix or move it and choose "
+                    "More > Reload macros.json.\n\nIf you save anything before "
+                    "then, the file you have now is copied to macros.json.bak "
+                    "first - nothing is thrown away.",
+                true);
+}
+
+void MainWindow::onDestroy() {
+    releaseToggleHotkey();
+    engine_.stop();
+    removeTray();
+    icons_.clear();
+    releaseFonts();
+    if (icon_) DestroyIcon(icon_);
+    if (iconSm_) DestroyIcon(iconSm_);
+}
+
+// The manifest asks for PerMonitorV2 awareness, which means Windows scales
+// nothing for us: every font, control and metric here is ours to redo when the
+// window lands on a monitor with different scaling.
+void MainWindow::onDpiChanged(UINT dpi, const RECT* suggested) {
+    if (dpi < 72 || dpi > 480) return;
+    setDpiScale(dpi / 96.0f);
+    rescaleControlFonts(hwnd_);
+    if (suggested)
+        SetWindowPos(hwnd_, nullptr, suggested->left, suggested->top,
+                     suggested->right - suggested->left,
+                     suggested->bottom - suggested->top,
+                     SWP_NOZORDER | SWP_NOACTIVATE);
+    layout();   // repositions everything at the new scale
+    InvalidateRect(hwnd_, nullptr, TRUE);
+}
+
+// ------------------------------------------------------------------ layout
+void MainWindow::layout() {
+    RECT rc;
+    GetClientRect(hwnd_, &rc);
+    const int W_ = rc.right, H_ = rc.bottom;
+
+    rcToolbar_ = {0, 0, W_, S(kToolbarH)};
+    rcLog_ = {0, H_ - S(kLogH), W_, H_};
+    rcSidebar_ = {0, S(kToolbarH), S(kSidebarW), rcLog_.top};
+    rcInspector_ = {W_ - S(kInspectorW), S(kToolbarH), W_, rcLog_.top};
+    rcDeck_ = {rcSidebar_.right, S(kToolbarH), rcInspector_.left, rcLog_.top};
+
+    // toolbar buttons, right-aligned
+    int by = (S(kToolbarH) - S(34)) / 2;
+    int x = W_ - S(kPad) - S(76);
+    MoveWindow(btnMenu_, x, by, S(76), S(34), TRUE);
+    x -= S(8) + S(92);
+    MoveWindow(btnSettings_, x, by, S(92), S(34), TRUE);
+    layoutEngineButton();
+
+    // Deck header. A combo box's window height controls how far its list
+    // drops down, not the height of the closed control - sizing it to 28px
+    // would leave the dropdown unusable.
+    MoveWindow(deckCombo_, rcDeck_.left + S(kPad), rcDeck_.top + S(14), S(240),
+               S(28) * 9, TRUE);
+
+    // inspector
+    const int ix = rcInspector_.left + S(kPad);
+    const int iw = S(kInspectorW) - S(kPad) * 2;
+    int y = rcInspector_.top + S(58);
+    MoveWindow(titleEdit_, ix, y, iw, S(26), TRUE);
+    y += S(34);
+    MoveWindow(btnIcon_, ix, y, S(100), S(28), TRUE);
+    MoveWindow(btnColor_, ix + S(108), y, S(100), S(28), TRUE);
+    y += S(50);
+
+    int listBottom = rcInspector_.bottom - S(kPad) - S(34) * 3 - S(8);
+    MoveWindow(stepList_, ix, y, iw, std::max(S(60), listBottom - y), TRUE);
+    int by2 = listBottom + S(8);
+    MoveWindow(btnAddStep_, ix, by2, S(94), S(30), TRUE);
+    MoveWindow(btnEditStep_, ix + S(100), by2, S(64), S(30), TRUE);
+    MoveWindow(btnDelStep_, ix + S(170), by2, S(78), S(30), TRUE);
+    int by3 = by2 + S(36);
+    MoveWindow(btnUp_, ix, by3, S(56), S(30), TRUE);
+    MoveWindow(btnDown_, ix + S(62), by3, S(66), S(30), TRUE);
+    MoveWindow(btnTest_, ix + iw - S(104), by3, S(104), S(30), TRUE);
+    int by4 = by3 + S(36);
+    MoveWindow(btnRecord_, ix, by4, iw, S(30), TRUE);
+
+    // log
+    MoveWindow(logEdit_, S(kPad), rcLog_.top + S(26), W_ - S(kPad) * 2,
+               S(kLogH) - S(26) - S(10), TRUE);
+
+    layoutDeck();
+    InvalidateRect(hwnd_, nullptr, FALSE);
+}
+
+std::string MainWindow::engineButtonLabel() const {
+    if (!engine_.running()) return "Start Listening";
+    // Show the way out only while there is something to escape from, and only
+    // when the shortcut really is ours - if another program claimed it,
+    // printing it here would be a lie.
+    if (hotkeyRegistered_)
+        return "Stop Listening  (" +
+               keys::prettyCombo(config_.settings.toggleHotkey) + ")";
+    return "Stop Listening";
+}
+
+void MainWindow::layoutEngineButton() {
+    if (!btnEngine_ || !hwnd_) return;
+    const std::string label = engineButtonLabel();
+    setText(btnEngine_, label);
+
+    RECT rc;
+    GetClientRect(hwnd_, &rc);
+    const int by = (S(kToolbarH) - S(34)) / 2;
+    const int w = std::max(S(132), textWidthOf(btnEngine_, label) + S(28));
+    // sits to the left of Settings and More
+    const int x = rc.right - S(kPad) - S(76) - S(8) - S(92) - S(14) - w;
+    MoveWindow(btnEngine_, x, by, w, S(34), TRUE);
+}
+
+std::string MainWindow::listeningSummary() const {
+    if (config_.keyboards.empty()) return "Listening";
+    if (config_.keyboards.size() == 1) {
+        const cfg::Keyboard& k = config_.keyboards[0];
+        return "Listening to " + k.alias +
+               (k.block ? " - its keys run macros and do not type"
+                        : " - its keys run macros and still type");
+    }
+    int blocked = 0;
+    for (const auto& k : config_.keyboards)
+        if (k.block) ++blocked;
+    std::string s = "Listening to " + std::to_string(config_.keyboards.size()) +
+                    " keyboards";
+    if (blocked)
+        s += " - " + std::to_string(blocked) + " of them do not type";
+    return s;
+}
+
+void MainWindow::layoutDeck() {
+    tiles_.clear();
+    rcWelcomeBtn_ = RECT{};
+    deckContentH_ = 0;
+    deckViewH_ = 0;
+
+    cfg::Keyboard* kb = currentKb();
+    if (!kb) {
+        deckScroll_ = 0;
+        return;
+    }
+
+    const cfg::DeckPreset* preset = currentPreset();
+    RECT area = rcDeck_;
+    area.left += S(kPad);
+    area.right -= S(kPad);
+    area.top += S(56);
+    area.bottom -= S(kPad);
+    const int availW = area.right - area.left;
+    const int availH = area.bottom - area.top;
+    if (availW < S(80) || availH < S(80)) return;
+
+    const int gap = S(12);
+    deckViewH_ = availH;
+
+    if (preset->flow) {
+        // Flow layout: every binding in order, plus a trailing "add" tile.
+        int count = (int)kb->bindings.size() + 1;
+        int cols = std::max(1, std::min(count, (availW + gap) / (S(120) + gap)));
+        int rows = (count + cols - 1) / cols;
+        // Size tiles from the width alone and scroll if the rows overflow.
+        // Squeezing them to fit the height instead is what made a deck with
+        // many keys unusable - past about thirty they either vanished or ran
+        // off the bottom into the log.
+        int byWidth = (availW - gap * (cols - 1)) / cols;
+        int side = std::max(S(56), std::min(byWidth, S(150)));
+        const int tileW = side, tileH = side;
+
+        deckContentH_ = rows * tileH + gap * std::max(0, rows - 1);
+        deckScroll_ = std::max(0, std::min(deckScroll_,
+                                           deckContentH_ - availH));
+
+        for (int i = 0; i < count; ++i) {
+            int r = i / cols, c = i % cols;
+            const int x0 = area.left + c * (tileW + gap);
+            const int y0 = area.top + r * (tileH + gap) - deckScroll_;
+            DeckTile t;
+            t.rect = {x0, y0, x0 + tileW, y0 + tileH};
+            if (i < (int)kb->bindings.size()) {
+                t.binding = i;
+                t.key = kb->bindings[(size_t)i].key;
+            } else {
+                t.addTile = true;
+            }
+            tiles_.push_back(t);
+        }
+        return;
+    }
+
+    // Fixed presets are sized to fit, so they never scroll.
+    deckScroll_ = 0;
+
+    // Fixed grid: size tiles so the whole preset fits the available area.
+    int cols = preset->cols, rows = preset->rows;
+    int tileW = (availW - gap * (cols - 1)) / cols;
+    int tileH = (availH - gap * (rows - 1)) / rows;
+    int side = std::max(S(56), std::min({tileW, tileH, S(150)}));
+    int gridW = side * cols + gap * (cols - 1);
+    int gridH = side * rows + gap * (rows - 1);
+    int ox = area.left + std::max(0, (availW - gridW) / 2);
+    int oy = area.top;
+
+    for (size_t i = 0; i < preset->slots.size(); ++i) {
+        const cfg::DeckSlot& s = preset->slots[i];
+        DeckTile t;
+        t.slot = (int)i;
+        t.key = s.key;
+        t.rect = {ox + s.col * (side + gap), oy + s.row * (side + gap),
+                  ox + s.col * (side + gap) + side * s.colSpan +
+                      gap * (s.colSpan - 1),
+                  oy + s.row * (side + gap) + side * s.rowSpan +
+                      gap * (s.rowSpan - 1)};
+
+        // Presets with real key names bind by key; blank grids bind by slot.
+        for (size_t b = 0; b < kb->bindings.size(); ++b) {
+            const cfg::Binding& bind = kb->bindings[b];
+            if (preset->fixedKeys ? (bind.key == s.key)
+                                  : (bind.slot == (int)i)) {
+                t.binding = (int)b;
+                t.key = bind.key;
+                break;
+            }
+        }
+        tiles_.push_back(t);
+    }
+    (void)gridH;
+}
+
+// ---------------------------------------------------------------- painting
+void MainWindow::paint(HDC hdc) {
+    RECT rc;
+    GetClientRect(hwnd_, &rc);
+    const int W_ = rc.right, H_ = rc.bottom;
+    if (W_ <= 0 || H_ <= 0) return;
+
+    // Double-buffer: one memory bitmap for the whole client area.
+    HDC mem = CreateCompatibleDC(hdc);
+    HBITMAP bmp = CreateCompatibleBitmap(hdc, W_, H_);
+    HGDIOBJ old = SelectObject(mem, bmp);
+
+    {
+        Graphics g(mem);
+        g.SetSmoothingMode(SmoothingModeAntiAlias);
+        g.SetTextRenderingHint(TextRenderingHintClearTypeGridFit);
+
+        SolidBrush bg(theme().bg);
+        g.FillRectangle(&bg, 0, 0, W_, H_);
+
+        paintToolbar(g);
+        paintSidebar(g);
+        if (config_.keyboards.empty())
+            paintWelcome(g);
+        else
+            paintDeck(g);
+
+        // inspector + log backgrounds
+        SolidBrush panel(theme().panel);
+        g.FillRectangle(&panel, toRectF(rcInspector_));
+        g.FillRectangle(&panel, toRectF(rcLog_));
+        Pen line(theme().borderSoft, 1.0f);
+        g.DrawLine(&line, (REAL)rcInspector_.left, (REAL)rcInspector_.top,
+                   (REAL)rcInspector_.left, (REAL)rcInspector_.bottom);
+        g.DrawLine(&line, 0.0f, (REAL)rcLog_.top, (REAL)W_, (REAL)rcLog_.top);
+
+        // inspector heading
+        cfg::Binding* b = selectedBinding();
+        RectF head((REAL)(rcInspector_.left + S(kPad)),
+                   (REAL)(rcInspector_.top + S(14)), (REAL)S(kInspectorW - kPad * 2),
+                   (REAL)S(22));
+        if (b)
+            drawText(g, W("Key: " + keys::displayName(b->key)), head, 15,
+                     theme().text, Align::Left, true);
+        else
+            drawText(g, L"Nothing selected", head, 15, theme().textDim,
+                     Align::Left, true);
+
+        RectF sub((REAL)(rcInspector_.left + S(kPad)),
+                  (REAL)(rcInspector_.top + S(38)),
+                  (REAL)S(kInspectorW - kPad * 2), (REAL)S(18));
+        drawText(g, b ? L"Label shown on the key" : L"Pick a key on the deck",
+                 sub, 12, theme().textFaint, Align::Left);
+
+        // log heading
+        RectF logHead((REAL)S(kPad), (REAL)(rcLog_.top + S(6)), (REAL)S(300),
+                      (REAL)S(18));
+        drawText(g, L"Activity", logHead, 12, theme().textDim, Align::Left, true);
+
+        if (dragging_) paintDragGhost(g);
+    }
+
+    BitBlt(hdc, 0, 0, W_, H_, mem, 0, 0, SRCCOPY);
+    SelectObject(mem, old);
+    DeleteObject(bmp);
+    DeleteDC(mem);
+}
+
+void MainWindow::paintToolbar(Graphics& g) {
+    SolidBrush panel(theme().panel);
+    g.FillRectangle(&panel, toRectF(rcToolbar_));
+    Pen line(theme().borderSoft, 1.0f);
+    g.DrawLine(&line, 0.0f, (REAL)rcToolbar_.bottom, (REAL)rcToolbar_.right,
+               (REAL)rcToolbar_.bottom);
+
+    // logo mark
+    RectF mark((REAL)S(kPad), (REAL)S(14), (REAL)S(32), (REAL)S(32));
+    fillRounded(g, mark, S(8.0f), theme().accent);
+    RectF inner(mark.X + S(8.0f), mark.Y + S(8.0f), S(16.0f), S(16.0f));
+    SolidBrush white(Color(255, 255, 255, 255));
+    for (int i = 0; i < 4; ++i) {
+        REAL cw = S(6.0f), gp = S(4.0f);
+        g.FillRectangle(&white, inner.X + (i % 2) * (cw + gp),
+                        inner.Y + (i / 2) * (cw + gp), cw, cw);
+    }
+
+    RectF title((REAL)S(kPad + 44), (REAL)S(12), (REAL)S(260), (REAL)S(20));
+    drawText(g, L"MacroDeck", title, 16, theme().text, Align::Left, true);
+
+    // Stop the status line before the buttons rather than at a fixed width -
+    // the listen button changes size with its label.
+    int statusRight = rcToolbar_.right - S(kPad);
+    if (btnEngine_) {
+        RECT eb{};
+        GetWindowRect(btnEngine_, &eb);
+        MapWindowPoints(nullptr, hwnd_, (POINT*)&eb, 2);
+        statusRight = eb.left - S(12);
+    }
+    const int statusLeft = S(kPad + 44);
+    RectF status((REAL)statusLeft, (REAL)S(32),
+                 (REAL)std::max(S(120), statusRight - statusLeft), (REAL)S(18));
+
+    std::wstring statusText;
+    Color statusColor = theme().textDim;
+    if (engine_.running()) {
+        statusText = W(listeningSummary());
+        statusColor = theme().good;
+        if (!lastKeyText_.empty())
+            statusText += L"   \x2022   " + W(lastKeyText_);
+    } else if (config_.keyboards.empty()) {
+        statusText = L"No macro keyboard set up yet";
+    } else {
+        statusText = L"Not listening - your macro keys type normally";
+    }
+    drawText(g, statusText, status, 12, statusColor, Align::Left);
+}
+
+void MainWindow::paintSidebar(Graphics& g) {
+    SolidBrush panel(theme().panel);
+    g.FillRectangle(&panel, toRectF(rcSidebar_));
+    Pen line(theme().borderSoft, 1.0f);
+    g.DrawLine(&line, (REAL)rcSidebar_.right, (REAL)rcSidebar_.top,
+               (REAL)rcSidebar_.right, (REAL)rcSidebar_.bottom);
+
+    kbRows_.clear();
+    palette_.clear();
+
+    int x = rcSidebar_.left + S(kPad);
+    int w = S(kSidebarW) - S(kPad) * 2;
+    int y = rcSidebar_.top + S(14);
+
+    drawText(g, L"KEYBOARDS", RectF((REAL)x, (REAL)y, (REAL)w, (REAL)S(16)), 11,
+             theme().textFaint, Align::Left, true);
+    y += S(24);
+
+    for (size_t i = 0; i < config_.keyboards.size(); ++i) {
+        const cfg::Keyboard& kb = config_.keyboards[i];
+        KbRow row;
+        row.index = (int)i;
+        row.rect = {x, y, x + w, y + S(kRowH)};
+        kbRows_.push_back(row);
+
+        bool sel = kb.alias == currentAlias_;
+        bool hot = hoverKb_ == (int)i;
+        if (sel || hot)
+            fillRounded(g, toRectF(row.rect), S(6.0f),
+                        sel ? theme().accentDim : theme().panelAlt);
+        RectF tr((REAL)(x + S(10)), (REAL)y, (REAL)(w - S(20)), (REAL)S(kRowH));
+        drawText(g, W(kb.alias), tr, 13, sel ? theme().text : theme().textDim,
+                 Align::Left, sel);
+        if (!kb.block) {
+            RectF badge((REAL)(x + w - S(30)), (REAL)(y + S(8)), (REAL)S(22),
+                        (REAL)S(14));
+            fillRounded(g, badge, S(4.0f), theme().panelAlt);
+            drawText(g, L"pass", badge, 8, theme().textFaint, Align::Center);
+        }
+        y += S(kRowH) + S(2);
+    }
+
+    {
+        KbRow row;
+        row.index = -1;
+        row.rect = {x, y, x + w, y + S(kRowH)};
+        kbRows_.push_back(row);
+        bool hot = hoverKb_ == -2;
+        if (hot) fillRounded(g, toRectF(row.rect), S(6.0f), theme().panelAlt);
+        RectF plus((REAL)(x + S(10)), (REAL)(y + S(10)), (REAL)S(10),
+                   (REAL)S(10));
+        drawGlyphPlus(g, plus, theme().accent, S(1.6f));
+        RectF tr((REAL)(x + S(28)), (REAL)y, (REAL)(w - S(30)), (REAL)S(kRowH));
+        drawText(g, L"Add a keyboard", tr, 13, theme().accent, Align::Left);
+        y += S(kRowH) + S(14);
+    }
+
+    // ---- action palette
+    drawText(g, L"DRAG ONTO A KEY",
+             RectF((REAL)x, (REAL)y, (REAL)w, (REAL)S(16)), 11,
+             theme().textFaint, Align::Left, true);
+    y += S(22);
+
+    const int paletteTop = y;
+    const int paletteBottom = rcSidebar_.bottom - S(8);
+    int py = y - paletteScroll_;
+
+    Region oldClip;
+    g.GetClip(&oldClip);
+    g.SetClip(Rect(x, paletteTop, w, std::max(0, paletteBottom - paletteTop)));
+
+    std::string lastCat;
+    for (const auto& a : cfg::actionDefs()) {
+        if (a.category != lastCat) {
+            lastCat = a.category;
+            if (py + S(18) > paletteTop - S(20) && py < paletteBottom)
+                drawText(g, W(lastCat),
+                         RectF((REAL)x, (REAL)py, (REAL)w, (REAL)S(18)), 10,
+                         theme().textFaint, Align::Left);
+            py += S(20);
+        }
+        PaletteRow row;
+        row.actionId = a.id;
+        row.rect = {x, py, x + w, py + S(26)};
+        palette_.push_back(row);
+
+        if (py + S(26) > paletteTop && py < paletteBottom) {
+            bool hot = hoverPalette_ == (int)palette_.size() - 1;
+            if (hot) fillRounded(g, toRectF(row.rect), S(5.0f), theme().panelAlt);
+            RectF ic((REAL)(x + S(6)), (REAL)(py + S(5)), (REAL)S(16),
+                     (REAL)S(16));
+            drawActionIcon(g, a.id, ic, hot ? theme().accent : theme().textDim);
+            RectF tr((REAL)(x + S(30)), (REAL)py, (REAL)(w - S(34)),
+                     (REAL)S(26));
+            drawText(g, W(a.label), tr, 12,
+                     hot ? theme().text : theme().textDim, Align::Left);
+        }
+        py += S(28);
+    }
+    paletteContentH_ = py + paletteScroll_ - paletteTop;
+    g.SetClip(&oldClip);
+}
+
+void MainWindow::paintWelcome(Graphics& g) {
+    RECT a = rcDeck_;
+    int cx = (a.left + a.right) / 2;
+    int cy = (a.top + a.bottom) / 2;
+
+    RectF box((REAL)(cx - S(230)), (REAL)(cy - S(120)), (REAL)S(460),
+              (REAL)S(240));
+    fillRounded(g, box, S(12.0f), theme().panel);
+    strokeRounded(g, box, S(12.0f), theme().borderSoft, 1.0f);
+
+    RectF icon((REAL)(cx - S(24)), (REAL)(cy - S(92)), (REAL)S(48), (REAL)S(48));
+    drawActionIcon(g, "keys", icon, theme().accent);
+
+    drawText(g, L"Set up your macro keyboard",
+             RectF((REAL)(cx - S(210)), (REAL)(cy - S(34)), (REAL)S(420),
+                   (REAL)S(26)),
+             17, theme().text, Align::Center, true);
+    drawText(g,
+             L"MacroDeck can tell your keyboards apart, so a spare keyboard or "
+             L"numpad can run macros while you keep typing normally on your "
+             L"main one.",
+             RectF((REAL)(cx - S(200)), (REAL)(cy - S(4)), (REAL)S(400),
+                   (REAL)S(56)),
+             12, theme().textDim, Align::Center, false, false, true);
+
+    rcWelcomeBtn_ = {cx - S(90), cy + S(60), cx + S(90), cy + S(96)};
+    bool hot = ptIn(rcWelcomeBtn_, dragPos_);
+    fillRounded(g, toRectF(rcWelcomeBtn_), S(8.0f),
+                hot ? mix(theme().accent, Color(255, 255, 255, 255), 0.12f)
+                    : theme().accent);
+    drawText(g, L"Scan for keyboards", toRectF(rcWelcomeBtn_), 13,
+             Color(255, 255, 255, 255), Align::Center, true);
+}
+
+void MainWindow::paintDeck(Graphics& g) {
+    cfg::Keyboard* kb = currentKb();
+    if (!kb) return;
+
+    RectF hint((REAL)(rcDeck_.left + S(kPad) + S(252)), (REAL)(rcDeck_.top + S(14)),
+               (REAL)std::max(0, (int)(rcDeck_.right - rcDeck_.left) - S(280)),
+               (REAL)S(28));
+    drawText(g, L"Click a key to edit it  \x2022  drag an action onto it  \x2022  "
+                L"right-click for more",
+             hint, 11, theme().textFaint, Align::Left);
+
+    // Tiles can be scrolled, so keep them inside the deck area rather than
+    // letting them paint over the header, the sidebar or the log.
+    RECT clip = rcDeck_;
+    clip.top += S(52);
+    Region oldClip;
+    g.GetClip(&oldClip);
+    g.SetClip(Rect(clip.left, clip.top, clip.right - clip.left,
+                   std::max(0, (int)(clip.bottom - clip.top))));
+    for (const DeckTile& t : tiles_) paintTile(g, t, kb);
+    g.SetClip(&oldClip);
+
+    // A quiet hint that there is more below, only while it is true.
+    if (deckContentH_ > deckViewH_) {
+        const int hidden = deckContentH_ - deckViewH_ - deckScroll_;
+        if (hidden > 0) {
+            RectF more((REAL)(rcDeck_.right - S(150)),
+                       (REAL)(rcDeck_.bottom - S(20)), (REAL)S(136),
+                       (REAL)S(16));
+            drawText(g, L"scroll for more keys \x2193", more, 10,
+                     theme().textFaint, Align::Right);
+        }
+    }
+}
+
+void MainWindow::paintTile(Graphics& g, const DeckTile& tile,
+                           cfg::Keyboard* kb) {
+    RectF r = toRectF(tile.rect);
+    const float radius = S(10.0f);
+    int index = (int)(&tile - tiles_.data());
+    bool hover = hoverTile_ == index;
+    bool selected = selectedTile_ == index;
+
+    const cfg::Binding* b =
+        tile.binding >= 0 && tile.binding < (int)kb->bindings.size()
+            ? &kb->bindings[(size_t)tile.binding]
+            : nullptr;
+
+    // recently-fired glow
+    float fire = 0.0f;
+    if (b) {
+        auto it = lastFire_.find(currentAlias_ + "|" + b->key);
+        if (it != lastFire_.end()) {
+            DWORD age = GetTickCount() - it->second;
+            if (age < 450) fire = 1.0f - age / 450.0f;
+        }
+    }
+
+    if (!b) {
+        fillRounded(g, r, radius, theme().tileEmpty);
+        strokeRoundedDashed(g, r, radius, hover ? theme().accent : theme().border,
+                            S(1.4f));
+        RectF plus(r.X + r.Width / 2 - S(9.0f), r.Y + r.Height / 2 - S(9.0f),
+                   S(18.0f), S(18.0f));
+        drawGlyphPlus(g, plus, hover ? theme().accent : theme().textFaint,
+                      S(1.8f));
+        if (!tile.key.empty()) {
+            RectF kr(r.X, r.GetBottom() - S(22.0f), r.Width, S(16.0f));
+            drawText(g, W(keys::displayName(tile.key)), kr, 10,
+                     theme().textFaint, Align::Center);
+        }
+        if (selected) strokeRounded(g, r, radius, theme().accent, S(2.0f));
+        return;
+    }
+
+    Color base = readableTileColor(b->color, hover ? theme().tileHover
+                                                   : theme().tile);
+    if (hover && trim(b->color).empty())
+        base = theme().tileHover;
+    if (fire > 0)
+        base = mix(base, theme().good, fire * 0.55f);
+    fillRounded(g, r, radius, base);
+    strokeRounded(g, r, radius,
+                  selected ? theme().accent
+                           : withAlpha(theme().border, 140),
+                  selected ? S(2.0f) : 1.0f);
+
+    // key badge
+    RectF badge(r.X + S(7.0f), r.Y + S(6.0f), 0, S(15.0f));
+    std::wstring keyLabel = W(keys::displayName(b->key));
+    SizeF ks = measureText(g, keyLabel, 9, true);
+    badge.Width = ks.Width + S(10.0f);
+    fillRounded(g, badge, S(4.0f), withAlpha(Color(255, 0, 0, 0), 70));
+    drawText(g, keyLabel, badge, 9, withAlpha(theme().text, 220), Align::Center,
+             true);
+
+    // icon: custom image if set, otherwise the first step's action glyph
+    float iconSize = std::min(r.Width, r.Height) * 0.36f;
+    RectF iconBox(r.X + (r.Width - iconSize) / 2, r.Y + r.Height * 0.24f,
+                  iconSize, iconSize);
+    Image* img = b->icon.empty() ? nullptr : icons_.get(b->icon);
+    if (img) {
+        // preserve aspect ratio inside the box
+        float iw = (float)img->GetWidth(), ih = (float)img->GetHeight();
+        if (iw > 0 && ih > 0) {
+            float scale = std::min(iconBox.Width / iw, iconBox.Height / ih);
+            RectF dst(iconBox.X + (iconBox.Width - iw * scale) / 2,
+                      iconBox.Y + (iconBox.Height - ih * scale) / 2, iw * scale,
+                      ih * scale);
+            g.DrawImage(img, dst);
+        }
+    } else if (!b->steps.empty()) {
+        drawActionIcon(g, b->steps[0].action, iconBox,
+                       withAlpha(Color(255, 255, 255, 255), 235));
+    } else {
+        RectF q(iconBox.X, iconBox.Y, iconBox.Width, iconBox.Height);
+        drawText(g, L"?", q, iconSize * 0.8f / dpiScale(),
+                 withAlpha(theme().textFaint, 200), Align::Center, true);
+    }
+
+    // label
+    RectF label(r.X + S(5.0f), r.GetBottom() - S(30.0f), r.Width - S(10.0f),
+                S(26.0f));
+    drawText(g, W(b->displayTitle()), label, 11,
+             Color(255, 255, 255, 255), Align::Center, false, true, true);
+
+    if (b->steps.empty()) {
+        RectF warn(r.X, r.Y + r.Height * 0.60f, r.Width, S(14.0f));
+        drawText(g, L"no steps yet", warn, 9, theme().warn, Align::Center);
+    }
+}
+
+void MainWindow::paintDragGhost(Graphics& g) {
+    const cfg::ActionDef* def = cfg::findAction(dragAction_);
+    if (!def) return;
+    RectF chip((REAL)(dragPos_.x + S(10)), (REAL)(dragPos_.y + S(8)),
+               (REAL)S(170), (REAL)S(30));
+    fillRounded(g, chip, S(6.0f), withAlpha(theme().accent, 235));
+    RectF ic(chip.X + S(8.0f), chip.Y + S(7.0f), S(16.0f), S(16.0f));
+    drawActionIcon(g, dragAction_, ic, Color(255, 255, 255, 255));
+    RectF tr(chip.X + S(30.0f), chip.Y, chip.Width - S(34.0f), chip.Height);
+    drawText(g, W(def->label), tr, 12, Color(255, 255, 255, 255), Align::Left);
+}
+
+// ------------------------------------------------------------ model access
+cfg::Keyboard* MainWindow::currentKb() {
+    return currentAlias_.empty() ? nullptr : config_.keyboard(currentAlias_);
+}
+
+const cfg::DeckPreset* MainWindow::currentPreset() {
+    cfg::Keyboard* kb = currentKb();
+    return cfg::findPreset(kb ? kb->deck : "auto");
+}
+
+cfg::Binding* MainWindow::selectedBinding() {
+    cfg::Keyboard* kb = currentKb();
+    if (!kb) return nullptr;
+    if (selectedTile_ < 0 || selectedTile_ >= (int)tiles_.size()) return nullptr;
+    int bi = tiles_[(size_t)selectedTile_].binding;
+    if (bi < 0 || bi >= (int)kb->bindings.size()) return nullptr;
+    return &kb->bindings[(size_t)bi];
+}
+
+void MainWindow::selectKeyboard(const std::string& alias) {
+    currentAlias_ = alias;
+    selectedTile_ = -1;
+    deckScroll_ = 0;
+    refreshDeckCombo();
+    layoutDeck();
+    // select the first configured key so the inspector isn't empty
+    for (size_t i = 0; i < tiles_.size(); ++i)
+        if (tiles_[i].binding >= 0) { selectedTile_ = (int)i; break; }
+    refreshInspector();
+    InvalidateRect(hwnd_, nullptr, FALSE);
+}
+
+void MainWindow::refreshDeckCombo() {
+    cfg::Keyboard* kb = currentKb();
+    std::string want = kb ? kb->deck : "auto";
+    for (size_t i = 0; i < deckIds_.size(); ++i)
+        if (deckIds_[i] == want) {
+            SendMessageW(deckCombo_, CB_SETCURSEL, (WPARAM)i, 0);
+            return;
+        }
+    SendMessageW(deckCombo_, CB_SETCURSEL, 0, 0);
+}
+
+void MainWindow::refreshInspector() {
+    cfg::Binding* b = selectedBinding();
+    bool has = b != nullptr;
+
+    setText(titleEdit_, has ? b->title : "");
+    EnableWindow(titleEdit_, has);
+    EnableWindow(btnIcon_, has);
+    EnableWindow(btnColor_, has);
+    EnableWindow(btnAddStep_, has);
+    EnableWindow(btnRecord_, has);
+    EnableWindow(btnTest_, has && !b->steps.empty());
+
+    SendMessageW(stepList_, LB_RESETCONTENT, 0, 0);
+    if (has)
+        for (size_t i = 0; i < b->steps.size(); ++i)
+            SendMessageW(stepList_, LB_ADDSTRING, 0,
+                         (LPARAM)W(std::to_string(i + 1) + ".  " +
+                                   b->steps[i].summary())
+                             .c_str());
+    EnableWindow(stepList_, has);
+
+    int sel = (int)SendMessageW(stepList_, LB_GETCURSEL, 0, 0);
+    bool hasStep = has && sel >= 0;
+    EnableWindow(btnEditStep_, hasStep);
+    EnableWindow(btnDelStep_, hasStep);
+    EnableWindow(btnUp_, hasStep && sel > 0);
+    EnableWindow(btnDown_, hasStep && b && sel < (int)b->steps.size() - 1);
+    InvalidateRect(hwnd_, &rcInspector_, FALSE);
+}
+
+void MainWindow::modelChanged(bool relayoutDeck) {
+    config_.dirty = true;
+    saveConfig();
+    engine_.updateConfig(config_);
+    if (relayoutDeck) layoutDeck();
+    refreshInspector();
+    InvalidateRect(hwnd_, nullptr, FALSE);
+}
+
+void MainWindow::saveConfig() {
+    // One rolling copy per day, taken before the first write of each run, so
+    // there is always a yesterday to go back to.
+    if (!dailyBackupDone_) {
+        dailyBackupDone_ = true;
+        std::string where;
+        if (config_.writeDailyBackup(10, &where))
+            pushLog("Backed up the previous settings to " +
+                    relativeToApp(where));
+    }
+
+    std::string err;
+    if (!config_.save(&err)) {
+        pushLog("Could not save settings: " + err);
+        showMessage(hwnd_, "Could not save", err, true);
+        return;
+    }
+    if (!config_.lastBackup.empty()) {
+        pushLog("The unreadable macros.json was kept as " +
+                relativeToApp(config_.lastBackup) + " before saving.");
+        config_.lastBackup.clear();
+    }
+}
+
+// ---------------------------------------------------------------- commands
+void MainWindow::addKeyboard() {
+    std::string alias;
+    if (!addKeyboardDialog(hwnd_, config_, alias)) return;
+    saveConfig();
+    engine_.updateConfig(config_);
+    selectKeyboard(alias);
+    pushLog("Added keyboard \"" + alias + "\".");
+    layout();
+}
+
+void MainWindow::selectTile(int tileIndex) {
+    selectedTile_ = tileIndex;
+    refreshInspector();
+    InvalidateRect(hwnd_, nullptr, FALSE);
+}
+
+void MainWindow::activateTile(int tileIndex) {
+    if (tileIndex < 0 || tileIndex >= (int)tiles_.size()) return;
+    DeckTile& t = tiles_[(size_t)tileIndex];
+    if (t.binding >= 0) {
+        selectTile(tileIndex);
+        return;
+    }
+    assignKeyToTile(tileIndex);
+}
+
+void MainWindow::assignKeyToTile(int tileIndex) {
+    cfg::Keyboard* kb = currentKb();
+    if (!kb) return;
+    DeckTile t = tiles_[(size_t)tileIndex];
+    const cfg::DeckPreset* preset = currentPreset();
+
+    std::string key = t.key;
+    if (key.empty()) {
+        // Blank slot on a generic grid (or the flow "+" tile): ask the user to
+        // press the key they want this tile to be.
+        KeyCaptureResult r = captureKey(
+            hwnd_, "Which key?",
+            "Press the key on \"" + kb->alias + "\" that should run this macro.",
+            kb->match);
+        if (!r.ok) return;
+        key = r.keyName;
+    }
+
+    // One binding per key: a second one would be dead weight, since lookup
+    // always resolves to the first.
+    if (kb->findKey(key)) {
+        for (size_t i = 0; i < tiles_.size(); ++i)
+            if (tiles_[i].binding >= 0 &&
+                kb->bindings[(size_t)tiles_[i].binding].key == key) {
+                selectTile((int)i);
+                break;
+            }
+        showMessage(hwnd_, "Already used",
+                    "\"" + keys::displayName(key) +
+                        "\" already runs a macro on this keyboard.");
+        return;
+    }
+
+    cfg::Binding b;
+    b.key = key;
+    b.slot = (preset->flow || preset->fixedKeys) ? -1 : t.slot;
+    kb->bindings.push_back(b);
+    modelChanged();
+
+    for (size_t i = 0; i < tiles_.size(); ++i)
+        if (tiles_[i].binding == (int)kb->bindings.size() - 1) {
+            selectTile((int)i);
+            break;
+        }
+    SetFocus(titleEdit_);
+}
+
+void MainWindow::addStep(const std::string& presetAction) {
+    cfg::Binding* b = selectedBinding();
+    if (!b) return;
+    cfg::Step step;
+    step.action = presetAction.empty() ? "type" : presetAction;
+    if (!editStepDialog(hwnd_, step, config_.settings)) return;
+    b->steps.push_back(step);
+    modelChanged();
+    SendMessageW(stepList_, LB_SETCURSEL,
+                 (WPARAM)(b->steps.size() - 1), 0);
+    refreshInspector();
+}
+
+void MainWindow::editStep() {
+    cfg::Binding* b = selectedBinding();
+    if (!b) return;
+    int sel = (int)SendMessageW(stepList_, LB_GETCURSEL, 0, 0);
+    if (sel < 0 || sel >= (int)b->steps.size()) return;
+    cfg::Step step = b->steps[(size_t)sel];
+    if (!editStepDialog(hwnd_, step, config_.settings)) return;
+    b->steps[(size_t)sel] = step;
+    modelChanged();
+    SendMessageW(stepList_, LB_SETCURSEL, (WPARAM)sel, 0);
+    refreshInspector();
+}
+
+void MainWindow::removeStep() {
+    cfg::Binding* b = selectedBinding();
+    if (!b) return;
+    int sel = (int)SendMessageW(stepList_, LB_GETCURSEL, 0, 0);
+    if (sel < 0 || sel >= (int)b->steps.size()) return;
+    b->steps.erase(b->steps.begin() + sel);
+    modelChanged();
+    SendMessageW(stepList_, LB_SETCURSEL,
+                 (WPARAM)std::min(sel, (int)b->steps.size() - 1), 0);
+    refreshInspector();
+}
+
+void MainWindow::moveStep(int delta) {
+    cfg::Binding* b = selectedBinding();
+    if (!b) return;
+    int sel = (int)SendMessageW(stepList_, LB_GETCURSEL, 0, 0);
+    int dst = sel + delta;
+    if (sel < 0 || dst < 0 || dst >= (int)b->steps.size()) return;
+    std::swap(b->steps[(size_t)sel], b->steps[(size_t)dst]);
+    modelChanged();
+    SendMessageW(stepList_, LB_SETCURSEL, (WPARAM)dst, 0);
+    refreshInspector();
+}
+
+void MainWindow::recordClicks() {
+    cfg::Binding* b = selectedBinding();
+    if (!b) return;
+
+    std::string countText = "1";
+    if (!askText(hwnd_, "Record clicks",
+                 "How many clicks do you want to record?", countText))
+        return;
+    char* end = nullptr;
+    long count = strtol(countText.c_str(), &end, 10);
+    if (!end || *end != '\0' || count < 1 || count > 200) {
+        showMessage(hwnd_, "Check that number",
+                    "Enter a whole number of clicks, from 1 to 200.", true);
+        return;
+    }
+
+    std::vector<cfg::Step> recorded;
+    for (int i = 1; i <= (int)count; ++i) {
+        int x = 0, y = 0;
+        std::string prompt = "Click " + std::to_string(i) + " of " +
+                             std::to_string(count) +
+                             ":\n\nMove to where you want this click, then "
+                             "click the left mouse button. Esc stops "
+                             "recording and keeps what's captured so far.";
+        if (!captureClick(hwnd_, prompt, x, y)) break;
+
+        cfg::Step click;
+        click.action = "click";
+        click.params = js::Value::object();
+        click.params["x"] = x;
+        click.params["y"] = y;
+        recorded.push_back(click);
+
+        if (i == (int)count) break;
+
+        std::string delayText = "500";
+        if (!askText(hwnd_, "Record clicks",
+                     "Delay before the next click, in milliseconds:",
+                     delayText))
+            break;
+        char* dend = nullptr;
+        double ms = strtod(delayText.c_str(), &dend);
+        if (!dend || *dend != '\0' || ms < 0) {
+            showMessage(hwnd_, "Check that number",
+                        "Enter a delay in milliseconds, 0 or more.", true);
+            break;
+        }
+        if (ms > 0) {
+            cfg::Step wait;
+            wait.action = "sleep";
+            wait.params = js::Value::object();
+            wait.params["seconds"] = ms / 1000.0;
+            recorded.push_back(wait);
+        }
+    }
+
+    if (recorded.empty()) return;
+
+    for (auto& s : recorded) b->steps.push_back(s);
+    modelChanged();
+    SendMessageW(stepList_, LB_SETCURSEL, (WPARAM)(b->steps.size() - 1), 0);
+    refreshInspector();
+    pushLog("Recorded " + std::to_string(recorded.size()) + " step(s) into \"" +
+            b->displayTitle() + "\".");
+}
+
+void MainWindow::testRun() {
+    cfg::Binding* b = selectedBinding();
+    if (!b || b->steps.empty()) return;
+    pushLog("Test run: " + keys::displayName(b->key) + " (" +
+            std::to_string(b->steps.size()) + " steps)");
+    engine_.runSequenceAsync(b->steps, "Test");
+}
+
+void MainWindow::clearTile() {
+    cfg::Binding* b = selectedBinding();
+    if (!b) return;
+    if (!askYesNo(hwnd_, "Clear this key",
+                  "Remove every step from \"" + b->displayTitle() + "\"?"))
+        return;
+    b->steps.clear();
+    modelChanged();
+}
+
+void MainWindow::deleteBinding() {
+    cfg::Keyboard* kb = currentKb();
+    if (!kb || selectedTile_ < 0) return;
+    int bi = tiles_[(size_t)selectedTile_].binding;
+    if (bi < 0 || bi >= (int)kb->bindings.size()) return;
+    std::string name = kb->bindings[(size_t)bi].displayTitle();
+    if (!askYesNo(hwnd_, "Remove this key",
+                  "Remove \"" + name + "\" from the deck?"))
+        return;
+    kb->bindings.erase(kb->bindings.begin() + bi);
+    selectedTile_ = -1;
+    modelChanged();
+}
+
+void MainWindow::chooseTileIcon() {
+    cfg::Binding* b = selectedBinding();
+    if (!b) return;
+    std::string rel = b->icon;
+    if (!chooseImageFile(hwnd_, rel)) return;
+    b->icon = rel;
+    icons_.clear();
+    modelChanged(false);
+}
+
+void MainWindow::chooseTileColor() {
+    cfg::Binding* b = selectedBinding();
+    if (!b) return;
+    std::string hex = b->color;
+    if (!chooseColorHex(hwnd_, hex)) return;
+    b->color = hex;
+    modelChanged(false);
+}
+
+void MainWindow::toggleEngine() {
+    if (engine_.running()) {
+        engine_.stop();
+        setTone(btnEngine_, Tone::Good);
+    } else {
+        try {
+            engine_.updateConfig(config_);
+            engine_.start();
+            setTone(btnEngine_, Tone::Danger);
+        } catch (const std::exception& e) {
+            showMessage(hwnd_, "Could not start listening", e.what(), true);
+            pushLog(std::string("Could not start listening: ") + e.what());
+        }
+    }
+    layoutEngineButton();
+    InvalidateRect(hwnd_, nullptr, FALSE);
+}
+
+void MainWindow::importYaml() {
+    wchar_t file[MAX_PATH * 2] = {0};
+    OPENFILENAMEW ofn{};
+    ofn.lStructSize = sizeof(ofn);
+    ofn.hwndOwner = hwnd_;
+    ofn.lpstrFilter = L"macrokb config\0*.yaml;*.yml\0All files\0*.*\0";
+    ofn.lpstrFile = file;
+    ofn.nMaxFile = MAX_PATH * 2;
+    ofn.lpstrTitle = L"Import a macrokb macros.yaml";
+    ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_EXPLORER;
+    if (!GetOpenFileNameW(&ofn)) return;
+
+    cfg::Config imported;
+    imported.settings = config_.settings;
+    std::string err;
+    if (!cfg::importMacroKbYaml(narrow(file), imported, &err)) {
+        showMessage(hwnd_, "Import failed", err, true);
+        return;
+    }
+
+    int keys = 0;
+    for (const auto& kb : imported.keyboards) keys += (int)kb.bindings.size();
+    if (!askYesNo(hwnd_, "Import",
+                  "Found " + std::to_string(imported.keyboards.size()) +
+                      " keyboard(s) and " + std::to_string(keys) +
+                      " macro(s).\n\nAdd them to MacroDeck?"))
+        return;
+
+    for (auto& kb : imported.keyboards) {
+        kb.alias = config_.uniqueAlias(kb.alias);
+        config_.keyboards.push_back(kb);
+    }
+    config_.settings = imported.settings;
+    saveConfig();
+    engine_.updateConfig(config_);
+    if (!config_.keyboards.empty())
+        selectKeyboard(config_.keyboards.back().alias);
+    layout();
+    pushLog("Imported " + std::to_string(keys) + " macro(s) from macros.yaml.");
+}
+
+void MainWindow::showLayouts() {
+    auto names = win::listLayouts(config_.settings.layoutsDir);
+    std::string body;
+    if (names.empty())
+        body =
+            "No window layouts saved yet.\n\nAdd a \"Save the window layout\" "
+            "step to a key, run it, and the arrangement of your windows is "
+            "stored here.";
+    else {
+        body = "Saved window layouts:\n\n";
+        for (const auto& n : names) body += "   \xE2\x80\xA2  " + n + "\n";
+        body += "\nUse them with the \"Restore a window layout\" action.";
+    }
+    showMessage(hwnd_, "Window layouts", body);
+}
+
+void MainWindow::reloadConfig() {
+    if (config_.dirty &&
+        !askYesNo(hwnd_, "Reload macros.json",
+                  "There are unsaved changes. Reloading from disk throws "
+                  "them away.\n\nReload anyway?"))
+        return;
+
+    const bool wasRunning = engine_.running();
+    if (wasRunning) engine_.stop();
+
+    const std::string previous = currentAlias_;
+    config_.load(appPath("macros.json"));
+    dailyBackupDone_ = false;
+    icons_.clear();
+    engine_.updateConfig(config_);
+
+    currentAlias_.clear();
+    selectedTile_ = -1;
+    if (config_.keyboard(previous)) selectKeyboard(previous);
+    else if (!config_.keyboards.empty())
+        selectKeyboard(config_.keyboards[0].alias);
+
+    reportLoadProblems();
+    applyToggleHotkey();
+    layout();
+    refreshInspector();
+
+    if (wasRunning && config_.loadError.empty() && !config_.keyboards.empty())
+        toggleEngine();
+    else if (wasRunning) {
+        setTone(btnEngine_, Tone::Good);
+        layoutEngineButton();
+        pushLog("Stopped listening for the reload.");
+    }
+}
+
+void MainWindow::exportConfig() {
+    std::wstring initial = W("macrodeck-" + dateStamp() + ".json");
+    std::vector<wchar_t> file(MAX_PATH * 2, L'\0');
+    wcsncpy(file.data(), initial.c_str(), file.size() - 1);
+
+    OPENFILENAMEW ofn{};
+    ofn.lStructSize = sizeof(ofn);
+    ofn.hwndOwner = hwnd_;
+    ofn.lpstrFilter = L"MacroDeck settings\0*.json\0All files\0*.*\0";
+    ofn.lpstrFile = file.data();
+    ofn.nMaxFile = (DWORD)file.size();
+    ofn.lpstrDefExt = L"json";
+    ofn.lpstrTitle = L"Export a copy of your settings";
+    ofn.Flags = OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST | OFN_EXPLORER;
+    if (!GetSaveFileNameW(&ofn)) return;
+
+    std::string err;
+    const std::string dest = narrow(file.data());
+    if (!config_.saveAs(dest, &err)) {
+        showMessage(hwnd_, "Export failed", err, true);
+        return;
+    }
+    pushLog("Exported a copy to " + dest);
+}
+
+void MainWindow::backupNow() {
+    if (config_.dirty) saveConfig();
+    std::string where;
+    if (config_.writeDailyBackup(10, &where)) {
+        pushLog("Backed up to " + relativeToApp(where));
+        showMessage(hwnd_, "Backed up",
+                    "Today's copy is in:\n\n" + where);
+    } else {
+        showMessage(hwnd_, "Already backed up",
+                    "Today's backup already exists in the backups folder next "
+                    "to MacroDeck. Use \"Export a copy\" for a second one.");
+    }
+}
+
+void MainWindow::duplicateBinding(int tileIndex) {
+    cfg::Keyboard* kb = currentKb();
+    if (!kb || tileIndex < 0 || tileIndex >= (int)tiles_.size()) return;
+    const int bi = tiles_[(size_t)tileIndex].binding;
+    if (bi < 0 || bi >= (int)kb->bindings.size()) return;
+    const cfg::Binding source = kb->bindings[(size_t)bi];
+
+    KeyCaptureResult r =
+        captureKey(hwnd_, "Duplicate to which key?",
+                   "Press the key on \"" + kb->alias +
+                       "\" that should get a copy of \"" +
+                       source.displayTitle() + "\".",
+                   kb->match);
+    if (!r.ok) return;
+
+    if (kb->findKey(r.keyName)) {
+        showMessage(hwnd_, "Already used",
+                    "\"" + keys::displayName(r.keyName) +
+                        "\" already runs a macro on this keyboard.");
+        return;
+    }
+
+    cfg::Binding copy = source;
+    copy.key = r.keyName;
+    copy.slot = -1;   // let the deck place it
+    if (!copy.title.empty()) copy.title += " copy";
+    kb->bindings.push_back(std::move(copy));
+    modelChanged();
+
+    bool shown = false;
+    for (size_t i = 0; i < tiles_.size(); ++i)
+        if (tiles_[i].binding == (int)kb->bindings.size() - 1) {
+            selectTile((int)i);
+            shown = true;
+            break;
+        }
+    if (!shown)
+        pushLog("Copied to " + keys::displayName(r.keyName) +
+                " - that key is not part of this deck layout, so it has no "
+                "tile here. It still works.");
+}
+
+void MainWindow::copySteps() {
+    cfg::Binding* b = selectedBinding();
+    if (!b || b->steps.empty()) return;
+    stepClipboard_ = b->steps;
+    pushLog("Copied " + std::to_string(stepClipboard_.size()) +
+            " step(s) from \"" + b->displayTitle() + "\".");
+}
+
+void MainWindow::pasteSteps() {
+    cfg::Binding* b = selectedBinding();
+    if (!b || stepClipboard_.empty()) return;
+    for (const cfg::Step& s : stepClipboard_) b->steps.push_back(s);
+    modelChanged();
+    SendMessageW(stepList_, LB_SETCURSEL, (WPARAM)(b->steps.size() - 1), 0);
+    refreshInspector();
+    pushLog("Pasted " + std::to_string(stepClipboard_.size()) +
+            " step(s) into \"" + b->displayTitle() + "\".");
+}
+
+// ------------------------------------------------------- global start/stop
+void MainWindow::releaseToggleHotkey() {
+    if (!hotkeyRegistered_) return;
+    UnregisterHotKey(hwnd_, kToggleHotkeyId);
+    hotkeyRegistered_ = false;
+}
+
+void MainWindow::applyToggleHotkey() {
+    releaseToggleHotkey();
+    const std::string combo = trim(config_.settings.toggleHotkey);
+    if (combo.empty()) return;
+
+    unsigned mods = 0;
+    int vk = 0;
+    std::string err;
+    if (!keys::parseHotkey(combo, mods, vk, &err)) {
+        pushLog("Start/stop shortcut \"" + combo + "\" ignored: " + err);
+        return;
+    }
+    // MOD_NOREPEAT: holding the combo should toggle once, not flip the engine
+    // on and off dozens of times.
+    if (RegisterHotKey(hwnd_, kToggleHotkeyId, mods | MOD_NOREPEAT, (UINT)vk)) {
+        hotkeyRegistered_ = true;
+        pushLog("Start/stop listening from anywhere with " +
+                keys::prettyCombo(combo) + ".");
+    } else {
+        pushLog("Another program already owns " + keys::prettyCombo(combo) +
+                " - pick a different start/stop shortcut in Settings.");
+    }
+    // The button spells the shortcut out, so it has to be rebuilt whenever
+    // the shortcut changes or fails to register.
+    layoutEngineButton();
+}
+
+void MainWindow::showMenu() {
+    HMENU m = CreatePopupMenu();
+    AppendMenuW(m, MF_STRING, IDM_SNIP, L"Snip a template image...");
+    AppendMenuW(m, MF_STRING, IDM_LAYOUTS, L"Window layouts...");
+    AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(m, MF_STRING, IDM_IMPORT, L"Import from macrokb (macros.yaml)...");
+    AppendMenuW(m, MF_STRING, IDM_SAVE, L"Save now");
+    AppendMenuW(m, MF_STRING, IDM_RELOAD, L"Reload macros.json");
+    AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(m, MF_STRING, IDM_BACKUP, L"Back up settings now");
+    AppendMenuW(m, MF_STRING, IDM_EXPORT, L"Export a copy...");
+    AppendMenuW(m, MF_STRING, IDM_OPEN_FOLDER, L"Open the MacroDeck folder");
+    AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(m, MF_STRING, IDM_ABOUT, L"About MacroDeck");
+    AppendMenuW(m, MF_STRING, IDM_EXIT, L"Exit");
+
+    RECT r;
+    GetWindowRect(btnMenu_, &r);
+    TrackPopupMenu(m, TPM_RIGHTALIGN | TPM_TOPALIGN, r.right, r.bottom, 0,
+                   hwnd_, nullptr);
+    DestroyMenu(m);
+}
+
+void MainWindow::keyboardContextMenu(int index, POINT pt) {
+    if (index < 0 || index >= (int)config_.keyboards.size()) return;
+    cfg::Keyboard& kb = config_.keyboards[(size_t)index];
+
+    HMENU m = CreatePopupMenu();
+    AppendMenuW(m, MF_STRING, IDM_KB_RENAME, L"Rename...");
+    AppendMenuW(m, MF_STRING | (kb.block ? MF_CHECKED : 0), IDM_KB_BLOCK,
+                L"Block these keys from apps");
+    AppendMenuW(m, MF_STRING, IDM_KB_REMATCH, L"Re-detect this keyboard...");
+    AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(m, MF_STRING, IDM_KB_REMOVE, L"Remove this keyboard");
+    int cmd = (int)TrackPopupMenu(m, TPM_RETURNCMD | TPM_LEFTALIGN, pt.x, pt.y,
+                                  0, hwnd_, nullptr);
+    DestroyMenu(m);
+
+    switch (cmd) {
+        case IDM_KB_RENAME: {
+            std::string name = kb.alias;
+            if (askText(hwnd_, "Rename keyboard", "New name:", name)) {
+                std::string old = kb.alias;
+                kb.alias = config_.uniqueAlias(name);
+                if (currentAlias_ == old) currentAlias_ = kb.alias;
+                modelChanged();
+            }
+            break;
+        }
+        case IDM_KB_BLOCK:
+            kb.block = !kb.block;
+            modelChanged(false);
+            if (engine_.running())
+                pushLog("Stop and start listening again for the blocking "
+                        "change to apply.");
+            break;
+        case IDM_KB_REMATCH: {
+            KeyCaptureResult r = captureKey(
+                hwnd_, "Re-detect keyboard",
+                "Press a key on the keyboard you want \"" + kb.alias +
+                    "\" to mean.",
+                "", false, false);
+            if (r.ok && !r.devicePath.empty()) {
+                auto all = dev::listKeyboards();
+                for (const auto& d : all)
+                    if (d.path == r.devicePath) {
+                        bool stable = true;
+                        kb.match = cfg::chooseMatch(d, all, &stable);
+                        modelChanged(false);
+                        pushLog("\"" + kb.alias + "\" now matches " + kb.match);
+                        break;
+                    }
+            }
+            break;
+        }
+        case IDM_KB_REMOVE: {
+            if (!askYesNo(hwnd_, "Remove keyboard",
+                          "Remove \"" + kb.alias + "\" and all " +
+                              std::to_string(kb.bindings.size()) +
+                              " of its keys?"))
+                break;
+            std::string removed = kb.alias;
+            config_.keyboards.erase(config_.keyboards.begin() + index);
+            if (currentAlias_ == removed)
+                currentAlias_ = config_.keyboards.empty()
+                                    ? ""
+                                    : config_.keyboards[0].alias;
+            selectedTile_ = -1;
+            saveConfig();
+            engine_.updateConfig(config_);
+            layout();
+            refreshInspector();
+            break;
+        }
+    }
+}
+
+void MainWindow::tileContextMenu(int tileIndex, POINT pt) {
+    selectTile(tileIndex);
+    cfg::Binding* b = selectedBinding();
+
+    HMENU m = CreatePopupMenu();
+    if (!b) {
+        AppendMenuW(m, MF_STRING, IDM_TILE_REKEY, L"Assign a key here...");
+    } else {
+        AppendMenuW(m, MF_STRING, IDM_TILE_RENAME, L"Rename...");
+        AppendMenuW(m, MF_STRING, IDM_TILE_ICON, L"Choose an icon...");
+        if (!b->icon.empty())
+            AppendMenuW(m, MF_STRING, IDM_TILE_ICON_CLEAR, L"Remove the icon");
+        AppendMenuW(m, MF_STRING, IDM_TILE_COLOR, L"Choose a colour...");
+        if (!b->color.empty())
+            AppendMenuW(m, MF_STRING, IDM_TILE_COLOR_CLEAR,
+                        L"Use the default colour");
+        AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
+        AppendMenuW(m, MF_STRING | (b->steps.empty() ? MF_GRAYED : 0),
+                    IDM_TILE_TEST, L"Test run");
+        AppendMenuW(m, MF_STRING, IDM_TILE_DUPLICATE, L"Duplicate to another key...");
+        AppendMenuW(m, MF_STRING | (b->steps.empty() ? MF_GRAYED : 0),
+                    IDM_TILE_COPY_STEPS, L"Copy the steps");
+        AppendMenuW(m, MF_STRING | (stepClipboard_.empty() ? MF_GRAYED : 0),
+                    IDM_TILE_PASTE_STEPS,
+                    stepClipboard_.empty()
+                        ? L"Paste steps"
+                        : (L"Paste " +
+                           std::to_wstring(stepClipboard_.size()) +
+                           L" step(s)").c_str());
+        AppendMenuW(m, MF_STRING | (b->steps.empty() ? MF_GRAYED : 0),
+                    IDM_TILE_CLEAR, L"Clear all steps");
+        AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
+        AppendMenuW(m, MF_STRING, IDM_TILE_REMOVE, L"Remove this key");
+    }
+    int cmd = (int)TrackPopupMenu(m, TPM_RETURNCMD | TPM_LEFTALIGN, pt.x, pt.y,
+                                  0, hwnd_, nullptr);
+    DestroyMenu(m);
+
+    switch (cmd) {
+        case IDM_TILE_REKEY:
+            assignKeyToTile(tileIndex);
+            break;
+        case IDM_TILE_RENAME: {
+            if (!b) break;
+            std::string t = b->title;
+            if (askText(hwnd_, "Rename key", "Label for this key:", t)) {
+                b->title = t;
+                modelChanged(false);
+                refreshInspector();
+            }
+            break;
+        }
+        case IDM_TILE_ICON: chooseTileIcon(); break;
+        case IDM_TILE_ICON_CLEAR:
+            if (b) { b->icon.clear(); modelChanged(false); }
+            break;
+        case IDM_TILE_COLOR: chooseTileColor(); break;
+        case IDM_TILE_COLOR_CLEAR:
+            if (b) { b->color.clear(); modelChanged(false); }
+            break;
+        case IDM_TILE_TEST: testRun(); break;
+        case IDM_TILE_DUPLICATE: duplicateBinding(tileIndex); break;
+        case IDM_TILE_COPY_STEPS: copySteps(); break;
+        case IDM_TILE_PASTE_STEPS: pasteSteps(); break;
+        case IDM_TILE_CLEAR: clearTile(); break;
+        case IDM_TILE_REMOVE: deleteBinding(); break;
+    }
+}
+
+// ------------------------------------------------------------------- logs
+void MainWindow::pushLog(const std::string& line) {
+    {
+        std::lock_guard<std::mutex> lk(logMu_);
+        if (logQueue_.size() > 500) logQueue_.pop_front();
+        logQueue_.push_back(timeStamp() + "  " + line);
+    }
+    if (hwnd_) PostMessageW(hwnd_, WM_APP_LOG, 0, 0);
+}
+
+void MainWindow::drainLogs() {
+    std::deque<std::string> batch;
+    {
+        std::lock_guard<std::mutex> lk(logMu_);
+        batch.swap(logQueue_);
+    }
+    if (batch.empty() || !logEdit_) return;
+
+    // Keep the control from growing without bound.
+    int lines = (int)SendMessageW(logEdit_, EM_GETLINECOUNT, 0, 0);
+    if (lines > 400) setText(logEdit_, "");
+
+    std::string add;
+    for (const auto& l : batch) add += l + "\r\n";
+    int len = GetWindowTextLengthW(logEdit_);
+    SendMessageW(logEdit_, EM_SETSEL, (WPARAM)len, (LPARAM)len);
+    SendMessageW(logEdit_, EM_REPLACESEL, FALSE, (LPARAM)W(add).c_str());
+    SendMessageW(logEdit_, EM_SCROLLCARET, 0, 0);
+}
+
+void MainWindow::drainKeyEvents() {
+    std::deque<eng::MonitorEvent> batch;
+    {
+        std::lock_guard<std::mutex> lk(keyMu_);
+        batch.swap(keyQueue_);
+    }
+    bool repaint = false;
+    for (const auto& e : batch) {
+        if (!e.down) continue;
+        if (e.alias.empty()) continue;
+        lastKeyText_ = "Last key: " + keys::displayName(e.keyName) + " on " +
+                       e.alias + (e.hasMacro ? "" : " (no macro)");
+        lastFire_[e.alias + "|" + e.keyName] = GetTickCount();
+        repaint = true;
+    }
+    if (repaint) {
+        SetTimer(hwnd_, 2, 60, nullptr);
+        InvalidateRect(hwnd_, nullptr, FALSE);
+    }
+}
+
+// ------------------------------------------------------------------- tray
+bool MainWindow::addTray() {
+    if (trayAdded_) return true;
+    NOTIFYICONDATAW nid{};
+    nid.cbSize = sizeof(nid);
+    nid.hWnd = hwnd_;
+    nid.uID = 1;
+    nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
+    nid.uCallbackMessage = WM_APP_TRAY;
+    nid.hIcon = iconSm_ ? iconSm_ : icon_;
+    wcsncpy(nid.szTip, L"MacroDeck", 127);
+    trayAdded_ = Shell_NotifyIconW(NIM_ADD, &nid) != FALSE;
+    return trayAdded_;
+}
+
+void MainWindow::removeTray() {
+    if (!trayAdded_) return;
+    NOTIFYICONDATAW nid{};
+    nid.cbSize = sizeof(nid);
+    nid.hWnd = hwnd_;
+    nid.uID = 1;
+    Shell_NotifyIconW(NIM_DELETE, &nid);
+    trayAdded_ = false;
+}
+
+void MainWindow::showWindowAgain() {
+    ShowWindow(hwnd_, SW_SHOW);
+    ShowWindow(hwnd_, SW_RESTORE);
+    SetForegroundWindow(hwnd_);
+    if (!config_.settings.startMinimized) removeTray();
+}
+
+void MainWindow::trayMenu() {
+    HMENU m = CreatePopupMenu();
+    AppendMenuW(m, MF_STRING, IDM_TRAY_SHOW, L"Open MacroDeck");
+    AppendMenuW(m, MF_STRING, IDM_TRAY_TOGGLE,
+                engine_.running() ? L"Stop listening" : L"Start listening");
+    AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(m, MF_STRING, IDM_TRAY_EXIT, L"Exit");
+    POINT p;
+    GetCursorPos(&p);
+    SetForegroundWindow(hwnd_);
+    int cmd = (int)TrackPopupMenu(m, TPM_RETURNCMD | TPM_RIGHTBUTTON, p.x, p.y,
+                                  0, hwnd_, nullptr);
+    DestroyMenu(m);
+    if (cmd == IDM_TRAY_SHOW) showWindowAgain();
+    else if (cmd == IDM_TRAY_TOGGLE) toggleEngine();
+    else if (cmd == IDM_TRAY_EXIT) { quitting_ = true; DestroyWindow(hwnd_); }
+}
+
+bool MainWindow::confirmExit() {
+    if (config_.settings.minimizeToTray && !quitting_) {
+        // Only hide if there is actually an icon to bring it back with.
+        // Hiding without one leaves a running program the user can reach
+        // solely through Task Manager.
+        if (!addTray()) {
+            showMessage(hwnd_, "No notification-area icon",
+                        "Windows would not give MacroDeck an icon in the "
+                        "notification area, so closing the window would leave "
+                        "it running with no way back.\n\nExiting instead.",
+                        true);
+            return true;
+        }
+        ShowWindow(hwnd_, SW_HIDE);
+        return false;
+    }
+    return true;
+}
+
+// ------------------------------------------------------------- window proc
+LRESULT CALLBACK MainWindow::wndProc(HWND hwnd, UINT msg, WPARAM wp,
+                                     LPARAM lp) {
+    MainWindow* self = nullptr;
+    if (msg == WM_NCCREATE) {
+        auto* cs = (CREATESTRUCTW*)lp;
+        self = (MainWindow*)cs->lpCreateParams;
+        SetWindowLongPtrW(hwnd, GWLP_USERDATA, (LONG_PTR)self);
+        self->hwnd_ = hwnd;
+    } else {
+        self = (MainWindow*)GetWindowLongPtrW(hwnd, GWLP_USERDATA);
+    }
+    if (!self) return DefWindowProcW(hwnd, msg, wp, lp);
+
+    switch (msg) {
+        case WM_CREATE:
+            self->onCreate();
+            return 0;
+
+        case WM_SIZE:
+            if (wp != SIZE_MINIMIZED) self->layout();
+            return 0;
+
+        case WM_GETMINMAXINFO: {
+            auto* mmi = (MINMAXINFO*)lp;
+            mmi->ptMinTrackSize.x = S(940);
+            mmi->ptMinTrackSize.y = S(600);
+            return 0;
+        }
+
+        case WM_DPICHANGED:
+            self->onDpiChanged(HIWORD(wp), (const RECT*)lp);
+            return 0;
+
+        case WM_HOTKEY:
+            if ((int)wp == kToggleHotkeyId) {
+                self->toggleEngine();
+                self->pushLog(
+                    self->engine_.running()
+                        ? "Started listening from the keyboard shortcut."
+                        : "Stopped listening from the keyboard shortcut.");
+            }
+            return 0;
+
+        case WM_ERASEBKGND:
+            return 1;
+
+        case WM_PAINT: {
+            PAINTSTRUCT ps;
+            HDC hdc = BeginPaint(hwnd, &ps);
+            self->paint(hdc);
+            EndPaint(hwnd, &ps);
+            return 0;
+        }
+
+        case WM_DRAWITEM:
+            if (handleDrawItem(hwnd, (DRAWITEMSTRUCT*)lp)) return TRUE;
+            break;
+
+        case WM_CTLCOLORSTATIC:
+        case WM_CTLCOLOREDIT:
+        case WM_CTLCOLORLISTBOX:
+        case WM_CTLCOLORBTN: {
+            LRESULT out = 0;
+            if (handleCtlColor(msg, wp, lp, out)) return out;
+            break;
+        }
+
+        case WM_APP_LOG:
+            self->drainLogs();
+            return 0;
+
+        case WM_APP_KEYEVENT:
+            self->drainKeyEvents();
+            return 0;
+
+        case WM_TIMER:
+            if (wp == 2) {
+                // fade out the "just fired" glow, then stop ticking
+                DWORD now = GetTickCount();
+                bool any = false;
+                for (auto& kv : self->lastFire_)
+                    if (now - kv.second < 500) any = true;
+                InvalidateRect(hwnd, nullptr, FALSE);
+                if (!any) KillTimer(hwnd, 2);
+            }
+            return 0;
+
+        case WM_APP_TRAY:
+            if (LOWORD(lp) == WM_LBUTTONDBLCLK || LOWORD(lp) == WM_LBUTTONUP)
+                self->showWindowAgain();
+            else if (LOWORD(lp) == WM_RBUTTONUP)
+                self->trayMenu();
+            return 0;
+
+        case WM_MOUSEWHEEL: {
+            POINT p{GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};
+            ScreenToClient(hwnd, &p);
+            int delta = GET_WHEEL_DELTA_WPARAM(wp);
+            if (ptIn(self->rcSidebar_, p)) {
+                self->paletteScroll_ =
+                    std::max(0, self->paletteScroll_ - delta / 2);
+                int sidebarH =
+                    (int)(self->rcSidebar_.bottom - self->rcSidebar_.top);
+                int maxScroll =
+                    std::max(0, self->paletteContentH_ - sidebarH / 2);
+                self->paletteScroll_ = std::min(self->paletteScroll_, maxScroll);
+                InvalidateRect(hwnd, nullptr, FALSE);
+            } else if (ptIn(self->rcDeck_, p) &&
+                       self->deckContentH_ > self->deckViewH_) {
+                self->deckScroll_ = std::max(
+                    0, std::min(self->deckScroll_ - delta / 2,
+                                self->deckContentH_ - self->deckViewH_));
+                self->layoutDeck();
+                InvalidateRect(hwnd, nullptr, FALSE);
+            }
+            return 0;
+        }
+
+        case WM_MOUSEMOVE: {
+            POINT p{GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};
+            self->dragPos_ = p;
+
+            if (self->maybeDrag_ && !self->dragging_) {
+                if (std::abs(p.x - self->dragStart_.x) > S(5) ||
+                    std::abs(p.y - self->dragStart_.y) > S(5)) {
+                    self->dragging_ = true;
+                    SetCapture(hwnd);
+                }
+            }
+
+            int oldTile = self->hoverTile_, oldPal = self->hoverPalette_,
+                oldKb = self->hoverKb_;
+            self->hoverTile_ = -1;
+            self->hoverPalette_ = -1;
+            self->hoverKb_ = -1;
+            for (size_t i = 0; i < self->tiles_.size(); ++i)
+                if (ptIn(self->tiles_[i].rect, p)) self->hoverTile_ = (int)i;
+            if (!self->dragging_) {
+                for (size_t i = 0; i < self->palette_.size(); ++i)
+                    if (ptIn(self->palette_[i].rect, p) &&
+                        ptIn(self->rcSidebar_, p))
+                        self->hoverPalette_ = (int)i;
+                for (const auto& r : self->kbRows_)
+                    if (ptIn(r.rect, p))
+                        self->hoverKb_ = r.index >= 0 ? r.index : -2;
+            }
+            if (self->dragging_ || oldTile != self->hoverTile_ ||
+                oldPal != self->hoverPalette_ || oldKb != self->hoverKb_)
+                InvalidateRect(hwnd, nullptr, FALSE);
+
+            TRACKMOUSEEVENT tme{sizeof(tme), TME_LEAVE, hwnd, 0};
+            TrackMouseEvent(&tme);
+            return 0;
+        }
+
+        case WM_MOUSELEAVE:
+            self->hoverTile_ = self->hoverPalette_ = -1;
+            self->hoverKb_ = -1;
+            InvalidateRect(hwnd, nullptr, FALSE);
+            return 0;
+
+        case WM_LBUTTONDOWN: {
+            POINT p{GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};
+            SetFocus(hwnd);
+
+            if (self->config_.keyboards.empty()) {
+                if (ptIn(self->rcWelcomeBtn_, p)) self->addKeyboard();
+                return 0;
+            }
+            for (const auto& r : self->kbRows_) {
+                if (!ptIn(r.rect, p)) continue;
+                if (r.index < 0) self->addKeyboard();
+                else self->selectKeyboard(
+                    self->config_.keyboards[(size_t)r.index].alias);
+                return 0;
+            }
+            for (size_t i = 0; i < self->palette_.size(); ++i) {
+                if (ptIn(self->palette_[i].rect, p) &&
+                    ptIn(self->rcSidebar_, p)) {
+                    self->maybeDrag_ = true;
+                    self->dragAction_ = self->palette_[i].actionId;
+                    self->dragStart_ = p;
+                    return 0;
+                }
+            }
+            for (size_t i = 0; i < self->tiles_.size(); ++i)
+                if (ptIn(self->tiles_[i].rect, p)) {
+                    self->activateTile((int)i);
+                    return 0;
+                }
+            return 0;
+        }
+
+        case WM_LBUTTONUP: {
+            POINT p{GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};
+            if (self->dragging_) {
+                ReleaseCapture();
+                self->dragging_ = false;
+                self->maybeDrag_ = false;
+                std::string action = self->dragAction_;
+                self->dragAction_.clear();
+                for (size_t i = 0; i < self->tiles_.size(); ++i)
+                    if (ptIn(self->tiles_[i].rect, p)) {
+                        if (self->tiles_[i].binding < 0)
+                            self->assignKeyToTile((int)i);
+                        else
+                            self->selectTile((int)i);
+                        if (self->selectedBinding()) self->addStep(action);
+                        break;
+                    }
+                InvalidateRect(hwnd, nullptr, FALSE);
+                return 0;
+            }
+            self->maybeDrag_ = false;
+            return 0;
+        }
+
+        case WM_LBUTTONDBLCLK: {
+            POINT p{GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};
+            for (size_t i = 0; i < self->tiles_.size(); ++i)
+                if (ptIn(self->tiles_[i].rect, p) &&
+                    self->tiles_[i].binding >= 0) {
+                    self->selectTile((int)i);
+                    SetFocus(self->titleEdit_);
+                    SendMessageW(self->titleEdit_, EM_SETSEL, 0, -1);
+                    return 0;
+                }
+            return 0;
+        }
+
+        case WM_RBUTTONUP: {
+            POINT p{GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};
+            POINT screen = p;
+            ClientToScreen(hwnd, &screen);
+            for (const auto& r : self->kbRows_)
+                if (ptIn(r.rect, p) && r.index >= 0) {
+                    self->keyboardContextMenu(r.index, screen);
+                    return 0;
+                }
+            for (size_t i = 0; i < self->tiles_.size(); ++i)
+                if (ptIn(self->tiles_[i].rect, p)) {
+                    self->tileContextMenu((int)i, screen);
+                    return 0;
+                }
+            return 0;
+        }
+
+        case WM_COMMAND: {
+            int id = LOWORD(wp), notify = HIWORD(wp);
+            switch (id) {
+                case ID_BTN_ENGINE:
+                    if (notify == BN_CLICKED) self->toggleEngine();
+                    return 0;
+                case ID_BTN_SETTINGS:
+                    if (notify == BN_CLICKED &&
+                        settingsDialog(hwnd, self->config_.settings)) {
+                        self->saveConfig();
+                        self->engine_.updateConfig(self->config_);
+                        self->applyToggleHotkey();
+                    }
+                    return 0;
+                case ID_BTN_MENU:
+                    if (notify == BN_CLICKED) self->showMenu();
+                    return 0;
+                case ID_BTN_ADD_STEP:
+                    if (notify == BN_CLICKED) self->addStep();
+                    return 0;
+                case ID_BTN_EDIT_STEP:
+                    if (notify == BN_CLICKED) self->editStep();
+                    return 0;
+                case ID_BTN_DEL_STEP:
+                    if (notify == BN_CLICKED) self->removeStep();
+                    return 0;
+                case ID_BTN_UP:
+                    if (notify == BN_CLICKED) self->moveStep(-1);
+                    return 0;
+                case ID_BTN_DOWN:
+                    if (notify == BN_CLICKED) self->moveStep(1);
+                    return 0;
+                case ID_BTN_TEST:
+                    if (notify == BN_CLICKED) self->testRun();
+                    return 0;
+                case ID_BTN_RECORD:
+                    if (notify == BN_CLICKED) self->recordClicks();
+                    return 0;
+                case ID_BTN_ICON:
+                    if (notify == BN_CLICKED) self->chooseTileIcon();
+                    return 0;
+                case ID_BTN_COLOR:
+                    if (notify == BN_CLICKED) self->chooseTileColor();
+                    return 0;
+                case ID_STEP_LIST:
+                    if (notify == LBN_SELCHANGE) self->refreshInspector();
+                    if (notify == LBN_DBLCLK) self->editStep();
+                    return 0;
+                case ID_TITLE_EDIT:
+                    if (notify == EN_CHANGE) {
+                        if (cfg::Binding* b = self->selectedBinding()) {
+                            b->title = getText(self->titleEdit_);
+                            self->config_.dirty = true;
+                            InvalidateRect(hwnd, &self->rcDeck_, FALSE);
+                        }
+                    }
+                    if (notify == EN_KILLFOCUS) self->saveConfig();
+                    return 0;
+                case ID_DECK_COMBO:
+                    if (notify == CBN_SELCHANGE) {
+                        int sel = (int)SendMessageW(self->deckCombo_,
+                                                    CB_GETCURSEL, 0, 0);
+                        if (cfg::Keyboard* kb = self->currentKb()) {
+                            if (sel >= 0 && sel < (int)self->deckIds_.size()) {
+                                kb->deck = self->deckIds_[(size_t)sel];
+                                self->selectedTile_ = -1;
+                                self->modelChanged();
+                            }
+                        }
+                    }
+                    return 0;
+
+                case IDM_SNIP: {
+                    std::string path;
+                    if (snipTemplate(hwnd, path))
+                        self->pushLog("Saved template " + path);
+                    return 0;
+                }
+                case IDM_LAYOUTS: self->showLayouts(); return 0;
+                case IDM_IMPORT: self->importYaml(); return 0;
+                case IDM_SAVE:
+                    self->saveConfig();
+                    self->pushLog("Settings saved.");
+                    return 0;
+                case IDM_RELOAD: self->reloadConfig(); return 0;
+                case IDM_EXPORT: self->exportConfig(); return 0;
+                case IDM_BACKUP: self->backupNow(); return 0;
+                case IDM_OPEN_FOLDER:
+                    ShellExecuteW(nullptr, L"open", widen(exeDir()).c_str(),
+                                  nullptr, nullptr, SW_SHOWNORMAL);
+                    return 0;
+                case IDM_ABOUT:
+                    showMessage(
+                        hwnd, "About MacroDeck",
+                        "MacroDeck - a per-keyboard macro deck for Windows.\n\n"
+                        "Because Windows Raw Input reports which physical "
+                        "keyboard each keystroke came from, a spare keyboard "
+                        "or numpad can be dedicated entirely to macros while "
+                        "you keep typing normally on your main one.\n\n"
+                        "Everything runs locally. Nothing is sent anywhere.\n\n"
+                        "Settings are stored in macros.json next to the "
+                        "program.");
+                    return 0;
+                case IDM_EXIT:
+                    self->quitting_ = true;
+                    DestroyWindow(hwnd);
+                    return 0;
+            }
+            break;
+        }
+
+        case WM_CLOSE:
+            if (!self->confirmExit()) return 0;
+            DestroyWindow(hwnd);
+            return 0;
+
+        case WM_DESTROY:
+            self->onDestroy();
+            PostQuitMessage(0);
+            return 0;
+    }
+    return DefWindowProcW(hwnd, msg, wp, lp);
+}
+
+}  // namespace
+
+// ------------------------------------------------------------------ runApp
+int runApp(HINSTANCE inst, int showCmd) {
+    INITCOMMONCONTROLSEX icc{sizeof(icc), ICC_STANDARD_CLASSES | ICC_BAR_CLASSES};
+    InitCommonControlsEx(&icc);
+
+    MainWindow win;
+    if (!win.create(inst, showCmd)) {
+        MessageBoxW(nullptr, L"MacroDeck could not create its window.",
+                    L"MacroDeck", MB_ICONERROR);
+        return 1;
+    }
+
+    MSG msg;
+    while (GetMessageW(&msg, nullptr, 0, 0) > 0) {
+        // Without this the main window's controls cannot be reached from the
+        // keyboard at all - Tab does nothing and the focus ring never shows.
+        // Modal dialogs run their own loop and do this for themselves.
+        if (IsDialogMessageW(win.hwnd(), &msg)) continue;
+        TranslateMessage(&msg);
+        DispatchMessageW(&msg);
+    }
+    return (int)msg.wParam;
+}
+
+}  // namespace ui

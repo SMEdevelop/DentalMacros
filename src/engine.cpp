@@ -1,0 +1,431 @@
+#include "engine.h"
+
+#include "actions.h"
+#include "keys.h"
+#include "util.h"
+#include "vision.h"
+#include "winman.h"
+
+#include <algorithm>
+#include <chrono>
+#include <cmath>
+#include <cstdlib>
+#include <stdexcept>
+#include <utility>
+
+namespace eng {
+
+Engine::~Engine() { stop(); }
+
+void Engine::setLog(LogFn fn) {
+    std::lock_guard<std::mutex> lk(logMu_);
+    log_ = std::move(fn);
+}
+
+void Engine::setMonitor(MonitorFn fn) {
+    std::lock_guard<std::mutex> lk(logMu_);
+    monitor_ = std::move(fn);
+}
+
+void Engine::log(const std::string& msg) {
+    LogFn fn;
+    {
+        std::lock_guard<std::mutex> lk(logMu_);
+        fn = log_;
+    }
+    if (fn) fn(msg);
+}
+
+void Engine::updateConfig(const cfg::Config& c) {
+    std::lock_guard<std::mutex> lk(cfgMu_);
+    cfg_ = c;
+}
+
+// ------------------------------------------------------------------ input
+// Raw Input carries no "this is a repeat" flag, so holding a macro key would
+// otherwise re-run its macro at the keyboard's repeat rate - about thirty
+// times a second. Track what is currently down instead.
+//
+// The gap test is a safety net for the case where a key-up never arrives (the
+// pad is unplugged mid-press, say): Windows' slowest repeat delay is one
+// second, so anything longer than that is certainly a new press, and the key
+// un-sticks itself rather than staying dead until the engine restarts.
+bool Engine::isAutoRepeat(const dev::KeyEvent& ev) {
+    const auto id = std::make_pair(ev.devicePath, ev.vk);
+    std::lock_guard<std::mutex> lk(heldMu_);
+    if (!ev.down) {
+        lastDown_.erase(id);
+        return false;
+    }
+    auto it = lastDown_.find(id);
+    const bool repeat = it != lastDown_.end() && (ev.t - it->second) < 1.2;
+    lastDown_[id] = ev.t;
+    return repeat;
+}
+
+void Engine::onKey(const dev::KeyEvent& ev) {
+    if (isAutoRepeat(ev)) return;
+
+    std::string keyName = keys::vkName(ev.vk);
+
+    std::string alias;
+    std::vector<cfg::Step> steps;
+    bool hasMacro = false;
+    {
+        std::lock_guard<std::mutex> lk(cfgMu_);
+        const cfg::Keyboard* kb = cfg_.keyboardForDevice(ev.devicePath);
+        if (kb) {
+            alias = kb->alias;
+            if (const cfg::Binding* b = kb->findKey(keyName)) {
+                hasMacro = !b->steps.empty();
+                if (ev.down && hasMacro) steps = b->steps;
+            }
+        }
+    }
+
+    MonitorFn mon;
+    {
+        std::lock_guard<std::mutex> lk(logMu_);
+        mon = monitor_;
+    }
+    if (mon) {
+        MonitorEvent me;
+        me.vk = ev.vk;
+        me.down = ev.down;
+        me.keyName = keyName;
+        me.devicePath = ev.devicePath;
+        me.alias = alias;
+        me.hasMacro = hasMacro;
+        mon(me);
+    }
+
+    if (steps.empty()) return;
+
+    Job job;
+    job.steps = std::move(steps);
+    job.label = "[" + alias + "] " + keys::displayName(keyName);
+    {
+        std::lock_guard<std::mutex> lk(jobMu_);
+        // Don't let a held-down key pile up hundreds of pending runs.
+        if (jobs_.size() > 32) {
+            jobs_.pop_front();
+            log("Dropping queued macros - they are firing faster than they run.");
+        }
+        jobs_.push_back(std::move(job));
+    }
+    jobCv_.notify_one();
+}
+
+// ----------------------------------------------------------------- worker
+void Engine::workerMain() {
+    while (true) {
+        Job job;
+        {
+            std::unique_lock<std::mutex> lk(jobMu_);
+            jobCv_.wait(lk, [&] { return stopping_.load() || !jobs_.empty(); });
+            if (stopping_.load() && jobs_.empty()) return;
+            if (jobs_.empty()) continue;
+            job = std::move(jobs_.front());
+            jobs_.pop_front();
+        }
+        try {
+            log(job.label + " - running " + std::to_string(job.steps.size()) +
+                (job.steps.size() == 1 ? " step" : " steps"));
+            runSequence(job.steps);
+        } catch (const std::exception& e) {
+            log(job.label + " - stopped: " + e.what());
+        }
+    }
+}
+
+void Engine::runSequenceAsync(const std::vector<cfg::Step>& steps,
+                              const std::string& label) {
+    if (steps.empty()) return;
+    if (!worker_.joinable()) {
+        // Test runs work even when the engine isn't started.
+        stopping_.store(false);
+        worker_ = std::thread([this] { workerMain(); });
+    }
+    Job job;
+    job.steps = steps;
+    job.label = label;
+    {
+        std::lock_guard<std::mutex> lk(jobMu_);
+        jobs_.push_back(std::move(job));
+    }
+    jobCv_.notify_one();
+}
+
+void Engine::runSequence(const std::vector<cfg::Step>& steps) {
+    for (size_t i = 0; i < steps.size(); ++i) {
+        try {
+            runStep(steps[i]);
+        } catch (const std::exception& e) {
+            const std::string where = "step " + std::to_string(i + 1) + " (" +
+                                      steps[i].summary() + "): " + e.what();
+            if (!steps[i].continueOnError()) throw std::runtime_error(where);
+            log("  skipped " + where);
+        }
+    }
+}
+
+// ------------------------------------------------------------------ steps
+namespace {
+
+bool hasNum(const js::Value& p, const char* key) {
+    const js::Value* v = p.find(key);
+    return v && (v->isNum() || (v->isStr() && !trim(v->s).empty()));
+}
+
+int numInt(const js::Value& p, const char* key, int def = 0) {
+    const js::Value* v = p.find(key);
+    if (!v) return def;
+    if (v->isNum()) return (int)std::llround(v->n);
+    if (v->isStr()) {
+        std::string t = trim(v->s);
+        if (t.empty()) return def;
+        return (int)strtol(t.c_str(), nullptr, 10);
+    }
+    return def;
+}
+
+double numDouble(const js::Value& p, const char* key, double def) {
+    const js::Value* v = p.find(key);
+    if (!v) return def;
+    if (v->isNum()) return v->n;
+    if (v->isStr()) {
+        std::string t = trim(v->s);
+        if (t.empty()) return def;
+        char* end = nullptr;
+        double d = strtod(t.c_str(), &end);
+        if (end != t.c_str()) return d;
+    }
+    return def;
+}
+
+bool boolOf(const js::Value& p, const char* key, bool def) {
+    const js::Value* v = p.find(key);
+    if (!v) return def;
+    if (v->isBool()) return v->b;
+    if (v->isStr()) {
+        std::string t = lower(trim(v->s));
+        if (t == "true" || t == "yes" || t == "1") return true;
+        if (t == "false" || t == "no" || t == "0") return false;
+    }
+    if (v->isNum()) return v->n != 0;
+    return def;
+}
+
+win::WindowInfo requireWindow(const js::Value& p) {
+    std::string title = p.str("title"), exe = p.str("exe");
+    if (trim(title).empty() && trim(exe).empty())
+        throw std::runtime_error("give a window title or a program name");
+    win::WindowInfo w;
+    if (!win::findWindow(trim(title), trim(exe), w)) {
+        std::string who = !trim(title).empty() ? ("title containing \"" + title + "\"")
+                                               : ("program " + exe);
+        throw std::runtime_error("no open window with " + who);
+    }
+    return w;
+}
+
+}  // namespace
+
+void Engine::runStep(const cfg::Step& s) {
+    const js::Value& p = s.params;
+    const std::string& a = s.action;
+
+    double defaultConfidence;
+    std::string layoutsDir;
+    {
+        std::lock_guard<std::mutex> lk(cfgMu_);
+        defaultConfidence = cfg_.settings.matchConfidence;
+        layoutsDir = cfg_.settings.layoutsDir;
+    }
+
+    if (a == "type") {
+        act::typeText(p.str("text"), numInt(p, "interval_ms", 0));
+        return;
+    }
+    if (a == "keys") {
+        act::pressCombo(p.str("combo"), numInt(p, "hold_ms", 0));
+        return;
+    }
+    if (a == "click") {
+        bool hasPos = hasNum(p, "x") && hasNum(p, "y");
+        act::click(hasPos, numInt(p, "x"), numInt(p, "y"),
+                   p.str("button", "left"), boolOf(p, "double", false));
+        return;
+    }
+    if (a == "move_mouse") {
+        act::moveMouse(numInt(p, "x"), numInt(p, "y"));
+        return;
+    }
+    if (a == "scroll") {
+        act::scroll(numInt(p, "amount", 0));
+        return;
+    }
+    if (a == "sleep") {
+        double sec = numDouble(p, "seconds", 1.0);
+        if (sec > 0)
+            std::this_thread::sleep_for(
+                std::chrono::duration<double>(std::min(sec, 600.0)));
+        return;
+    }
+    if (a == "run") {
+        act::runCommand(p.str("cmd"), boolOf(p, "wait", false));
+        return;
+    }
+    if (a == "open") {
+        act::openPath(p.str("target"));
+        return;
+    }
+    if (a == "click_image" || a == "wait_image") {
+        std::string image = p.str("image");
+        if (trim(image).empty()) throw std::runtime_error("no image chosen");
+        double conf = numDouble(p, "confidence", defaultConfidence);
+        if (conf <= 0 || conf > 1) conf = defaultConfidence;
+        double timeout = numDouble(p, "timeout", a == "click_image" ? 5.0 : 10.0);
+        bool required = boolOf(p, "required", true);
+
+        vis::Match m;
+        std::string err;
+        bool found = vis::waitForImage(image, timeout, conf, nullptr, m, &err);
+        if (!found) {
+            if (!required) {
+                log("  image not found (continuing): " + baseName(image));
+                return;
+            }
+            throw std::runtime_error(
+                err.empty() ? ("could not find " + baseName(image) +
+                               " on screen within " +
+                               std::to_string((int)timeout) + "s")
+                            : err);
+        }
+        if (a == "click_image")
+            act::click(true, m.x + numInt(p, "offset_x", 0),
+                       m.y + numInt(p, "offset_y", 0), p.str("button", "left"),
+                       boolOf(p, "double", false));
+        return;
+    }
+    if (a == "window_focus") {
+        win::focusWindow(requireWindow(p));
+        return;
+    }
+    if (a == "window_move") {
+        win::moveResize(requireWindow(p), hasNum(p, "x"), numInt(p, "x"),
+                        hasNum(p, "y"), numInt(p, "y"), hasNum(p, "w"),
+                        numInt(p, "w"), hasNum(p, "h"), numInt(p, "h"));
+        return;
+    }
+    if (a == "window_minimize") {
+        win::minimizeWindow(requireWindow(p));
+        return;
+    }
+    if (a == "window_maximize") {
+        win::maximizeWindow(requireWindow(p));
+        return;
+    }
+    if (a == "window_save") {
+        std::string name = trim(p.str("layout"));
+        if (name.empty()) throw std::runtime_error("give the layout a name");
+        std::string err;
+        if (!win::saveLayout(name, layoutsDir, &err))
+            throw std::runtime_error(err);
+        log("  window layout \"" + name + "\" saved");
+        return;
+    }
+    if (a == "window_restore") {
+        std::string name = trim(p.str("layout"));
+        if (name.empty()) throw std::runtime_error("give the layout a name");
+        std::string err;
+        int n = win::restoreLayout(name, layoutsDir, &err);
+        if (n == 0 && !err.empty()) throw std::runtime_error(err);
+        log("  window layout \"" + name + "\": " + std::to_string(n) +
+            " window(s) repositioned");
+        return;
+    }
+
+    throw std::runtime_error("unknown action \"" + a + "\"");
+}
+
+// ------------------------------------------------------------ start / stop
+void Engine::start() {
+    if (running_.load()) return;
+
+    cfg::Config snapshot;
+    {
+        std::lock_guard<std::mutex> lk(cfgMu_);
+        snapshot = cfg_;
+    }
+    if (snapshot.keyboards.empty())
+        throw std::runtime_error(
+            "There is no macro keyboard to listen to yet. Add one first.");
+
+    stopping_.store(false);
+    if (!worker_.joinable()) worker_ = std::thread([this] { workerMain(); });
+
+    {
+        // Anything "held" is a leftover from the last run, not a key the user
+        // is holding now.
+        std::lock_guard<std::mutex> lk(heldMu_);
+        lastDown_.clear();
+    }
+
+    try {
+        listener_.start([this](const dev::KeyEvent& ev) { onKey(ev); });
+        listenerActive_.store(true);
+    } catch (const std::exception& e) {
+        throw std::runtime_error(std::string("Could not read keyboard input: ") +
+                                 e.what());
+    }
+
+    bool anyBlocking = false;
+    for (const auto& k : snapshot.keyboards)
+        if (k.block) anyBlocking = true;
+
+    if (anyBlocking) {
+        try {
+            hook_.start(&listener_,
+                        [this](const std::string& path) {
+                            std::lock_guard<std::mutex> lk(cfgMu_);
+                            return cfg_.blockedForDevice(path);
+                        });
+        } catch (const std::exception& e) {
+            listener_.stop();
+            listenerActive_.store(false);
+            throw std::runtime_error(
+                std::string("Could not block macro keys: ") + e.what());
+        }
+    }
+
+    running_.store(true);
+    log("Listening for macro keys.");
+    for (const auto& k : snapshot.keyboards) {
+        int bound = 0;
+        for (const auto& b : k.bindings)
+            if (!b.steps.empty()) ++bound;
+        log("  " + k.alias + " - " + std::to_string(bound) +
+            (bound == 1 ? " macro, " : " macros, ") +
+            (k.block ? "keys blocked from apps" : "keys also type normally"));
+    }
+}
+
+void Engine::stop() {
+    if (running_.load()) {
+        hook_.stop();
+        listener_.stop();
+        listenerActive_.store(false);
+        running_.store(false);
+        {
+            std::lock_guard<std::mutex> lk(heldMu_);
+            lastDown_.clear();
+        }
+        log("Stopped listening - macro keys type normally again.");
+    }
+    stopping_.store(true);
+    jobCv_.notify_all();
+    if (worker_.joinable()) worker_.join();
+}
+
+}  // namespace eng
