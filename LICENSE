@@ -1,21 +1,128 @@
-MIT License
+MacroDeck
+Copyright (c) 2026 SMEdevelop. All rights reserved.
 
-Copyright (c) 2026 SMEdevelop
+END USER LICENCE AGREEMENT, DISCLAIMER AND RELEASE OF LIABILITY
 
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
+By installing, copying, or using MacroDeck ("the Software") you agree to all
+of the terms below. If you do not agree, do not install or use the Software,
+and delete any copy you hold.
 
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
 
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
+1. OWNERSHIP
+
+The Software, including its source code, executables, design, artwork and
+documentation, is owned by SMEdevelop ("the Author") and is protected by
+copyright law and international treaties. All rights are reserved. No rights
+are granted to you except those expressly stated in section 2.
+
+
+2. PERMITTED USE
+
+The Author grants you a personal, non-exclusive, non-transferable, revocable
+licence to install and run the Software on devices that you own or control,
+for your own use. That is the entire grant.
+
+
+3. RESTRICTIONS
+
+Except where the law expressly says otherwise, and without the Author's prior
+written permission, you may not:
+
+  (a) copy the Software, other than a reasonable backup of a copy you
+      lawfully hold;
+  (b) distribute, publish, sell, rent, lease, lend, host, or otherwise make
+      the Software available to any other person;
+  (c) modify, adapt, translate, or create derivative works from the Software;
+  (d) reverse engineer, decompile, or disassemble the Software, or attempt to
+      derive its source code;
+  (e) sublicense, assign, or transfer this licence or any rights under it;
+  (f) remove, obscure, or alter any copyright, trademark, or other
+      proprietary notice.
+
+
+4. NO WARRANTY
+
+THE SOFTWARE IS PROVIDED "AS IS" AND "AS AVAILABLE", WITHOUT WARRANTY OF ANY
+KIND, EXPRESS OR IMPLIED. TO THE MAXIMUM EXTENT PERMITTED BY APPLICABLE LAW,
+THE AUTHOR DISCLAIMS ALL WARRANTIES AND CONDITIONS, INCLUDING BUT NOT LIMITED
+TO ANY IMPLIED WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR
+PURPOSE, TITLE, ACCURACY, QUIET ENJOYMENT, AND NON-INFRINGEMENT. THE AUTHOR
+DOES NOT WARRANT THAT THE SOFTWARE WILL BE UNINTERRUPTED, SECURE, ERROR-FREE,
+OR FREE OF HARMFUL COMPONENTS, OR THAT ANY DEFECT WILL BE CORRECTED.
+
+
+5. ASSUMPTION OF RISK AND RELEASE OF LIABILITY
+
+You understand what the Software does and you use it entirely at your own
+risk. In particular you acknowledge that the Software:
+
+  (a) sends synthetic keyboard and mouse input into whatever window has focus
+      at the time, and can therefore alter, overwrite, transmit or delete data
+      in any program running on your device;
+  (b) installs a system-wide low-level keyboard hook, and while it is
+      listening will prevent keys on the keyboards you configure from
+      reaching your other programs;
+  (c) launches programs, opens files, and runs shell commands that you
+      configure, with your own user privileges;
+  (d) may be prohibited by the rules, terms of service, or policies of games,
+      examination and assessment platforms, employers, or other systems you
+      use it with, and its use may carry consequences imposed by those third
+      parties, including suspension or termination of your accounts.
+
+You are solely responsible for how you configure the Software, for everything
+it does on your behalf, and for ensuring your use of it is lawful and
+permitted wherever you use it.
+
+TO THE MAXIMUM EXTENT PERMITTED BY APPLICABLE LAW, YOU HEREBY RELEASE, WAIVE,
+AND DISCHARGE THE AUTHOR FROM ANY AND ALL CLAIMS, DEMANDS, ACTIONS, LOSSES,
+AND LIABILITIES OF EVERY KIND ARISING OUT OF OR CONNECTED WITH YOUR USE OF OR
+INABILITY TO USE THE SOFTWARE, AND YOU AGREE NOT TO BRING ANY SUCH CLAIM
+AGAINST THE AUTHOR.
+
+
+6. LIMITATION OF LIABILITY
+
+TO THE MAXIMUM EXTENT PERMITTED BY APPLICABLE LAW, IN NO EVENT SHALL THE
+AUTHOR BE LIABLE FOR ANY CLAIM, DAMAGES, OR OTHER LIABILITY, WHETHER IN AN
+ACTION OF CONTRACT, TORT (INCLUDING NEGLIGENCE), OR OTHERWISE, ARISING FROM,
+OUT OF, OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE. THIS INCLUDES, WITHOUT LIMITATION, ANY DIRECT, INDIRECT,
+INCIDENTAL, SPECIAL, EXEMPLARY, PUNITIVE, OR CONSEQUENTIAL DAMAGES; ANY LOSS
+OF DATA, PROFITS, REVENUE, BUSINESS, GOODWILL, OR ANTICIPATED SAVINGS; AND
+ANY LOSS ARISING FROM THE SUSPENSION OR TERMINATION OF ANY THIRD-PARTY
+ACCOUNT, EVEN IF THE AUTHOR HAS BEEN ADVISED OF THE POSSIBILITY OF SUCH
+DAMAGE.
+
+The Software is provided free of charge. To the maximum extent permitted by
+applicable law, the Author's total aggregate liability arising out of or
+related to the Software shall not exceed the greater of the amount you paid
+for the Software or ten United States dollars (USD 10.00).
+
+
+7. STATUTORY RIGHTS
+
+Nothing in this licence excludes, restricts, or modifies any liability, right,
+guarantee, or remedy that cannot lawfully be excluded, restricted, or
+modified. Some jurisdictions do not allow the exclusion of implied warranties
+or the limitation of liability for incidental or consequential damages, so
+some of the exclusions and limitations above may not apply to you. In that
+case those exclusions and limitations apply to the fullest extent the law
+permits, and the remainder of this licence continues in force.
+
+
+8. TERMINATION
+
+This licence terminates automatically and immediately if you breach any of
+its terms. On termination you must stop using the Software and destroy every
+copy in your possession or control. Sections 1 and 4 to 9 survive
+termination.
+
+
+9. GENERAL
+
+If any provision of this licence is held unenforceable, it shall be modified
+to the minimum extent necessary to make it enforceable, and the remaining
+provisions shall continue in full force and effect. The Author's failure to
+enforce any provision is not a waiver of it. This licence is the entire
+agreement between you and the Author concerning the Software and supersedes
+any prior understanding relating to it.

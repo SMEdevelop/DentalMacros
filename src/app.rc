@@ -27,9 +27,11 @@ BEGIN
     BEGIN
         BLOCK "040904b0"
         BEGIN
+            VALUE "CompanyName",     "SMEdevelop"
             VALUE "FileDescription", "MacroDeck - per-keyboard macro deck"
             VALUE "FileVersion",     "1.0.0.0"
             VALUE "InternalName",    "MacroDeck"
+            VALUE "LegalCopyright",  "Copyright (c) 2026 SMEdevelop. All rights reserved."
             VALUE "OriginalFilename","MacroDeck.exe"
             VALUE "ProductName",     "MacroDeck"
             VALUE "ProductVersion",  "1.0.0.0"

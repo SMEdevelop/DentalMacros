@@ -66,4 +66,17 @@ untick that first, or delete the "MacroDeck" value from:
     HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Run
 
 
+Licence
+-------
+MacroDeck is copyright (c) 2026 SMEdevelop. All rights reserved. It is NOT
+open source. You may install and run it on devices you own or control; you
+may not redistribute, sell, modify or reverse engineer it without written
+permission.
+
+It comes with no warranty of any kind and you use it at your own risk. It
+types, clicks and runs programs on your behalf, and it stops the keyboard you
+choose from typing into your other programs while it is listening. Read
+LICENSE - installing or using MacroDeck means you accept it in full.
+
+
 Everything runs locally. There is no network code in this program.

@@ -453,9 +453,10 @@ the old certificates did.
 ## Disclaimer and release of liability
 
 **MacroDeck is provided "as is", with no warranty of any kind, and you use it
-entirely at your own risk.** The full legal text is in [LICENSE](LICENSE); the
-two block-capital paragraphs at the end of it are the warranty disclaimer and
-the limitation of liability, and they govern. In plain terms:
+entirely at your own risk.** The governing text is in [LICENSE](LICENSE) —
+sections 4 to 6 are the warranty disclaimer, the assumption of risk and
+release of liability, and the limitation of liability. Those control; the
+summary below is only a plain-language guide to them.
 
 - **It types and clicks for you.** MacroDeck sends synthetic keystrokes and
   mouse input into whatever window happens to have focus, and runs whatever
@@ -471,13 +472,24 @@ the limitation of liability, and they govern. In plain terms:
   games, exam and interview platforms, and workplace systems prohibit input
   automation, and some treat it as grounds for a ban or disciplinary action.
   Check before you point this at anything that isn't yours.
-- **No author or copyright holder is liable** for any claim, damages, data
-  loss or other liability arising from the software or its use.
+- **The Author is not liable** for any claim, damages, data loss, or other
+  liability arising from the software or its use — including anything that
+  follows from a third party suspending or closing your accounts.
 
-Nothing here is legal advice.
+By installing or using MacroDeck you accept [LICENSE](LICENSE) in full.
+Nothing here is legal advice; if you intend to sell or commercially
+distribute this, have a lawyer review the terms first.
 
 ---
 
 ## Licence
 
-MIT — see [LICENSE](LICENSE).
+**Proprietary. Copyright © 2026 SMEdevelop. All rights reserved.**
+
+This is *not* open-source software. [LICENSE](LICENSE) grants you a personal,
+revocable licence to install and run MacroDeck on devices you own or control,
+and nothing further. Redistributing it, selling it, modifying it, or reverse
+engineering it needs written permission.
+
+The source being readable does not make it reusable — no part of this
+repository may be copied into another project without permission.
