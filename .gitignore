@@ -2,6 +2,10 @@
 # with build.bat / package.bat.
 /build/
 /dist/
+
+# Superseded builds kept locally for rollback and comparison. Binaries, and
+# not part of the current source tree - see archive/*/README.txt.
+/archive/
 *.o
 *.obj
 *.res

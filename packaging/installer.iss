@@ -13,6 +13,16 @@
 #ifndef AppVersion
   #define AppVersion "0.0.0"
 #endif
+; AppVersionFull carries the pre-release marker ("0.7.0-beta") where
+; AppVersion is only ever digits, because VersionInfoVersion below refuses
+; anything else. package.bat passes both in.
+#ifndef AppVersionFull
+  #define AppVersionFull AppVersion
+#endif
+; Where the three Visual C++ runtime DLLs are, passed in by package.bat.
+#ifndef CrtDir
+  #define CrtDir ""
+#endif
 
 #define AppName      "MacroDeck"
 #define AppExeName   "MacroDeck.exe"
@@ -23,9 +33,10 @@
 ; offers an upgrade instead of a second copy.
 AppId={{8F3C1A62-5D47-4E9B-9C2A-71B0E6D4A153}
 AppName={#AppName}
-AppVersion={#AppVersion}
-AppVerName={#AppName} {#AppVersion}
+AppVersion={#AppVersionFull}
+AppVerName={#AppName} {#AppVersionFull}
 AppPublisher={#AppPublisher}
+; Digits only - Inno rejects "0.7.0-beta" here, so this one stays numeric.
 VersionInfoVersion={#AppVersion}
 
 DefaultDirName={localappdata}\Programs\{#AppName}
@@ -41,7 +52,7 @@ PrivilegesRequired=lowest
 ; Paths below are relative to the repository root, not to this file.
 SourceDir=..
 OutputDir=dist
-OutputBaseFilename=MacroDeck-Setup-{#AppVersion}
+OutputBaseFilename=MacroDeck-Setup-{#AppVersionFull}
 
 Compression=lzma2/max
 SolidCompression=yes
@@ -69,6 +80,15 @@ Source: "build\{#AppExeName}"; DestDir: "{app}"; Flags: ignoreversion
 Source: "README.md";           DestDir: "{app}"; DestName: "README.md"; Flags: ignoreversion
 Source: "LICENSE";             DestDir: "{app}"; Flags: ignoreversion
 Source: "packaging\INSTALL.txt"; DestDir: "{app}"; Flags: ignoreversion
+; The Visual C++ runtime, installed beside the exe rather than into the
+; system. MacroDeck is a per-user install with PrivilegesRequired=lowest, so
+; it cannot write to System32 and must not try - and this way uninstalling
+; takes its own copy with it and cannot break another program's. Without
+; these three the app fails to start on any machine that has never had
+; Visual Studio or the VC++ Redistributable on it.
+Source: "{#CrtDir}\msvcp140.dll";      DestDir: "{app}"; Flags: ignoreversion
+Source: "{#CrtDir}\vcruntime140.dll";  DestDir: "{app}"; Flags: ignoreversion
+Source: "{#CrtDir}\vcruntime140_1.dll"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
 Name: "{autoprograms}\{#AppName}"; Filename: "{app}\{#AppExeName}"

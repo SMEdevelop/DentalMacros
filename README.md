@@ -80,22 +80,43 @@ test suite run fine.
 
 ## Building
 
-You need a C++17 compiler. If you don't have one:
+You need the Microsoft C++ compiler (MSVC). If you don't have it:
 
 ```bash
-winget install BrechtSanders.WinLibs.POSIX.UCRT
+winget install Microsoft.VisualStudio.2022.BuildTools --override "--quiet --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
 ```
 
-That installs a self-contained GCC toolchain (no admin, no Visual Studio).
-Then:
+That is the compiler only — no Visual Studio IDE. `build.bat` finds it by
+itself through `vswhere`, so there is no need to open a Developer Command
+Prompt first:
 
 ```bash
 build.bat
 ```
 
-The result is `build\MacroDeck.exe` — a genuinely single executable. It is
-linked statically (`-static`), so it depends on nothing but Windows itself:
-copy it, or the whole `build` folder, to any Windows 10/11 PC and it runs.
+The result is `build\MacroDeck.exe`.
+
+**It is not a single file any more.** As of beta 0.7 MacroDeck is built with
+MSVC and links the C++ runtime dynamically (`/MD`), so the executable needs
+three DLLs beside it:
+
+| DLL | |
+|---|---|
+| `msvcp140.dll` | C++ standard library |
+| `vcruntime140.dll` | compiler runtime |
+| `vcruntime140_1.dll` | exception handling |
+
+Running `build\MacroDeck.exe` straight out of `build\` works on the machine
+that built it, because Visual Studio put those DLLs in `System32`. **That is
+exactly why a broken package looks fine here and fails on someone else's PC.**
+Do not hand anyone the bare .exe — use `package.bat`, which copies the three
+DLLs in beside it. The zip and the installer it produces both carry them, and
+need nothing preinstalled on the target machine beyond Windows 10/11 itself.
+
+(The 1.0.0 release was built with GCC and `-static`, which did produce one
+self-contained file. The trade is deliberate: MSVC matches the platform it
+targets, and the packaged download is self-contained either way.)
+
 Settings live next to the .exe.
 
 To check everything works on your machine:

@@ -8,6 +8,14 @@ rem
 rem      MacroDeck-<version>.zip          portable copy
 rem      MacroDeck-Setup-<version>.exe    installer (needs Inno Setup)
 rem
+rem  Since the move to MSVC the build links the C++ runtime dynamically (/MD),
+rem  so both of those carry msvcp140.dll, vcruntime140.dll and
+rem  vcruntime140_1.dll beside MacroDeck.exe. Without them the app dies on
+rem  startup on any machine without Visual Studio installed, with a dialog
+rem  naming the missing DLL. They are copied out of the Visual Studio
+rem  redistributable folder, which is the supported way to ship them ("local
+rem  deployment" - see Microsoft's "Deploying Visual C++ applications").
+rem
 rem  Signing is optional and off unless you point it at a certificate. Set
 rem  ONE of these before running:
 rem
@@ -24,6 +32,40 @@ echo.
 echo  Packaging MacroDeck...
 echo.
 
+rem ---- MSVC environment ------------------------------------------------
+rem  Done here rather than leaning on build.bat because we need
+rem  VCToolsRedistDir, and build.bat's setlocal throws its environment away
+rem  when it returns. With cl.exe already on PATH, build.bat below skips
+rem  straight past its own detection.
+where cl.exe >nul 2>&1
+if not errorlevel 1 goto :havecl
+
+set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
+if not exist "%VSWHERE%" set "VSWHERE=%ProgramFiles%\Microsoft Visual Studio\Installer\vswhere.exe"
+if not exist "%VSWHERE%" goto :nocompiler
+set "VCVARS="
+for /f "usebackq tokens=*" %%I in (`"%VSWHERE%" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do set "VCVARS=%%I\VC\Auxiliary\Build\vcvars64.bat"
+if not exist "%VCVARS%" goto :nocompiler
+call "%VCVARS%" >nul 2>&1
+where cl.exe >nul 2>&1
+if errorlevel 1 goto :nocompiler
+:havecl
+
+rem ---- the three runtime DLLs -----------------------------------------
+rem  The folder is named for the toolset (Microsoft.VC145.CRT today), so match
+rem  it with a wildcard instead of hard-coding a number that changes with
+rem  every Visual Studio upgrade.
+set "CRTDIR="
+for /d %%D in ("%VCToolsRedistDir%x64\Microsoft.VC*.CRT") do set "CRTDIR=%%D"
+if "%CRTDIR%"=="" (
+  echo  ERROR: could not find the Visual C++ redistributable DLLs.
+  echo         Looked under: %VCToolsRedistDir%x64\
+  echo         Install the "C++ x64/x86 build tools" component in the Visual
+  echo         Studio Installer, which is what brings that folder in.
+  exit /b 1
+)
+echo  Runtime DLLs: %CRTDIR%
+
 rem ---- version: src\app.rc is the one place it is declared -------------
 set "VERSION="
 for /f tokens^=4^ delims^=^" %%V in ('findstr /c:"VALUE \"FileVersion\"" src\app.rc') do set "VERSION=%%V"
@@ -31,9 +73,14 @@ if "%VERSION%"=="" (
   echo  ERROR: could not read FileVersion out of src\app.rc
   exit /b 1
 )
-rem 1.0.0.0 reads better as 1.0.0 in a file name
+rem 0.7.0.0 reads better as 0.7.0 in a file name
 for /f "tokens=1,2,3 delims=." %%a in ("%VERSION%") do set "SHORTVER=%%a.%%b.%%c"
-echo  Version:  %SHORTVER%   (from src\app.rc)
+
+rem  Pre-release marker, carried in the file names so a beta is never mistaken
+rem  for a final build sitting in the same folder. Clear it for a real release.
+set "PRERELEASE=beta"
+if defined PRERELEASE (set "FULLVER=%SHORTVER%-%PRERELEASE%") else (set "FULLVER=%SHORTVER%")
+echo  Version:  %FULLVER%   (from src\app.rc)
 
 rem ---- build ----------------------------------------------------------
 rem  Full path, not "build.bat": when NoDefaultCurrentDirectoryInExePath is
@@ -73,7 +120,23 @@ copy /y "packaging\INSTALL.txt"   "%STAGE%\MacroDeck\" >nul
 copy /y "README.md"               "%STAGE%\MacroDeck\" >nul
 copy /y "LICENSE"                 "%STAGE%\MacroDeck\" >nul
 
-set "ZIP=dist\MacroDeck-%SHORTVER%.zip"
+rem  The runtime. Copied one by one and checked, because a zip that is missing
+rem  one of these looks perfectly fine here - this machine has them in
+rem  System32 - and fails only on the machine you sent it to.
+for %%L in (msvcp140.dll vcruntime140.dll vcruntime140_1.dll) do (
+  if not exist "%CRTDIR%\%%L" (
+    echo  ERROR: %%L is not in %CRTDIR%
+    exit /b 1
+  )
+  copy /y "%CRTDIR%\%%L" "%STAGE%\MacroDeck\" >nul
+  if errorlevel 1 (
+    echo  ERROR: could not copy %%L into the package.
+    exit /b 1
+  )
+  echo    + %%L
+)
+
+set "ZIP=dist\MacroDeck-%FULLVER%.zip"
 if exist "%ZIP%" del /q "%ZIP%"
 powershell -NoProfile -ExecutionPolicy Bypass -Command ^
   "Compress-Archive -Path '%STAGE%\MacroDeck' -DestinationPath '%ZIP%' -Force"
@@ -90,7 +153,7 @@ rem  generated or belongs to whoever ran the app. Suitable for attaching to
 rem  a GitHub release.
 echo.
 echo  Building the source zip...
-set "SRCSTAGE=dist\srcstage\MacroDeck-%SHORTVER%"
+set "SRCSTAGE=dist\srcstage\MacroDeck-%FULLVER%"
 if exist "dist\srcstage" rmdir /s /q "dist\srcstage"
 mkdir "%SRCSTAGE%"
 xcopy /e /i /q /y "src"       "%SRCSTAGE%\src"       >nul
@@ -103,7 +166,7 @@ for %%F in (README.md LICENSE .gitignore build.bat run_tests.bat package.bat) do
   copy /y "%%F" "%SRCSTAGE%\" >nul
 )
 
-set "SRCZIP=dist\MacroDeck-%SHORTVER%-source.zip"
+set "SRCZIP=dist\MacroDeck-%FULLVER%-source.zip"
 if exist "%SRCZIP%" del /q "%SRCZIP%"
 powershell -NoProfile -ExecutionPolicy Bypass -Command ^
   "Compress-Archive -Path '%SRCSTAGE%' -DestinationPath '%SRCZIP%' -Force"
@@ -138,14 +201,16 @@ if "!ISCC!"=="" (
 )
 
 echo  Building the installer...
-"!ISCC!" /Q "/DAppVersion=%SHORTVER%" "packaging\installer.iss"
+rem  CrtDir is passed in so installer.iss can pick up the same three DLLs
+rem  without repeating the lookup.
+"!ISCC!" /Q "/DAppVersion=%SHORTVER%" "/DAppVersionFull=%FULLVER%" "/DCrtDir=%CRTDIR%" "packaging\installer.iss"
 if errorlevel 1 (
   echo  ERROR: the installer failed to compile.
   exit /b 1
 )
-call :sign "dist\MacroDeck-Setup-%SHORTVER%.exe"
+call :sign "dist\MacroDeck-Setup-%FULLVER%.exe"
 if errorlevel 1 exit /b 1
-echo  Built:  dist\MacroDeck-Setup-%SHORTVER%.exe
+echo  Built:  dist\MacroDeck-Setup-%FULLVER%.exe
 
 :summary
 echo.
@@ -161,6 +226,10 @@ if not defined MACRODECK_SIGN_PFX if not defined MACRODECK_SIGN_CMD (
 )
 echo.
 exit /b 0
+
+:nocompiler
+echo  ERROR: no Microsoft C++ compiler found - see build.bat
+exit /b 1
 
 rem ---------------------------------------------------------------------
 rem  :sign <file>   - signs in place, or does nothing if no cert is set up

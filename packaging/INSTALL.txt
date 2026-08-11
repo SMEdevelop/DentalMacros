@@ -1,8 +1,19 @@
 MacroDeck - installing the portable copy
 =======================================
 
-This is the zip version. There is nothing to install: MacroDeck is a single
-executable with no dependencies.
+This is the zip version. There is nothing to install and nothing to download
+first - everything MacroDeck needs is in this folder.
+
+Keep the folder together. Beside MacroDeck.exe are three files:
+
+    msvcp140.dll
+    vcruntime140.dll
+    vcruntime140_1.dll
+
+Those are the Microsoft C++ runtime. MacroDeck will not start without them,
+so copy the whole folder rather than picking MacroDeck.exe out of it. (If you
+ever see "The code execution cannot proceed because VCRUNTIME140.dll was not
+found", that is what happened - copy the folder again, complete.)
 
 
 1. Put the folder somewhere you can write to
