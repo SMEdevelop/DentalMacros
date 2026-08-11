@@ -331,6 +331,110 @@ static void testConfig() {
        std::to_string(hugeLayout.summary().size()));
 }
 
+// ------------------------------------------------- selective key blocking
+// blockAllKeys off means "take only the keys that run a macro and let the rest
+// of the keyboard type normally" - the setting that makes it safe to put a
+// macro on F13 of the keyboard you actually type on.
+static void testSelectiveBlocking() {
+    section("Which keys get taken from other programs");
+
+    const std::string devPath =
+        "\\\\?\\HID#VID_1234&PID_5678&MI_00#9&abc#{guid}";
+    const std::string otherDev =
+        "\\\\?\\HID#VID_9999&PID_0000&MI_00#9&xyz#{guid}";
+
+    const int vkF13 = keys::toVk("f13");
+    const int vkA = keys::toVk("a");
+    const int vkNum1 = keys::toVk("num1");
+    ok(vkF13 && vkA && vkNum1, "the keys this section needs all resolve");
+
+    cfg::Config c;
+    cfg::Keyboard kb;
+    kb.alias = "Typing keyboard";
+    kb.match = "VID_1234&PID_5678";
+    kb.block = true;
+    kb.blockAllKeys = true;
+
+    cfg::Binding bound;          // f13 runs something
+    bound.key = "f13";
+    cfg::Step st;
+    st.action = "type";
+    st.params["text"] = "hi";
+    bound.steps.push_back(st);
+    kb.bindings.push_back(bound);
+
+    cfg::Binding empty;          // num1 is a tile with no steps yet
+    empty.key = "num1";
+    kb.bindings.push_back(empty);
+
+    c.keyboards.push_back(kb);
+    cfg::Keyboard& live = c.keyboards[0];
+
+    ok(live.blockAllKeys, "a keyboard blocks every key by default");
+
+    // ---- blockAllKeys on: the whole keyboard goes quiet
+    ok(c.blockedForKey(devPath, vkF13), "all-keys mode takes the macro key");
+    ok(c.blockedForKey(devPath, vkA),
+       "all-keys mode takes an ordinary letter too");
+    ok(c.blockedForKey(devPath, vkNum1),
+       "all-keys mode takes a key whose binding has no steps");
+
+    // ---- blockAllKeys off: only keys carrying a macro
+    live.blockAllKeys = false;
+    ok(c.blockedForKey(devPath, vkF13),
+       "selective mode still takes the key that runs a macro");
+    ok(!c.blockedForKey(devPath, vkA),
+       "selective mode lets an ordinary letter type normally");
+    ok(!c.blockedForKey(devPath, vkNum1),
+       "selective mode ignores a binding with no steps");
+
+    // ---- the master switch still wins
+    live.block = false;
+    ok(!c.blockedForKey(devPath, vkF13),
+       "a keyboard that blocks nothing keeps its macro key typing");
+    live.block = true;
+
+    // ---- other keyboards are never touched
+    ok(!c.blockedForKey(otherDev, vkF13),
+       "a keyboard we were never told about is left alone");
+    ok(!c.blockedForKey("", vkF13), "an empty device path blocks nothing");
+
+    // ---- blockedForDevice stays coarse: it only decides whether the hook is
+    // worth installing, so it must say yes even in selective mode.
+    live.blockAllKeys = false;
+    ok(c.blockedForDevice(devPath),
+       "selective mode still reports the device as blocking, so the hook runs");
+
+    // ---- round trip
+    std::string path = appPath("selftest-blocking.json");
+    c.path = path;
+    std::string err;
+    ok(c.save(&err), "saves the blocking settings", err);
+    cfg::Config reloaded;
+    reloaded.load(path);
+    ok(!reloaded.keyboards.empty() && !reloaded.keyboards[0].blockAllKeys,
+       "selective mode survives save and load");
+    ok(!reloaded.blockedForKey(devPath, vkA),
+       "and still lets ordinary keys through after reloading");
+
+    // ---- a file written before this option existed must not change how the
+    // user's keyboard behaves: no blockAllKeys means the old all-keys meaning.
+    writeFileAtomic(path,
+                    "{\"settings\":{},\"keyboards\":[{\"alias\":\"Old\","
+                    "\"match\":\"VID_1234&PID_5678\",\"block\":true,"
+                    "\"bindings\":[]}]}");
+    cfg::Config old;
+    old.load(path);
+    ok(old.loadError.empty(), "reads a config written before this option",
+       old.loadError);
+    ok(!old.keyboards.empty() && old.keyboards[0].blockAllKeys,
+       "a config with no blockAllKeys still blocks every key");
+    ok(old.blockedForKey(devPath, vkA),
+       "so an old config keeps taking the whole keyboard");
+
+    DeleteFileW(widen(path).c_str());
+}
+
 // --------------------------------------------------------- yaml import
 static void testYamlImport(const std::string& yamlPath) {
     section("macrokb YAML import");
@@ -1125,6 +1229,7 @@ int main(int argc, char** argv) {
     testKeys();
     testPresets();
     testConfig();
+    testSelectiveBlocking();
     testConfigRescue();
     testEngine();
     testClickWorkflow();

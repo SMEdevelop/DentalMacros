@@ -66,6 +66,7 @@ enum {
 
     IDM_KB_RENAME = 430,
     IDM_KB_BLOCK,
+    IDM_KB_BLOCK_ALL,
     IDM_KB_REMATCH,
     IDM_KB_REMOVE,
 
@@ -566,17 +567,27 @@ std::string MainWindow::listeningSummary() const {
     if (config_.keyboards.empty()) return "Listening";
     if (config_.keyboards.size() == 1) {
         const cfg::Keyboard& k = config_.keyboards[0];
+        if (!k.block)
+            return "Listening to " + k.alias +
+                   " - its keys run macros and still type";
+        if (!k.blockAllKeys)
+            return "Listening to " + k.alias +
+                   " - only its macro keys stop typing";
         return "Listening to " + k.alias +
-               (k.block ? " - its keys run macros and do not type"
-                        : " - its keys run macros and still type");
+               " - its keys run macros and do not type";
     }
-    int blocked = 0;
-    for (const auto& k : config_.keyboards)
-        if (k.block) ++blocked;
+    int silent = 0;   // every key given up
+    int partial = 0;  // only the macro keys given up
+    for (const auto& k : config_.keyboards) {
+        if (!k.block) continue;
+        if (k.blockAllKeys) ++silent; else ++partial;
+    }
     std::string s = "Listening to " + std::to_string(config_.keyboards.size()) +
                     " keyboards";
-    if (blocked)
-        s += " - " + std::to_string(blocked) + " of them do not type";
+    if (silent) s += " - " + std::to_string(silent) + " of them do not type";
+    if (partial)
+        s += (silent ? ", " : " - ") + std::to_string(partial) +
+             " only on macro keys";
     return s;
 }
 
@@ -828,11 +839,15 @@ void MainWindow::paintSidebar(Graphics& g) {
         RectF tr((REAL)(x + S(10)), (REAL)y, (REAL)(w - S(20)), (REAL)S(kRowH));
         drawText(g, W(kb.alias), tr, 13, sel ? theme().text : theme().textDim,
                  Align::Left, sel);
-        if (!kb.block) {
+        // No badge is the default, fully-blocking case. "pass" = nothing is
+        // taken from this keyboard; "some" = only the keys that run macros.
+        const wchar_t* badgeText =
+            !kb.block ? L"pass" : (!kb.blockAllKeys ? L"some" : nullptr);
+        if (badgeText) {
             RectF badge((REAL)(x + w - S(30)), (REAL)(y + S(8)), (REAL)S(22),
                         (REAL)S(14));
             fillRounded(g, badge, S(4.0f), theme().panelAlt);
-            drawText(g, L"pass", badge, 8, theme().textFaint, Align::Center);
+            drawText(g, badgeText, badge, 8, theme().textFaint, Align::Center);
         }
         y += S(kRowH) + S(2);
     }
@@ -1748,6 +1763,13 @@ void MainWindow::keyboardContextMenu(int index, POINT pt) {
     AppendMenuW(m, MF_STRING, IDM_KB_RENAME, L"Rename...");
     AppendMenuW(m, MF_STRING | (kb.block ? MF_CHECKED : 0), IDM_KB_BLOCK,
                 L"Block these keys from apps");
+    // Greyed rather than hidden when the keyboard blocks nothing at all: the
+    // option still describes this keyboard, it just has nothing to act on.
+    AppendMenuW(m,
+                MF_STRING | (kb.blockAllKeys ? MF_CHECKED : 0) |
+                    (kb.block ? 0 : MF_GRAYED),
+                IDM_KB_BLOCK_ALL,
+                L"      Turn off all normal input, not just macro keys");
     AppendMenuW(m, MF_STRING, IDM_KB_REMATCH, L"Re-detect this keyboard...");
     AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(m, MF_STRING, IDM_KB_REMOVE, L"Remove this keyboard");
@@ -1772,6 +1794,18 @@ void MainWindow::keyboardContextMenu(int index, POINT pt) {
             if (engine_.running())
                 pushLog("Stop and start listening again for the blocking "
                         "change to apply.");
+            break;
+        case IDM_KB_BLOCK_ALL:
+            kb.blockAllKeys = !kb.blockAllKeys;
+            modelChanged(false);
+            pushLog(kb.blockAllKeys
+                        ? "\"" + kb.alias +
+                              "\" now gives up every key while listening."
+                        : "\"" + kb.alias +
+                              "\" now gives up only the keys that run macros - "
+                              "the rest type normally.");
+            // Unlike the master toggle this needs no restart: the hook asks
+            // the config afresh on every keystroke.
             break;
         case IDM_KB_REMATCH: {
             KeyCaptureResult r = captureKey(

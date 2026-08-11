@@ -83,7 +83,12 @@ private:
 // ------------------------------------------------------------------- hook
 class BlockingHook {
 public:
-    using ShouldBlock = std::function<bool(const std::string& devicePath)>;
+    // Asked once per keystroke: should this key, from this device, be taken
+    // away from other programs? The vk is part of the question because a
+    // keyboard may be configured to give up only the keys that run macros
+    // and keep typing with the rest.
+    using ShouldBlock =
+        std::function<bool(const std::string& devicePath, int vk)>;
 
     BlockingHook() = default;
     ~BlockingHook();

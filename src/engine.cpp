@@ -469,9 +469,9 @@ void Engine::start() {
     if (anyBlocking) {
         try {
             hook_.start(&listener_,
-                        [this](const std::string& path) {
+                        [this](const std::string& path, int vk) {
                             std::lock_guard<std::mutex> lk(cfgMu_);
-                            return cfg_.blockedForDevice(path);
+                            return cfg_.blockedForKey(path, vk);
                         });
         } catch (const std::exception& e) {
             listener_.stop();
@@ -489,7 +489,9 @@ void Engine::start() {
             if (!b.steps.empty()) ++bound;
         log("  " + k.alias + " - " + std::to_string(bound) +
             (bound == 1 ? " macro, " : " macros, ") +
-            (k.block ? "keys blocked from apps" : "keys also type normally"));
+            (!k.block          ? "keys also type normally"
+             : k.blockAllKeys  ? "every key blocked from apps"
+                               : "only macro keys blocked, the rest still type"));
     }
 }
 

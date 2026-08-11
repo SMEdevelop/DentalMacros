@@ -334,6 +334,7 @@ public:
         kb.alias = config->uniqueAlias(suggested);
         kb.match = match;
         kb.block = config->settings.blockByDefault;
+        kb.blockAllKeys = config->settings.blockAllKeysByDefault;
         kb.deck = "auto";
         config->keyboards.push_back(kb);
         config->dirty = true;
@@ -1072,7 +1073,20 @@ public:
         blockDefault_ = makeCheck(
             pane_, "New keyboards block their keys from apps by default", 20, y,
             420, 24, ID_FIRST_USER + 3, settings.blockByDefault);
-        y += 40;
+        y += 26;
+        blockAllDefault_ = makeCheck(
+            pane_, "...and turn off all their normal input, not just macro keys",
+            36, y, 420, 24, ID_FIRST_USER + 7,
+            settings.blockAllKeysByDefault);
+        y += 26;
+        makeLabel(pane_,
+                  "Untick the second one if your macro keys are F13-F24 or "
+                  "extra keys on a keyboard you also type on - then only the "
+                  "keys carrying a macro stop typing. Both are per-keyboard "
+                  "afterwards: right-click a keyboard in the list to change "
+                  "just that one.",
+                  20, y, 420, 52, -1, true);
+        y += 62;
 
         makeLabel(pane_, "Image matching", 20, y, 300, 20, -1, false, true);
         y += 26;
@@ -1108,6 +1122,7 @@ public:
         settings.startMinimized = isChecked(startMin_);
         settings.minimizeToTray = isChecked(toTray_);
         settings.blockByDefault = isChecked(blockDefault_);
+        settings.blockAllKeysByDefault = isChecked(blockAllDefault_);
 
         const std::string combo = trim(getText(hotkey_));
         if (!combo.empty()) {
@@ -1150,8 +1165,8 @@ public:
 private:
     HWND pane_ = nullptr;
     HWND startEngine_ = nullptr, startMin_ = nullptr, toTray_ = nullptr,
-         blockDefault_ = nullptr, confidence_ = nullptr, runAtLogin_ = nullptr,
-         hotkey_ = nullptr;
+         blockDefault_ = nullptr, blockAllDefault_ = nullptr,
+         confidence_ = nullptr, runAtLogin_ = nullptr, hotkey_ = nullptr;
 };
 
 }  // namespace

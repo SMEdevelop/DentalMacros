@@ -125,7 +125,7 @@ To check everything works on your machine:
 run_tests.bat
 ```
 
-This runs 187 checks covering JSON, the config model, the step engine, key
+This runs 216 checks covering JSON, the config model, the step engine, key
 tables, deck presets, window management, the image matcher, config recovery,
 the recorded-click workflow, and importing a macrokb `macros.yaml`. The engine
 tests only run steps with no side effects — nothing is typed, clicked or
@@ -140,8 +140,11 @@ launched, and the window tests drive a throwaway window of their own.
 3. Pick your macro keyboard from the list and give it a name.
    - Not sure which entry is which? Click **Identify by pressing a key** and
      press a key on the pad — the matching entry highlights itself.
-   - ⚠️ Pick the *spare* keyboard. Whichever you choose will stop typing into
-     your apps while MacroDeck is listening.
+   - By default, whichever keyboard you choose stops typing into your apps
+     while MacroDeck is listening — so pick the *spare* one. If you'd rather
+     put macros on F13–F24 or extra keys of the keyboard you actually type on,
+     see [Keeping the rest of the keyboard](#keeping-the-rest-of-the-keyboard)
+     below; you can give up only the macro keys instead.
 4. Choose a deck layout (top of the deck area). If you're using a numeric
    keypad, pick **Numeric keypad** and you get a keypad-shaped grid.
 5. Click a key on the grid, then **Add step** — or drag an action straight
@@ -153,6 +156,28 @@ keys fire macros, and — for any keyboard with *Block these keys from apps*
 ticked — they stop typing into your apps. Everything else in the app works
 whether or not it is listening; you can build and test macros with it off. The
 line under the title always says which state you are in and what it means.
+
+### Keeping the rest of the keyboard
+
+Right-click a keyboard in the sidebar and you get two related options:
+
+| Option | What it does |
+|---|---|
+| **Block these keys from apps** | Whether this keyboard gives up *anything*. Untick it and macro keys fire *and* type — useful for testing. |
+| **Turn off all normal input, not just macro keys** | Only matters when the first is ticked. **Ticked** (the default): the whole keyboard goes silent — right for a dedicated macro pad. **Unticked**: only the keys that actually run a macro stop typing; every other key on that keyboard works normally. |
+
+Untick the second one when your macro keys are F13–F24, extra keys, or
+anything else on a keyboard you also type on. You keep the whole keyboard and
+lose only the keys you deliberately bound.
+
+A key with a tile but no steps yet is *not* treated as a macro key, so a
+half-built binding never silently swallows a key.
+
+The sidebar shows a small badge for anything other than the default: `pass`
+when the keyboard gives up nothing, `some` when it gives up only its macro
+keys. New keyboards take their starting values from **Settings → Macro
+keyboards**, and this option applies the moment you change it — unlike the
+first one, it needs no stop-and-start.
 
 Settings save themselves as you work, and the previous day's file is kept in
 `backups\` the first time each run saves.
@@ -399,6 +424,17 @@ administrator if you need that.
 right-click it in the sidebar and check *Block these keys from apps*. Stop and
 start listening afterwards.
 
+**Only *some* keys on my macro keyboard type through.** That is
+*Turn off all normal input, not just macro keys* being unticked, which is
+exactly what it does: keys carrying a macro are taken, the rest keep typing.
+Tick it to silence the whole keyboard. Note a tile with no steps counts as
+"no macro", so finish the binding and the key stops typing.
+
+**I lost my whole keyboard.** Press Ctrl+Alt+Shift+M — that stops listening
+from anywhere in Windows and hands every key straight back. Then either pick a
+different keyboard, or untick *Turn off all normal input, not just macro keys*
+so only your bound keys are taken.
+
 **A key occasionally types through anyway.** Blocking correlates the hook with
 Raw Input inside a 30 ms window. In the rare case that correlation fails the
 key is deliberately passed through — a key that types when it shouldn't is
@@ -438,7 +474,7 @@ src/
   util.cpp        strings, paths, files
   app.ico         generated - see tools/make_icon.cpp
 tests/
-  selftest.cpp        187 checks over every non-UI subsystem
+  selftest.cpp        216 checks over every non-UI subsystem
   render_preview.cpp  renders the icons and tiles to a PNG
 tools/
   make_icon.cpp       exports src\app.ico from theme.cpp's drawAppIcon()

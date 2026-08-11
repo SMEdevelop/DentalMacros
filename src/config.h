@@ -74,6 +74,17 @@ struct Keyboard {
     std::string alias;
     std::string match;    // substring of the Raw Input device path
     bool block = true;
+    // Only consulted when block is true.
+    //
+    //   true  - every key on this keyboard is taken away from other programs.
+    //           Right for a spare pad dedicated to macros.
+    //   false - only the keys that actually run a macro are taken; everything
+    //           else types normally. Right when the macro keys are F13-F24 or
+    //           extra keys on a keyboard you also type on.
+    //
+    // Defaults to true so that configs written before this option existed keep
+    // behaving exactly as they did.
+    bool blockAllKeys = true;
     std::string deck = "auto";
     std::vector<Binding> bindings;
 
@@ -84,6 +95,8 @@ struct Keyboard {
 
 struct Settings {
     bool blockByDefault = true;
+    // What blockAllKeys a newly added keyboard starts with.
+    bool blockAllKeysByDefault = true;
     double matchConfidence = 0.85;
     std::string layoutsDir = "layouts";
     bool startEngineOnLaunch = false;
@@ -135,7 +148,13 @@ struct Config {
 
     // Which configured keyboard (if any) a device path belongs to.
     const Keyboard* keyboardForDevice(const std::string& devicePath) const;
+    // True if this device blocks anything at all. Used to decide whether the
+    // low-level hook is worth installing; it does NOT mean every key is taken.
     bool blockedForDevice(const std::string& devicePath) const;
+    // True if this exact keystroke should be taken away from other programs.
+    // This is the one the hook asks, and the only one that understands
+    // blockAllKeys: with it off, only a key carrying a macro is taken.
+    bool blockedForKey(const std::string& devicePath, int vk) const;
 };
 
 // Does a stored match string select this device path?

@@ -60,8 +60,18 @@ runs items placed directly in it, and it will not look inside a subfolder.)
 Plug in the spare keyboard or numpad you want to dedicate to macros, click
 "Scan for keyboards", and pick it from the list.
 
-Careful: whichever keyboard you pick will stop typing into your programs
-while MacroDeck is listening. Pick the spare one, not the one you type on.
+Careful: by default, whichever keyboard you pick will stop typing into your
+programs while MacroDeck is listening. Pick the spare one, not the one you
+type on.
+
+If you would rather put macros on F13-F24 or the extra keys of the keyboard
+you actually type on, you do not have to give up the whole thing. Right-click
+the keyboard in the list and untick:
+
+    [ ] Turn off all normal input, not just macro keys
+
+With that unticked, only the keys you bound to a macro stop typing - every
+other key on that keyboard carries on as normal.
 
 If you ever get stuck with a keyboard that has gone silent, press
 Ctrl+Alt+Shift+M - that stops MacroDeck listening from anywhere in Windows

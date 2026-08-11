@@ -369,6 +369,8 @@ void Config::load(const std::string& file) {
 
     if (const js::Value* s = root.find("settings")) {
         settings.blockByDefault = s->boolean("blockMacroKeyboards", true);
+        settings.blockAllKeysByDefault =
+            s->boolean("blockAllKeysByDefault", true);
         settings.matchConfidence = s->num("matchConfidence", kDefaultConfidence);
         settings.layoutsDir = s->str("layoutsDir", "layouts");
         settings.startEngineOnLaunch = s->boolean("startEngineOnLaunch", false);
@@ -392,6 +394,9 @@ void Config::load(const std::string& file) {
                 kb.alias = k.str("alias");
                 kb.match = k.str("match");
                 kb.block = k.boolean("block", settings.blockByDefault);
+                // Absent in files written before this option existed, and
+                // true is what those files meant.
+                kb.blockAllKeys = k.boolean("blockAllKeys", true);
                 kb.deck = k.str("deck", "auto");
                 if (kb.alias.empty()) continue;
                 if (const js::Value* bs = k.find("bindings")) {
@@ -446,6 +451,7 @@ std::string Config::toJson() const {
 
     js::Value s = js::Value::object();
     s["blockMacroKeyboards"] = settings.blockByDefault;
+    s["blockAllKeysByDefault"] = settings.blockAllKeysByDefault;
     s["matchConfidence"] = settings.matchConfidence;
     s["layoutsDir"] = settings.layoutsDir;
     s["startEngineOnLaunch"] = settings.startEngineOnLaunch;
@@ -460,6 +466,7 @@ std::string Config::toJson() const {
         k["alias"] = kb.alias;
         k["match"] = kb.match;
         k["block"] = kb.block;
+        k["blockAllKeys"] = kb.blockAllKeys;
         k["deck"] = kb.deck;
         js::Value bs = js::Value::array();
         for (const Binding& b : kb.bindings) {
@@ -562,6 +569,19 @@ const Keyboard* Config::keyboardForDevice(const std::string& devicePath) const {
 bool Config::blockedForDevice(const std::string& devicePath) const {
     const Keyboard* k = keyboardForDevice(devicePath);
     return k && k->block;
+}
+
+bool Config::blockedForKey(const std::string& devicePath, int vk) const {
+    const Keyboard* k = keyboardForDevice(devicePath);
+    if (!k || !k->block) return false;
+    if (k->blockAllKeys) return true;
+
+    // Selective mode: take only the keys that actually run something. A
+    // binding with no steps is a half-finished tile, not a macro - taking its
+    // key would silence a key for no benefit, which is precisely the
+    // complaint this option exists to fix.
+    const Binding* b = k->findKey(keys::vkName(vk));
+    return b && !b->steps.empty();
 }
 
 bool specMatches(const std::string& match, const std::string& devicePath) {

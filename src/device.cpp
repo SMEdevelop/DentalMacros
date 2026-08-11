@@ -345,7 +345,8 @@ LRESULT CALLBACK BlockingHook::hookProc(int code, WPARAM w, LPARAM l) {
                     (int)info->vkCode, down, state.timeoutMs);
                 // If correlation fails we deliberately pass the key through:
                 // a dropped keystroke is far worse than an unblocked one.
-                if (!path.empty() && state.pred(path)) return 1;
+                if (!path.empty() && state.pred(path, (int)info->vkCode))
+                    return 1;
             }
         }
     }
