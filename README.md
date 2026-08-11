@@ -208,9 +208,16 @@ key fires, so you can see at a glance that the pad is being read correctly.
 **Right — the inspector.** The label, icon and colour for the selected key,
 plus its list of steps with add / edit / remove / reorder and **Test run**.
 **Record clicks...** builds a click sequence for you: say how many clicks,
-then for each one click the spot on screen you mean (the small status window
-stays out of the way) and say how long to wait afterwards. It adds a `click`
-step per click and a `sleep` step for each delay above 0ms.
+then for each one **right-click** the spot on screen you mean (the small
+status window stays out of the way) and say how long to wait afterwards. It
+adds a `click` step per click and a `sleep` step for each delay above 0ms.
+
+Right-click, not left, so that **left click keeps working normally while you
+record**. You can open the tab, menu or dialog the recorded click needs to
+land on, then right-click the target. The right click is swallowed, so no
+context menu opens over the thing you are recording — which does mean you
+can't open a context menu with the mouse mid-recording; use the **Menu** key
+or **Shift+F10** if the spot you want is inside one.
 
 It also **locks the sequence to the window you clicked first**. See
 [Why recorded clicks keep working](#why-recorded-clicks-keep-working) — this

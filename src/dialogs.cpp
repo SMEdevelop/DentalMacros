@@ -158,6 +158,20 @@ constexpr UINT WM_CLICK_ARRIVED = WM_APP + 22;
 class ClickCaptureDialog;
 ClickCaptureDialog* g_activeClickCapture = nullptr;
 
+// A right click is the recording gesture, so both halves of it are eaten: the
+// down so nothing reacts to it, and the up because Windows raises
+// WM_CONTEXTMENU from the button-up - let that through and a context menu
+// opens over the very thing being recorded.
+//
+// The position is taken on the UP, not the down. Recording on the down means
+// posting to the dialog, which uninstalls the hook as soon as it handles the
+// message - long before a human finishes releasing the button. The up would
+// then arrive with no hook left to eat it, and the menu would appear anyway.
+//
+// Only ever touched from the hook, which runs on the thread that installed
+// it: the same thread this modal dialog lives on.
+bool g_swallowRightUp = false;
+
 class ClickCaptureDialog : public Modal {
 public:
     std::string prompt;
@@ -168,12 +182,13 @@ public:
     ~ClickCaptureDialog() override { uninstallHook(); }
 
     void build() override {
-        makeLabel(hwnd_, prompt, 20, 20, 400, 64, -1, false, true);
-        status_ = makeLabel(hwnd_, "Waiting for a click...", 20, 92, 400, 22,
-                            -1, true);
+        makeLabel(hwnd_, prompt, 20, 20, 400, 132, -1, false, true);
+        status_ = makeLabel(hwnd_, "Waiting for a right-click...", 20, 160, 400,
+                            22, -1, true);
         layoutFooter(ID_CANCEL, "Cancel", ID_CANCEL, "");
 
         g_activeClickCapture = this;
+        g_swallowRightUp = false;
         hook_ = SetWindowsHookExW(WH_MOUSE_LL, &ClickCaptureDialog::mouseProc,
                                   GetModuleHandleW(nullptr), 0);
         if (!hook_) {
@@ -202,20 +217,37 @@ private:
             hook_ = nullptr;
         }
         if (g_activeClickCapture == this) g_activeClickCapture = nullptr;
+        // Never leave this armed: with the hook gone it would do nothing, and
+        // if another recording started it would eat that one's first release.
+        g_swallowRightUp = false;
     }
 
     static LRESULT CALLBACK mouseProc(int code, WPARAM wp, LPARAM lp) {
-        if (code == HC_ACTION && wp == WM_LBUTTONDOWN && g_activeClickCapture) {
-            ClickCaptureDialog* self = g_activeClickCapture;
-            g_activeClickCapture = nullptr;   // one-shot: ignore further clicks
-            self->pending_ = ((MSLLHOOKSTRUCT*)lp)->pt;
-            // Grab the window handle here, at the instant of the click. By the
-            // time the posted message is handled a menu may have closed or the
-            // z-order changed, and WindowFromPoint would answer about a
-            // different window. Anything slower than this - the process name,
-            // the rectangle - is resolved off the hook.
-            self->pendingWnd_ = WindowFromPoint(self->pending_);
-            PostMessageW(self->hwnd_, WM_CLICK_ARRIVED, 0, 0);
+        if (code != HC_ACTION) return CallNextHookEx(nullptr, code, wp, lp);
+
+        // Left click is deliberately untouched throughout recording, so the
+        // target app can be driven normally - opening the tab, menu or dialog
+        // the recorded click needs to land on. Only the right click is ours.
+        if (wp == WM_RBUTTONDOWN && g_activeClickCapture) {
+            g_swallowRightUp = true;
+            return 1;
+        }
+        if (wp == WM_RBUTTONUP && g_swallowRightUp) {
+            g_swallowRightUp = false;
+            if (ClickCaptureDialog* self = g_activeClickCapture) {
+                g_activeClickCapture = nullptr;   // one-shot
+                self->pending_ = ((MSLLHOOKSTRUCT*)lp)->pt;
+                // Resolve the window here, at the instant of the click. By the
+                // time the posted message is handled a menu may have closed or
+                // the z-order changed, and WindowFromPoint would answer about a
+                // different window. Anything slower than this - the process
+                // name, the rectangle - is resolved off the hook.
+                self->pendingWnd_ = WindowFromPoint(self->pending_);
+                PostMessageW(self->hwnd_, WM_CLICK_ARRIVED, 0, 0);
+            }
+            // Eaten even when the dialog has gone in between, so a cancelled
+            // recording cannot leave a context menu behind.
+            return 1;
         }
         return CallNextHookEx(nullptr, code, wp, lp);
     }
@@ -231,7 +263,7 @@ private:
 bool captureClick(HWND parent, const std::string& prompt, ClickCapture& out) {
     ClickCaptureDialog d;
     d.prompt = prompt;
-    d.run(parent, "Recording a click", 440, 160);
+    d.run(parent, "Recording a click", 440, 232);
     if (!d.ok) return false;
 
     out = ClickCapture{};

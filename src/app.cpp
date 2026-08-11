@@ -1347,11 +1347,12 @@ void MainWindow::recordClicks() {
     std::vector<cfg::Step> recorded;
     for (int i = 1; i <= (int)count; ++i) {
         ClickCapture cc;
-        std::string prompt = "Click " + std::to_string(i) + " of " +
-                             std::to_string(count) +
-                             ":\n\nMove to where you want this click, then "
-                             "click the left mouse button. Esc stops "
-                             "recording and keeps what's captured so far.";
+        std::string prompt =
+            "Click " + std::to_string(i) + " of " + std::to_string(count) +
+            ":\n\nMove to where you want this click, then press the RIGHT "
+            "mouse button to record that spot.\n\nLeft click still works "
+            "normally, so you can open whatever the click needs to land on "
+            "first. Esc stops recording and keeps what's captured so far.";
         if (!captureClick(hwnd_, prompt, cc)) break;
 
         // As in the AutoHotkey original: the window is taken from the first

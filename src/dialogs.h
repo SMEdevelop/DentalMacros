@@ -38,9 +38,15 @@ struct ClickCapture {
     bool maximized = false;
 };
 
-// Wait for a physical left mouse click anywhere on screen and report where it
+// Wait for a physical RIGHT mouse click anywhere on screen and report where it
 // landed. Used to record a click's position while the target stays visible
 // (the recording status window is small and does not cover the screen).
+//
+// Right, not left, so that left click keeps working normally while recording:
+// the target app can be clicked through to the tab, menu or dialog the
+// recorded click needs to land on. Both halves of the right click are
+// swallowed, so no context menu opens over the thing being recorded. The
+// position recorded is where the button came back up.
 bool captureClick(HWND parent, const std::string& prompt, ClickCapture& out);
 
 // Build or edit one macro step.
