@@ -534,17 +534,37 @@ set MACRODECK_SIGN_PASS=...
 
 rem or, for a hardware token or a cloud signing service, a command that
 rem takes the file to sign as its only argument:
-set MACRODECK_SIGN_CMD=powershell -File C:\path\to\sign.ps1
+set MACRODECK_SIGN_CMD=powershell -File packaging\sign.ps1
 ```
+
+Both the exe and the installer get signed, and both are timestamped so the
+signature outlives the certificate. A signing command that fails stops
+packaging outright rather than quietly producing an unsigned release.
 
 This matters more than the packaging does. Unsigned, everyone you send this to
 meets SmartScreen's *"Windows protected your PC"* box and has to click
 **More info → Run anyway**, and Smart App Control may refuse the file outright.
 A macro tool that installs a low-level keyboard hook is also exactly the shape
-antivirus heuristics flag. Since 2023 code-signing keys have to live on
-FIPS-validated hardware, so a traditional certificate means a physical token;
-cloud services such as Azure Trusted Signing avoid that and cost far less than
-the old certificates did.
+antivirus heuristics flag.
+
+**Getting a certificate.** Since 2023 code-signing keys have to live on
+FIPS-validated hardware, so a traditional certificate means a physical USB
+token in the post. [Azure Artifact Signing](https://azure.microsoft.com/en-us/products/artifact-signing)
+(formerly Trusted Signing) avoids that — roughly $10/month, no token, and
+there is an individual-developer path if you aren't signing as a registered
+company. `packaging\sign.ps1` is ready to drive it: set
+`TRUSTED_SIGNING_ENDPOINT`, `TRUSTED_SIGNING_ACCOUNT` and
+`TRUSTED_SIGNING_PROFILE`, give it Azure credentials, and point
+`MACRODECK_SIGN_CMD` at it. The script's own header has the full setup.
+
+**Don't buy EV expecting instant trust.** Microsoft's
+[SmartScreen documentation](https://learn.microsoft.com/en-us/windows/apps/package-and-deploy/smartscreen-reputation)
+is explicit that EV certificates no longer grant reputation by default, and
+that "paying a premium for EV solely to avoid SmartScreen warnings is no
+longer justified." Signing of any kind does **not** silence SmartScreen on day
+one; reputation accrues with download volume. What signing buys is a named
+publisher, and reputation that carries from one release to the next instead of
+resetting on every rebuild.
 
 ---
 
