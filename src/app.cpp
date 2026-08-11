@@ -1322,29 +1322,43 @@ void MainWindow::recordClicks() {
         return;
     }
 
+    // The window the first click landed in. Recorded clicks are absolute
+    // screen coordinates, so they only land correctly if that window is back
+    // at the size and position it had while recording - which is what the
+    // window_prepare / window_release pair around the clicks arranges.
+    ClickCapture target;
+    bool haveTarget = false;
+
     std::vector<cfg::Step> recorded;
     for (int i = 1; i <= (int)count; ++i) {
-        int x = 0, y = 0;
+        ClickCapture cc;
         std::string prompt = "Click " + std::to_string(i) + " of " +
                              std::to_string(count) +
                              ":\n\nMove to where you want this click, then "
                              "click the left mouse button. Esc stops "
                              "recording and keeps what's captured so far.";
-        if (!captureClick(hwnd_, prompt, x, y)) break;
+        if (!captureClick(hwnd_, prompt, cc)) break;
+
+        // As in the AutoHotkey original: the window is taken from the first
+        // click only. Later clicks are expected to be inside it.
+        if (i == 1 && cc.hasWindow) {
+            target = cc;
+            haveTarget = true;
+        }
 
         cfg::Step click;
         click.action = "click";
         click.params = js::Value::object();
-        click.params["x"] = x;
-        click.params["y"] = y;
+        click.params["x"] = cc.x;
+        click.params["y"] = cc.y;
         recorded.push_back(click);
 
-        if (i == (int)count) break;
-
-        std::string delayText = "500";
+        std::string delayText = "200";
         if (!askText(hwnd_, "Record clicks",
-                     "Delay before the next click, in milliseconds:",
-                     delayText))
+                     "Delay after click " + std::to_string(i) +
+                         ", in milliseconds:",
+                     delayText,
+                     "200 = fast    500 = half a second    1500 = slow dialog"))
             break;
         char* dend = nullptr;
         double ms = strtod(delayText.c_str(), &dend);
@@ -1364,12 +1378,47 @@ void MainWindow::recordClicks() {
 
     if (recorded.empty()) return;
 
+    if (haveTarget) {
+        cfg::Step prep;
+        prep.action = "window_prepare";
+        prep.params = js::Value::object();
+        prep.params["class"] = target.cls;
+        if (!target.exe.empty()) prep.params["exe"] = target.exe;
+        prep.params["x"] = target.winX;
+        prep.params["y"] = target.winY;
+        prep.params["w"] = target.winW;
+        prep.params["h"] = target.winH;
+        recorded.insert(recorded.begin(), prep);
+
+        cfg::Step release;
+        release.action = "window_release";
+        release.params = js::Value::object();
+        recorded.push_back(release);
+    }
+
     for (auto& s : recorded) b->steps.push_back(s);
     modelChanged();
     SendMessageW(stepList_, LB_SETCURSEL, (WPARAM)(b->steps.size() - 1), 0);
     refreshInspector();
+
     pushLog("Recorded " + std::to_string(recorded.size()) + " step(s) into \"" +
             b->displayTitle() + "\".");
+    if (haveTarget) {
+        pushLog("  locked to " + target.cls +
+                (target.exe.empty() ? "" : " (" + target.exe + ")") + " at " +
+                std::to_string(target.winX) + "," +
+                std::to_string(target.winY) + " " +
+                std::to_string(target.winW) + "x" +
+                std::to_string(target.winH) +
+                " - the clicks only land correctly there.");
+        if (target.maximized)
+            pushLog("  it was maximised; it will be un-maximised to that exact "
+                    "size, then put back afterwards.");
+    } else {
+        pushLog("  no window was detected under the first click, so the clicks "
+                "are not locked to one - they will go wherever those screen "
+                "positions happen to be.");
+    }
 }
 
 void MainWindow::testRun() {

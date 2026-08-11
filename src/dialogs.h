@@ -24,10 +24,24 @@ KeyCaptureResult captureKey(HWND parent, const std::string& title,
 // Scan attached keyboards and add one to the config. Returns the new alias.
 bool addKeyboardDialog(HWND parent, cfg::Config& config, std::string& newAlias);
 
+// One recorded click: where it landed, and the top-level window it landed in.
+// The window matters because the position is an absolute screen coordinate,
+// which only means anything if that window is where it was at record time.
+struct ClickCapture {
+    int x = 0, y = 0;              // screen coordinates
+
+    bool hasWindow = false;
+    std::string cls;               // window class - the stable identifier
+    std::string exe;
+    std::string title;
+    int winX = 0, winY = 0, winW = 0, winH = 0;
+    bool maximized = false;
+};
+
 // Wait for a physical left mouse click anywhere on screen and report where it
 // landed. Used to record a click's position while the target stays visible
 // (the recording status window is small and does not cover the screen).
-bool captureClick(HWND parent, const std::string& prompt, int& x, int& y);
+bool captureClick(HWND parent, const std::string& prompt, ClickCapture& out);
 
 // Build or edit one macro step.
 bool editStepDialog(HWND parent, cfg::Step& step, const cfg::Settings& settings);

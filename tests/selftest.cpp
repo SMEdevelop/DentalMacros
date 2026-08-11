@@ -566,26 +566,44 @@ static void testWindows() {
     auto wins = win::listWindows();
     ok(!wins.empty(), "lists open windows (" + std::to_string(wins.size()) + ")");
 
-    int withExe = 0, withTitle = 0;
+    int withExe = 0, withTitle = 0, withClass = 0;
     for (const auto& w : wins) {
         if (!w.exe.empty()) ++withExe;
         if (!w.title.empty()) ++withTitle;
+        if (!w.cls.empty()) ++withClass;
     }
     ok(withExe > 0, "resolves process names (" + std::to_string(withExe) + ")");
     ok(withTitle > 0, "reads window titles");
+    ok(withClass == (int)wins.size(),
+       "every window reports a class (" + std::to_string(withClass) + "/" +
+           std::to_string(wins.size()) + ")");
 
+    win::WindowInfo scratch;
     if (!wins.empty()) {
-        std::printf("         (e.g. %s - \"%s\" %dx%d)\n", wins[0].exe.c_str(),
-                    wins[0].title.substr(0, 40).c_str(), wins[0].w, wins[0].h);
+        std::printf("         (e.g. %s [%s] - \"%s\" %dx%d)\n",
+                    wins[0].exe.c_str(), wins[0].cls.c_str(),
+                    wins[0].title.substr(0, 32).c_str(), wins[0].w, wins[0].h);
         win::WindowInfo found;
-        bool byExe = win::findWindow("", wins[0].exe, found);
+        bool byExe = win::findWindow("", wins[0].exe, "", found);
         ok(byExe, "finds a window by program name");
         std::string part = wins[0].title.substr(0, std::min<size_t>(6, wins[0].title.size()));
         if (!part.empty())
-            ok(win::findWindow(part, "", found), "finds a window by title");
+            ok(win::findWindow(part, "", "", found), "finds a window by title");
+        ok(win::findWindow("", "", wins[0].cls, found) &&
+               found.cls == wins[0].cls,
+           "finds a window by class");
+        ok(!win::findWindow("", "", "NoSuchWindowClassZZZ", found),
+           "does not match an unknown class");
+
+        // describeWindow must agree with what the enumeration reported.
+        win::WindowInfo described;
+        ok(win::describeWindow(wins[0].hwnd, described) &&
+               described.cls == wins[0].cls && described.exe == wins[0].exe,
+           "describes a specific window handle");
     }
-    ok(!win::findWindow("no such window anywhere zzz", "", *(new win::WindowInfo())),
+    ok(!win::findWindow("no such window anywhere zzz", "", "", scratch),
        "reports when nothing matches");
+    ok(!win::describeWindow(nullptr, scratch), "rejects a null window handle");
 
     std::string err;
     ok(win::saveLayout("selftest", "layouts", &err), "saves a layout", err);
@@ -862,6 +880,239 @@ static void testEngine() {
     }
 }
 
+// --------------------------------------------- recorded-click workflow
+// The point of window_prepare / window_release: a recorded click is an
+// absolute screen coordinate, so it only lands where it was recorded if the
+// target window is put back to the size and position it had at record time.
+// This drives that against a real window and checks it actually moves, and
+// actually goes back.
+namespace {
+
+const wchar_t* kTestWndClass = L"MacroDeckSelfTestWindow";
+
+void pump(int ms) {
+    const DWORD until = GetTickCount() + (DWORD)ms;
+    MSG m;
+    while (GetTickCount() < until) {
+        while (PeekMessageW(&m, nullptr, 0, 0, PM_REMOVE)) {
+            TranslateMessage(&m);
+            DispatchMessageW(&m);
+        }
+        Sleep(5);
+    }
+}
+
+HWND makeTestWindow() {
+    static bool registered = false;
+    if (!registered) {
+        WNDCLASSEXW wc{};
+        wc.cbSize = sizeof(wc);
+        wc.lpfnWndProc = DefWindowProcW;
+        wc.hInstance = GetModuleHandleW(nullptr);
+        wc.lpszClassName = kTestWndClass;
+        wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+        wc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1);
+        if (!RegisterClassExW(&wc)) return nullptr;
+        registered = true;
+    }
+    HWND h = CreateWindowExW(0, kTestWndClass, L"MacroDeck self-test window",
+                             WS_OVERLAPPEDWINDOW, 100, 100, 400, 300, nullptr,
+                             nullptr, GetModuleHandleW(nullptr), nullptr);
+    if (h) {
+        ShowWindow(h, SW_SHOWNOACTIVATE);
+        pump(120);
+    }
+    return h;
+}
+
+RECT rectOf(HWND h) {
+    RECT r{};
+    GetWindowRect(h, &r);
+    return r;
+}
+
+}  // namespace
+
+static void testClickWorkflow() {
+    section("Recorded-click workflow");
+
+    // --- the actions exist and carry the fields the recorder writes
+    const cfg::ActionDef* prep = cfg::findAction("window_prepare");
+    const cfg::ActionDef* rel = cfg::findAction("window_release");
+    ok(prep != nullptr, "window_prepare is a known action");
+    ok(rel != nullptr, "window_release is a known action");
+    if (prep) {
+        auto hasField = [&](const char* k) {
+            for (const auto& f : prep->fields)
+                if (std::string(f.key) == k) return true;
+            return false;
+        };
+        ok(hasField("class") && hasField("x") && hasField("y") &&
+               hasField("w") && hasField("h"),
+           "window_prepare takes a class and a rectangle");
+        ok(hasField("block_input") && hasField("settle_ms") &&
+               hasField("activate_timeout"),
+           "window_prepare takes the timing and input-blocking options");
+    }
+
+    HWND h = makeTestWindow();
+    if (!h) {
+        std::printf("  [skip] could not create a test window\n");
+        return;
+    }
+    const RECT before = rectOf(h);
+    ok(before.right - before.left > 0, "test window is on screen");
+
+    eng::Engine e;
+    std::vector<std::string> logged;
+    e.setLog([&](const std::string& m) { logged.push_back(m); });
+
+    auto prepareStep = [&](int x, int y, int w, int ht) {
+        cfg::Step s;
+        s.action = "window_prepare";
+        s.params = js::Value::object();
+        s.params["class"] = narrow(kTestWndClass);
+        s.params["x"] = x;
+        s.params["y"] = y;
+        s.params["w"] = w;
+        s.params["h"] = ht;
+        // Never block input from the test suite: if anything below threw
+        // before the release, the machine's keyboard and mouse would be dead.
+        s.params["block_input"] = false;
+        s.params["settle_ms"] = 0;
+        s.params["activate_timeout"] = 0.2;
+        return s;
+    };
+    cfg::Step releaseStep;
+    releaseStep.action = "window_release";
+    releaseStep.params = js::Value::object();
+    releaseStep.params["unblock_input"] = false;
+
+    // --- prepare moves the window to the recorded rectangle
+    const int wantX = before.left + 60, wantY = before.top + 40;
+    const int wantW = 520, wantH = 360;
+    bool threw = false;
+    try { e.runSequence({prepareStep(wantX, wantY, wantW, wantH)}); }
+    catch (const std::exception& ex) { threw = true; std::printf("  (%s)\n", ex.what()); }
+    ok(!threw, "window_prepare runs against a real window");
+    pump(80);
+
+    RECT moved = rectOf(h);
+    ok(moved.left == wantX && moved.top == wantY,
+       "moves the window to the recorded position",
+       std::to_string(moved.left) + "," + std::to_string(moved.top) +
+           " wanted " + std::to_string(wantX) + "," + std::to_string(wantY));
+    ok(moved.right - moved.left == wantW && moved.bottom - moved.top == wantH,
+       "resizes the window to the recorded size",
+       std::to_string(moved.right - moved.left) + "x" +
+           std::to_string(moved.bottom - moved.top));
+
+    // --- release puts it back exactly where it was
+    try { e.runSequence({releaseStep}); }
+    catch (const std::exception&) { threw = true; }
+    pump(80);
+    RECT after = rectOf(h);
+    ok(after.left == before.left && after.top == before.top &&
+           after.right == before.right && after.bottom == before.bottom,
+       "window_release restores the original position and size",
+       std::to_string(after.left) + "," + std::to_string(after.top) + " " +
+           std::to_string(after.right - after.left) + "x" +
+           std::to_string(after.bottom - after.top));
+
+    // --- a maximised window is un-maximised to the recorded size, then
+    //     put back to maximised afterwards
+    ShowWindow(h, SW_MAXIMIZE);
+    pump(120);
+    ok(IsZoomed(h) != 0, "test window is maximised");
+    try { e.runSequence({prepareStep(wantX, wantY, wantW, wantH)}); }
+    catch (const std::exception&) {}
+    pump(80);
+    ok(IsZoomed(h) == 0, "un-maximises before moving");
+    RECT m2 = rectOf(h);
+    ok(m2.right - m2.left == wantW && m2.bottom - m2.top == wantH,
+       "reaches the recorded size from maximised");
+    try { e.runSequence({releaseStep}); }
+    catch (const std::exception&) {}
+    pump(120);
+    ok(IsZoomed(h) != 0, "restores the maximised state afterwards");
+    ShowWindow(h, SW_RESTORE);
+    pump(60);
+
+    // --- a window that is not there is a clear failure, not a silent no-op
+    {
+        cfg::Step missing = prepareStep(0, 0, 100, 100);
+        missing.params["class"] = "NoSuchWindowClassZZZ";
+        std::string msg;
+        threw = false;
+        try { e.runSequence({missing}); }
+        catch (const std::exception& ex) { threw = true; msg = ex.what(); }
+        ok(threw && msg.find("class") != std::string::npos,
+           "a missing target window fails loudly", msg);
+    }
+
+    // --- the whole recorded shape survives a save/load round trip
+    {
+        const std::string p = appPath("selftest-clicks.json");
+        cfg::Config c;
+        c.path = p;
+        cfg::Keyboard kb;
+        kb.alias = "Pad";
+        kb.match = "VID_1&PID_2";
+        cfg::Binding b;
+        b.key = "num1";
+        b.steps.push_back(prepareStep(wantX, wantY, wantW, wantH));
+        cfg::Step click;
+        click.action = "click";
+        click.params = js::Value::object();
+        click.params["x"] = 640;
+        click.params["y"] = 480;
+        b.steps.push_back(click);
+        cfg::Step wait;
+        wait.action = "sleep";
+        wait.params = js::Value::object();
+        wait.params["seconds"] = 0.2;
+        b.steps.push_back(wait);
+        b.steps.push_back(releaseStep);
+        kb.bindings.push_back(b);
+        c.keyboards.push_back(kb);
+
+        std::string err;
+        ok(c.save(&err), "saves a recorded click sequence", err);
+        cfg::Config back;
+        back.load(p);
+        const cfg::Binding* lb =
+            back.keyboards.empty() ? nullptr : back.keyboards[0].findKey("num1");
+        ok(lb && lb->steps.size() == 4, "reloads all four steps");
+        if (lb && lb->steps.size() == 4) {
+            ok(lb->steps[0].action == "window_prepare" &&
+                   lb->steps[3].action == "window_release",
+               "the clicks stay wrapped by prepare and release");
+            ok(lb->steps[0].params.str("class") == narrow(kTestWndClass),
+               "keeps the window class");
+            ok(lb->steps[0].params.integer("w") == wantW &&
+                   lb->steps[0].params.integer("h") == wantH,
+               "keeps the recorded window size");
+            ok(lb->steps[1].params.integer("x") == 640 &&
+                   lb->steps[1].params.integer("y") == 480,
+               "keeps the click position");
+        }
+        deleteFile(p);
+    }
+
+    // --- summaries stay readable in the step list
+    {
+        cfg::Step s = prepareStep(10, 20, 300, 200);
+        const std::string sum = s.summary();
+        ok(sum.find("Lock") == 0 && sum.find("300x200") != std::string::npos,
+           "summarises a lock step", sum);
+        ok(releaseStep.summary() == "Release the locked window",
+           "summarises a release step", releaseStep.summary());
+    }
+
+    DestroyWindow(h);
+    pump(40);
+}
+
 int main(int argc, char** argv) {
     setvbuf(stdout, nullptr, _IONBF, 0);
     std::printf("MacroDeck self-test\n");
@@ -876,6 +1127,7 @@ int main(int argc, char** argv) {
     testConfig();
     testConfigRescue();
     testEngine();
+    testClickWorkflow();
     if (!yaml.empty()) testYamlImport(yaml);
     testWindows();
     testVision();

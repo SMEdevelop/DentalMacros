@@ -163,6 +163,7 @@ public:
     std::string prompt;
     bool ok = false;
     POINT pt{0, 0};
+    HWND wnd = nullptr;   // top-level window the click landed in
 
     ~ClickCaptureDialog() override { uninstallHook(); }
 
@@ -187,6 +188,7 @@ public:
         if (msg != WM_CLICK_ARRIVED) return false;
         ok = true;
         pt = pending_;
+        wnd = pendingWnd_;
         uninstallHook();
         close(true);
         out = 0;
@@ -207,6 +209,12 @@ private:
             ClickCaptureDialog* self = g_activeClickCapture;
             g_activeClickCapture = nullptr;   // one-shot: ignore further clicks
             self->pending_ = ((MSLLHOOKSTRUCT*)lp)->pt;
+            // Grab the window handle here, at the instant of the click. By the
+            // time the posted message is handled a menu may have closed or the
+            // z-order changed, and WindowFromPoint would answer about a
+            // different window. Anything slower than this - the process name,
+            // the rectangle - is resolved off the hook.
+            self->pendingWnd_ = WindowFromPoint(self->pending_);
             PostMessageW(self->hwnd_, WM_CLICK_ARRIVED, 0, 0);
         }
         return CallNextHookEx(nullptr, code, wp, lp);
@@ -215,17 +223,42 @@ private:
     HWND status_ = nullptr;
     HHOOK hook_ = nullptr;
     POINT pending_{0, 0};
+    HWND pendingWnd_ = nullptr;
 };
 
 }  // namespace
 
-bool captureClick(HWND parent, const std::string& prompt, int& x, int& y) {
+bool captureClick(HWND parent, const std::string& prompt, ClickCapture& out) {
     ClickCaptureDialog d;
     d.prompt = prompt;
     d.run(parent, "Recording a click", 440, 160);
     if (!d.ok) return false;
-    x = d.pt.x;
-    y = d.pt.y;
+
+    out = ClickCapture{};
+    out.x = d.pt.x;
+    out.y = d.pt.y;
+
+    // The hook caught the child control under the pointer; the useful thing
+    // is the top-level window that owns it.
+    HWND top = d.wnd ? GetAncestor(d.wnd, GA_ROOT) : nullptr;
+    win::WindowInfo info;
+    if (top && win::describeWindow(top, info) && !info.cls.empty()) {
+        // MacroDeck's own windows are hidden while recording, but never
+        // record ourselves as the target even so.
+        DWORD pid = 0;
+        GetWindowThreadProcessId(top, &pid);
+        if (pid != GetCurrentProcessId()) {
+            out.hasWindow = true;
+            out.cls = info.cls;
+            out.exe = info.exe;
+            out.title = info.title;
+            out.winX = info.x;
+            out.winY = info.y;
+            out.winW = info.w;
+            out.winH = info.h;
+            out.maximized = info.maximized;
+        }
+    }
     return true;
 }
 

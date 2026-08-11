@@ -104,10 +104,11 @@ To check everything works on your machine:
 run_tests.bat
 ```
 
-This runs 165 checks covering JSON, the config model, the step engine, key
+This runs 187 checks covering JSON, the config model, the step engine, key
 tables, deck presets, window management, the image matcher, config recovery,
-and importing a macrokb `macros.yaml`. The engine tests only run steps with no
-side effects — nothing is typed, clicked or launched.
+the recorded-click workflow, and importing a macrokb `macros.yaml`. The engine
+tests only run steps with no side effects — nothing is typed, clicked or
+launched, and the window tests drive a throwaway window of their own.
 
 ---
 
@@ -162,9 +163,12 @@ key fires, so you can see at a glance that the pad is being read correctly.
 plus its list of steps with add / edit / remove / reorder and **Test run**.
 **Record clicks...** builds a click sequence for you: say how many clicks,
 then for each one click the spot on screen you mean (the small status window
-stays out of the way), then say how long to wait before the next click. It
-adds a `click` step per click and a `sleep` step for each delay you enter
-above 0ms.
+stays out of the way) and say how long to wait afterwards. It adds a `click`
+step per click and a `sleep` step for each delay above 0ms.
+
+It also **locks the sequence to the window you clicked first**. See
+[Why recorded clicks keep working](#why-recorded-clicks-keep-working) — this
+is what makes a recorded sequence still work tomorrow.
 
 **Bottom — activity log.** Every macro that fires, and the exact reason for
 anything that fails.
@@ -197,7 +201,8 @@ grids, clicking an empty square asks you to press the key you want there.
 | Run a program | Any program or shell command. |
 | Open a file or link | Anything with a default app, including URLs. |
 | Wait | Pause between steps. |
-| Focus / Move / Minimise / Maximise a window | By title, program, or both. |
+| Focus / Move / Minimise / Maximise a window | By title, program, window class, or any combination. |
+| Lock a window in place for clicking / Release it | Put a window back where recorded clicks expect it, then undo that. |
 | Save / Restore the window layout | Snapshot every window, put them back later. |
 
 Steps run top to bottom. If one fails, the macro stops and the log says which
@@ -232,6 +237,39 @@ Tips:
 - Templates are resolution-dependent. Re-snip if you change display scaling.
 - If a match is missed, lower the confidence (0.75 is forgiving, 0.85 is the
   default, 0.95 is strict).
+
+### Why recorded clicks keep working
+
+A recorded click is an absolute screen position. That is only meaningful while
+the window you were clicking is exactly where it was when you recorded — move
+it, resize it, maximise it, and every click lands somewhere else. This is the
+single reason click macros usually rot.
+
+So when you record clicks, MacroDeck notes the **window** the first click
+landed in — its class, its program, and its exact position and size — and
+wraps the sequence in two extra steps:
+
+| Step | What it does |
+|---|---|
+| **Lock a window in place for clicking** | Brings that window to the front, waits until it really is in front, remembers where it currently sits, un-maximises it if needed, moves it back to the size and position it had while you were recording, then pauses briefly so it can finish redrawing. |
+| ...your clicks and waits... | |
+| **Release the locked window** | Puts the window back exactly where it was — including re-maximising it if it was maximised — and gives your keyboard and mouse back. |
+
+The window is matched by its **class**, which is fixed by whoever wrote the
+program, rather than by its title, which changes with whatever document is
+open. Recording also fills in the program name for good measure. Both are
+ordinary fields you can edit or clear on the *Lock* step.
+
+Nothing about this is magic, and all of it is visible: they are normal steps
+in the step list. Delete them if you want the old behaviour of clicking at
+raw screen positions, or add them by hand to a sequence you built yourself.
+
+**Blocking input.** The *Lock* step can also block your keyboard and mouse for
+the duration, so a stray nudge cannot derail the sequence. Windows only allows
+a program to do that when it is **running as administrator** — otherwise the
+request is refused. MacroDeck says so in the activity log rather than
+pretending you are protected. Whatever happens, the block is always lifted
+when the macro ends, including when a step fails part way through.
 
 ### Window layouts
 
@@ -379,7 +417,7 @@ src/
   util.cpp        strings, paths, files
   app.ico         generated - see tools/make_icon.cpp
 tests/
-  selftest.cpp        171 checks over every non-UI subsystem
+  selftest.cpp        187 checks over every non-UI subsystem
   render_preview.cpp  renders the icons and tiles to a PNG
 tools/
   make_icon.cpp       exports src\app.ico from theme.cpp's drawAppIcon()

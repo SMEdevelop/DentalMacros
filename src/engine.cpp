@@ -156,7 +156,21 @@ void Engine::runSequenceAsync(const std::vector<cfg::Step>& steps,
     jobCv_.notify_one();
 }
 
+void Engine::releaseInputBlock() {
+    if (!inputBlocked_) return;
+    BlockInput(FALSE);
+    inputBlocked_ = false;
+}
+
 void Engine::runSequence(const std::vector<cfg::Step>& steps) {
+    // A macro that blocks input and then fails - or that someone wrote
+    // without a matching release step - must not leave the user unable to
+    // move the mouse. Whatever happens below, the block comes off here.
+    struct InputGuard {
+        Engine* self;
+        ~InputGuard() { self->releaseInputBlock(); }
+    } guard{this};
+
     for (size_t i = 0; i < steps.size(); ++i) {
         try {
             runStep(steps[i]);
@@ -217,13 +231,17 @@ bool boolOf(const js::Value& p, const char* key, bool def) {
 }
 
 win::WindowInfo requireWindow(const js::Value& p) {
-    std::string title = p.str("title"), exe = p.str("exe");
-    if (trim(title).empty() && trim(exe).empty())
-        throw std::runtime_error("give a window title or a program name");
+    std::string title = trim(p.str("title")), exe = trim(p.str("exe")),
+                cls = trim(p.str("class"));
+    if (title.empty() && exe.empty() && cls.empty())
+        throw std::runtime_error(
+            "give a window title, a program name or a window class");
     win::WindowInfo w;
-    if (!win::findWindow(trim(title), trim(exe), w)) {
-        std::string who = !trim(title).empty() ? ("title containing \"" + title + "\"")
-                                               : ("program " + exe);
+    if (!win::findWindow(title, exe, cls, w)) {
+        std::string who;
+        if (!cls.empty()) who = "class " + cls;
+        else if (!title.empty()) who = "title containing \"" + title + "\"";
+        else who = "program " + exe;
         throw std::runtime_error("no open window with " + who);
     }
     return w;
@@ -310,6 +328,70 @@ void Engine::runStep(const cfg::Step& s) {
     }
     if (a == "window_focus") {
         win::focusWindow(requireWindow(p));
+        return;
+    }
+    if (a == "window_prepare") {
+        win::WindowInfo w = requireWindow(p);
+
+        // Bring it forward and actually wait for it. Clicking before the
+        // window arrives sends the clicks to whatever was in front.
+        if (!win::activateAndWait(w, numDouble(p, "activate_timeout", 2.0)))
+            log("  \"" + w.title + "\" did not come to the front in time - "
+                "carrying on anyway");
+
+        // Remember where it is now, so the release step can put it back.
+        locked_ = LockedWindow{};
+        locked_.active = true;
+        locked_.hwnd = w.hwnd;
+        locked_.rect = {(LONG)w.x, (LONG)w.y, (LONG)(w.x + w.w),
+                        (LONG)(w.y + w.h)};
+        locked_.wasMaximized = w.maximized;
+
+        if (boolOf(p, "block_input", true)) {
+            // Windows refuses this unless the process is elevated. Say so
+            // rather than pretending the sequence is protected when it is not.
+            if (BlockInput(TRUE)) {
+                inputBlocked_ = true;
+            } else {
+                log("  could not block input (Windows only allows that when "
+                    "MacroDeck runs as administrator) - keep your hands off "
+                    "the mouse while this runs");
+            }
+        }
+
+        // Un-maximise before moving: a maximised window ignores a move.
+        if (w.maximized) win::restoreWindow(w);
+
+        const bool hasW = hasNum(p, "w"), hasH = hasNum(p, "h");
+        const bool hasX = hasNum(p, "x"), hasY = hasNum(p, "y");
+        if (hasX || hasY || hasW || hasH)
+            win::moveResize(w, hasX, numInt(p, "x"), hasY, numInt(p, "y"),
+                            hasW, numInt(p, "w"), hasH, numInt(p, "h"));
+
+        const int settle = numInt(p, "settle_ms", 300);
+        if (settle > 0)
+            std::this_thread::sleep_for(
+                std::chrono::milliseconds(std::min(settle, 60000)));
+        return;
+    }
+    if (a == "window_release") {
+        if (boolOf(p, "restore_window", true) && locked_.active &&
+            IsWindow(locked_.hwnd)) {
+            win::WindowInfo w;
+            if (win::describeWindow(locked_.hwnd, w)) {
+                if (locked_.wasMaximized) {
+                    win::maximizeWindow(w);
+                } else {
+                    win::moveResize(w, true, locked_.rect.left, true,
+                                    locked_.rect.top, true,
+                                    locked_.rect.right - locked_.rect.left,
+                                    true,
+                                    locked_.rect.bottom - locked_.rect.top);
+                }
+            }
+        }
+        locked_ = LockedWindow{};
+        if (boolOf(p, "unblock_input", true)) releaseInputBlock();
         return;
     }
     if (a == "window_move") {

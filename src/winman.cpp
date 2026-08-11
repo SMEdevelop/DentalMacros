@@ -4,12 +4,19 @@
 #include "util.h"
 
 #include <algorithm>
+#include <chrono>
 #include <set>
 #include <sstream>
 #include <stdexcept>
 
 namespace win {
 namespace {
+
+std::string classOf(HWND hwnd) {
+    wchar_t buf[256] = {0};
+    int n = GetClassNameW(hwnd, buf, 255);
+    return n > 0 ? narrow(std::wstring(buf, n)) : std::string();
+}
 
 std::string exeForWindow(HWND hwnd) {
     DWORD pid = 0;
@@ -57,6 +64,7 @@ BOOL CALLBACK enumProc(HWND hwnd, LPARAM param) {
     wi.hwnd = hwnd;
     wi.title = narrow(title);
     wi.exe = exeForWindow(hwnd);
+    wi.cls = classOf(hwnd);
     wi.x = r.left;
     wi.y = r.top;
     wi.w = r.right - r.left;
@@ -92,14 +100,54 @@ std::vector<WindowInfo> listWindows(bool includeUntitled) {
 }
 
 bool findWindow(const std::string& title, const std::string& exe,
-                WindowInfo& out) {
+                const std::string& cls, WindowInfo& out) {
     for (const auto& w : listWindows()) {
         if (!title.empty() && !icontains(w.title, title)) continue;
         if (!exe.empty() && !iequals(w.exe, exe)) continue;
+        if (!cls.empty() && !iequals(w.cls, cls)) continue;
         out = w;
         return true;
     }
     return false;
+}
+
+bool describeWindow(HWND hwnd, WindowInfo& out) {
+    if (!hwnd || !IsWindow(hwnd)) return false;
+    RECT r{};
+    if (!GetWindowRect(hwnd, &r)) return false;
+
+    const int len = GetWindowTextLengthW(hwnd);
+    std::wstring title((size_t)len + 1, L'\0');
+    if (len > 0) {
+        int got = GetWindowTextW(hwnd, &title[0], len + 1);
+        title.resize((size_t)std::max(0, got));
+    } else {
+        title.clear();
+    }
+
+    out = WindowInfo{};
+    out.hwnd = hwnd;
+    out.title = narrow(title);
+    out.exe = exeForWindow(hwnd);
+    out.cls = classOf(hwnd);
+    out.x = r.left;
+    out.y = r.top;
+    out.w = r.right - r.left;
+    out.h = r.bottom - r.top;
+    out.minimized = IsIconic(hwnd) != 0;
+    out.maximized = IsZoomed(hwnd) != 0;
+    return true;
+}
+
+bool windowAtPoint(int screenX, int screenY, WindowInfo& out) {
+    POINT p{screenX, screenY};
+    HWND hit = WindowFromPoint(p);
+    if (!hit) return false;
+    // WindowFromPoint lands on the child control under the cursor - a button,
+    // a text area. Walk up to the top-level window, which is what the user
+    // means by "the window I clicked in" and what has a useful class name.
+    if (HWND root = GetAncestor(hit, GA_ROOT)) hit = root;
+    return describeWindow(hit, out);
 }
 
 void focusWindow(const WindowInfo& w) {
@@ -118,6 +166,27 @@ void focusWindow(const WindowInfo& w) {
     SetForegroundWindow(w.hwnd);
     BringWindowToTop(w.hwnd);
     if (attached) AttachThreadInput(myThread, fgThread, FALSE);
+}
+
+bool activateAndWait(const WindowInfo& w, double timeoutSec) {
+    if (!IsWindow(w.hwnd)) throw std::runtime_error("that window is gone");
+    focusWindow(w);
+    // Focus is asynchronous: SetForegroundWindow returning is not the same as
+    // the window having arrived. Clicking before it does sends the clicks to
+    // whatever was in front a moment ago.
+    const auto deadline =
+        std::chrono::steady_clock::now() +
+        std::chrono::milliseconds((long long)(std::max(0.0, timeoutSec) * 1000));
+    while (true) {
+        if (GetForegroundWindow() == w.hwnd) return true;
+        if (std::chrono::steady_clock::now() >= deadline) return false;
+        Sleep(15);
+    }
+}
+
+void restoreWindow(const WindowInfo& w) {
+    if (!IsWindow(w.hwnd)) throw std::runtime_error("that window is gone");
+    if (IsIconic(w.hwnd) || IsZoomed(w.hwnd)) ShowWindow(w.hwnd, SW_RESTORE);
 }
 
 void moveResize(const WindowInfo& w, bool hasX, int x, bool hasY, int y,

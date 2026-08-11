@@ -92,12 +92,15 @@ const std::vector<ActionDef>& actionDefs() {
          "Brings a window to the front.",
          {{"title", "Title contains", FieldKind::Text, "", false, "", ""},
           {"exe", "Program", FieldKind::Text, "", false, "",
-           "For example: chrome.exe. Fill in either field, or both."}}},
+           "For example: chrome.exe. Fill in any of these, or several."},
+          {"class", "Window class", FieldKind::Text, "", false, "",
+           "The steadiest way to name a window. Recording fills it in."}}},
 
         {"window_move", "Move or resize a window", "Windows",
          "Repositions a window.",
          {{"title", "Title contains", FieldKind::Text, "", false, "", ""},
           {"exe", "Program", FieldKind::Text, "", false, "", ""},
+          {"class", "Window class", FieldKind::Text, "", false, "", ""},
           {"x", "X", FieldKind::Int, "", false, "",
            "Blank fields keep the window's current value."},
           {"y", "Y", FieldKind::Int, "", false, "", ""},
@@ -106,11 +109,48 @@ const std::vector<ActionDef>& actionDefs() {
 
         {"window_minimize", "Minimise a window", "Windows", "",
          {{"title", "Title contains", FieldKind::Text, "", false, "", ""},
-          {"exe", "Program", FieldKind::Text, "", false, "", ""}}},
+          {"exe", "Program", FieldKind::Text, "", false, "", ""},
+          {"class", "Window class", FieldKind::Text, "", false, "", ""}}},
 
         {"window_maximize", "Maximise a window", "Windows", "",
          {{"title", "Title contains", FieldKind::Text, "", false, "", ""},
-          {"exe", "Program", FieldKind::Text, "", false, "", ""}}},
+          {"exe", "Program", FieldKind::Text, "", false, "", ""},
+          {"class", "Window class", FieldKind::Text, "", false, "", ""}}},
+
+        // The pair that makes recorded click sequences repeatable. Clicks are
+        // stored as absolute screen coordinates, which are only meaningful if
+        // the target window is exactly where it was when they were recorded -
+        // so put it back there first, and undo that afterwards.
+        {"window_prepare", "Lock a window in place for clicking", "Windows",
+         "Brings a window to the front and puts it back at the exact size and "
+         "position it had when the clicks were recorded, so they land where "
+         "they should. Pair it with \"Release the locked window\".",
+         {{"class", "Window class", FieldKind::Text, "", false, "",
+           "Recording fills this in from the window you clicked."},
+          {"exe", "Program", FieldKind::Text, "", false, "", ""},
+          {"title", "Title contains", FieldKind::Text, "", false, "", ""},
+          {"x", "X", FieldKind::Int, "", false, "",
+           "Where the window was when the clicks were recorded. Leave the "
+           "size blank to move it without resizing."},
+          {"y", "Y", FieldKind::Int, "", false, "", ""},
+          {"w", "Width", FieldKind::Int, "", false, "", ""},
+          {"h", "Height", FieldKind::Int, "", false, "", ""},
+          {"activate_timeout", "Wait for it to come forward (seconds)",
+           FieldKind::Float, "2", false, "", ""},
+          {"settle_ms", "Settle for (ms)", FieldKind::Int, "300", false, "",
+           "Time for the window to finish redrawing before the first click."},
+          {"block_input", "Block my keyboard and mouse while it runs",
+           FieldKind::Bool, "true", false, "",
+           "Stops a stray movement derailing the sequence. Windows only "
+           "permits this when MacroDeck runs as administrator."}}},
+
+        {"window_release", "Release the locked window", "Windows",
+         "Puts the window back where it was before \"Lock a window in place\" "
+         "moved it, and hands your keyboard and mouse back.",
+         {{"restore_window", "Put the window back", FieldKind::Bool, "true",
+           false, "", ""},
+          {"unblock_input", "Give my keyboard and mouse back",
+           FieldKind::Bool, "true", false, "", ""}}},
 
         {"window_save", "Save the window layout", "Windows",
          "Remembers where every window is right now.",
@@ -192,9 +232,25 @@ std::string summaryRaw(const Step& step) {
     if (action == "wait_image") return "Wait for image " + baseName(p("image"));
     if (action == "window_save") return "Save layout \"" + p("layout") + "\"";
     if (action == "window_restore") return "Restore layout \"" + p("layout") + "\"";
+    if (action == "window_release") return "Release the locked window";
+    if (action == "window_prepare") {
+        std::string who = p("class");
+        if (who.empty()) who = p("exe");
+        if (who.empty()) who = p("title");
+        if (who.empty()) who = "window";
+        std::string out = "Lock " + ellipsis(who, 22);
+        if (params.has("x") && params.has("y"))
+            out += " at " + std::to_string(params.integer("x")) + ", " +
+                   std::to_string(params.integer("y"));
+        if (params.has("w") && params.has("h"))
+            out += " (" + std::to_string(params.integer("w")) + "x" +
+                   std::to_string(params.integer("h")) + ")";
+        return out;
+    }
     if (action.rfind("window_", 0) == 0) {
         std::string who = p("title");
         if (who.empty()) who = p("exe");
+        if (who.empty()) who = p("class");
         if (who.empty()) who = "window";
         return label + ": " + ellipsis(who, 30);
     }

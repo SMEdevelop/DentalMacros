@@ -70,6 +70,22 @@ private:
     void runStep(const cfg::Step& step);
     void log(const std::string& msg);
 
+    // Whatever a "Lock a window in place" step changed, so the matching
+    // release step can undo it. Only ever touched from the thread running the
+    // sequence.
+    struct LockedWindow {
+        bool active = false;
+        HWND hwnd = nullptr;
+        RECT rect{};          // where it was before we moved it
+        bool wasMaximized = false;
+    };
+    LockedWindow locked_;
+    bool inputBlocked_ = false;
+    // Runs at the end of every sequence, however it ended. Leaving a window
+    // in the wrong place is a nuisance; leaving the user's keyboard and mouse
+    // blocked is not recoverable without killing the process.
+    void releaseInputBlock();
+
     mutable std::mutex cfgMu_;
     cfg::Config cfg_;
 
