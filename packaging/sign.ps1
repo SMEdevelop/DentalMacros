@@ -26,12 +26,20 @@
 #    signing as a registered company; it has a verifiable-history requirement,
 #    so confirm you qualify before paying for anything.
 #
-# 2. Install the signing client, which supplies the dlib signtool loads:
+# 2. Install the signing client, which supplies the dlib signtool loads. It is
+#    a NuGet PACKAGE, not a dotnet tool - "dotnet tool install" will not find
+#    it. Since the service was rebranded the package is called
+#    Microsoft.ArtifactSigning.Client (it was Microsoft.Trusted.Signing.Client).
+#    Download it and unpack it - a .nupkg is a .zip:
 #
-#        dotnet tool install --global Microsoft.Trusted.Signing.Client
+#        $v    = '1.0.128'
+#        $url  = "https://api.nuget.org/v3-flatcontainer/microsoft.artifactsigning.client/$v/microsoft.artifactsigning.client.$v.nupkg"
+#        $dest = "$env:LOCALAPPDATA\ArtifactSigningClient\$v"
+#        Invoke-WebRequest $url -OutFile "$env:TEMP\as.zip"
+#        Expand-Archive "$env:TEMP\as.zip" -DestinationPath $dest -Force
 #
-#    or fetch the Microsoft.Trusted.Signing.Client NuGet package and point
-#    TRUSTED_SIGNING_DLIB at the Azure.CodeSigning.Dlib.dll inside it.
+#    That is one of the places this script looks. Anywhere else is fine too -
+#    just point TRUSTED_SIGNING_DLIB at the Azure.CodeSigning.Dlib.dll inside.
 #
 # 3. Tell this script about the account:
 #
@@ -99,15 +107,22 @@ if (-not $signtool) {
 }
 
 # ---- the dlib that teaches signtool to talk to the service ---------------
+# The file name has survived the rebrand even though the package name did not,
+# so it is still Azure.CodeSigning.Dlib.dll inside Microsoft.ArtifactSigning.Client.
 $dlib = $env:TRUSTED_SIGNING_DLIB
 if (-not $dlib) {
-    # Where the dotnet global tool puts it.
     $candidates = @(
-        (Join-Path $env:USERPROFILE '.dotnet\tools\.store\microsoft.trusted.signing.client'),
+        # Where the unpack in this file's header puts it.
+        (Join-Path $env:LOCALAPPDATA 'ArtifactSigningClient'),
+        # Where NuGet puts it if the package was restored by a project instead.
+        (Join-Path $env:USERPROFILE '.nuget\packages\microsoft.artifactsigning.client'),
+        # And the pre-rebrand package, for a machine that already had it.
+        (Join-Path $env:USERPROFILE '.nuget\packages\microsoft.trusted.signing.client'),
         (Join-Path ${env:ProgramFiles} 'Microsoft.Trusted.Signing.Client')
     ) | Where-Object { Test-Path $_ }
 
     foreach ($root in $candidates) {
+        # Sorted descending so the newest version wins when several are present.
         $found = Get-ChildItem -Path $root -Recurse -Filter 'Azure.CodeSigning.Dlib.dll' `
                      -ErrorAction SilentlyContinue |
                  Where-Object { $_.FullName -match '\\x64\\' } |
@@ -117,9 +132,11 @@ if (-not $dlib) {
     }
 }
 if (-not $dlib -or -not (Test-Path -LiteralPath $dlib)) {
-    Fail ("Azure.CodeSigning.Dlib.dll not found. Install it with " +
-          "'dotnet tool install --global Microsoft.Trusted.Signing.Client', " +
-          "or set TRUSTED_SIGNING_DLIB to its full path.")
+    Fail ("Azure.CodeSigning.Dlib.dll not found. It comes from the " +
+          "Microsoft.ArtifactSigning.Client NuGet package - see the top of " +
+          "this file for how to unpack it - or set TRUSTED_SIGNING_DLIB to " +
+          "its full path. Note it is a NuGet package, not a dotnet tool: " +
+          "'dotnet tool install' will not find it.")
 }
 
 # ---- the metadata file signtool hands to the dlib ------------------------
@@ -127,11 +144,19 @@ if (-not $dlib -or -not (Test-Path -LiteralPath $dlib)) {
 # environment, so there is nothing worth keeping and nothing worth committing.
 $metadata = Join-Path ([System.IO.Path]::GetTempPath()) `
                       ("trusted-signing-{0}.json" -f [guid]::NewGuid())
-@{
+$metadataJson = @{
     Endpoint               = $endpoint
     CodeSigningAccountName = $account
     CertificateProfileName = $profile
-} | ConvertTo-Json | Set-Content -LiteralPath $metadata -Encoding UTF8
+} | ConvertTo-Json
+
+# Written with .NET rather than Set-Content -Encoding UTF8, which in Windows
+# PowerShell prepends a byte-order mark. The signing library parses this file
+# with System.Text.Json, which rejects a BOM outright - the error is
+# "'0xEF' is an invalid start of a value", nothing about encodings, so it is
+# a thoroughly confusing way to fail. $false = no BOM.
+[System.IO.File]::WriteAllText($metadata, $metadataJson,
+                               (New-Object System.Text.UTF8Encoding $false))
 
 try {
     # /tr timestamps the signature so it stays valid after the short-lived
