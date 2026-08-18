@@ -226,6 +226,45 @@ is what makes a recorded sequence still work tomorrow.
 **Bottom — activity log.** Every macro that fires, and the exact reason for
 anything that fails.
 
+### Buttons on top of everything
+
+The deck above is an editor. The other half is a launcher: a small window of
+just the buttons that stays on top of whatever you are working in, so a macro
+can be fired with the mouse when the pad is out of reach — or not plugged in
+at all. Open it from **More → Buttons on top of everything**, or from the
+notification-area icon when the main window is closed.
+
+Each button is 38 pixels by default, smaller than a desktop icon, and the
+whole thing is about the size of a large tooltip. **Drag the strip along the
+top** to move it anywhere; there is no title bar. The **✕** at the right of
+that strip puts it away.
+
+- **Left-click** a button to run its macro. It works whether or not the
+  engine is listening, because clicking one is not a keystroke that needs
+  intercepting.
+- **Right-click** anywhere on it for **button size** (small / medium /
+  large), **buttons per row** (2 to 10), and a way back to the main window.
+- **Hover** a button and its full label appears in the top strip. There is no
+  room for a long label on a 38-pixel square, so it goes where it can be read.
+- Buttons **flash green** when they run, whether you clicked them here or
+  pressed the key on the pad.
+
+Two deliberate details. It **never takes focus**: a macro that types or
+clicks acts on whatever window is in front, so a palette that grabbed the
+foreground on the way to firing one would send the whole macro to itself. And
+it stays **out of the taskbar and Alt-Tab**, where a window this size has no
+business appearing.
+
+Where it sits, how big it is and whether it was open are remembered in
+`macros.json` and restored next launch — including on a second monitor left
+of the primary one, where the coordinates are negative. If that monitor is
+gone, it comes back on one that still exists rather than off in the void
+where a window with no title bar could not be dragged home.
+
+It shows the keys of the **selected keyboard**. One keyboard's worth of
+buttons is what fits in a window this size, and guessing between several pads
+would be worse than following the one already on screen behind it.
+
 ### Deck layouts
 
 | Layout | What it's for |
@@ -367,7 +406,12 @@ Both read keyboards the same way, so device ids carry over unchanged.
     "startEngineOnLaunch": false,
     "minimizeToTray": true,
     "startMinimized": false,
-    "toggleHotkey": "ctrl+alt+shift+m"
+    "toggleHotkey": "ctrl+alt+shift+m",
+    "miniDeckVisible": false,
+    "miniDeckX": 1520,
+    "miniDeckY": 820,
+    "miniDeckTile": 38,
+    "miniDeckCols": 5
   },
   "keyboards": [
     {
@@ -466,6 +510,7 @@ MacroDeck exits instead of hiding with no way back.
 src/
   main.cpp        entry point, single-instance guard, GDI+ lifetime
   app.cpp         main window: deck grid, sidebar, inspector, tray
+  minideck.cpp    the small always-on-top window of just the buttons
   dialogs.cpp     keyboard picker, key capture, step editor, snip overlay
   ui_common.cpp   dark-themed controls and the modal host
   theme.cpp       colours, DPI scaling, hand-drawn icons
@@ -481,7 +526,7 @@ src/
   util.cpp        strings, paths, files
   app.ico         generated - see tools/make_icon.cpp
 tests/
-  selftest.cpp        216 checks over every non-UI subsystem
+  selftest.cpp        225 checks over every non-UI subsystem
   render_preview.cpp  renders the icons and tiles to a PNG
 tools/
   make_icon.cpp       exports src\app.ico from theme.cpp's drawAppIcon()

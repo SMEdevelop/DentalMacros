@@ -6,6 +6,7 @@
 #include "engine.h"
 #include "gdiplus_inc.h"
 #include "keys.h"
+#include "minideck.h"
 #include "theme.h"
 #include "ui_common.h"
 #include "util.h"
@@ -86,6 +87,9 @@ enum {
     IDM_TRAY_SHOW = 480,
     IDM_TRAY_TOGGLE,
     IDM_TRAY_EXIT,
+    IDM_TRAY_MINI,
+
+    IDM_MINIDECK = 490,
 };
 
 // The system-wide start/stop shortcut. Any id unique within this window will
@@ -255,6 +259,13 @@ private:
     void applyToggleHotkey();
     void releaseToggleHotkey();
 
+    // ---- mini deck
+    void toggleMiniDeck();
+    void refreshMiniDeck();
+    // Fire a binding by key name, for a click on the mini deck.
+    void runBindingByKey(const std::string& key);
+    void saveMiniPlacement();
+
     // ---- tray
     bool addTray();          // false if Windows refused the icon
     void removeTray();
@@ -268,6 +279,7 @@ private:
     cfg::Config config_;
     eng::Engine engine_;
     IconCache icons_;
+    MiniDeck mini_;
 
     std::string currentAlias_;
     int selectedTile_ = -1;
@@ -430,6 +442,27 @@ void MainWindow::onCreate() {
     layout();
     refreshInspector();
 
+    // ---- the always-on-top palette
+    mini_.setRunner([this](const std::string& key) { runBindingByKey(key); });
+    mini_.setOpener([this] { showWindowAgain(); });
+    // Written out as soon as it settles, not only at exit: a palette dragged
+    // somewhere better should still be there after a power cut.
+    mini_.setOnPlacementChanged([this] {
+        saveMiniPlacement();
+        if (config_.dirty) saveConfig();
+    });
+    {
+        MiniPlacement p;
+        p.visible = config_.settings.miniDeckVisible;
+        p.x = config_.settings.miniDeckX;
+        p.y = config_.settings.miniDeckY;
+        p.tile = config_.settings.miniDeckTile;
+        p.cols = config_.settings.miniDeckCols;
+        mini_.setPlacement(p);
+    }
+    refreshMiniDeck();
+    if (config_.settings.miniDeckVisible) mini_.show(inst_);
+
     if (config_.settings.startEngineOnLaunch && !config_.keyboards.empty())
         toggleEngine();
 }
@@ -457,6 +490,10 @@ void MainWindow::reportLoadProblems() {
 
 void MainWindow::onDestroy() {
     releaseToggleHotkey();
+    // Before the config is out of reach: the palette knows where it ended up.
+    saveMiniPlacement();
+    if (config_.dirty) saveConfig();
+    mini_.destroy();
     engine_.stop();
     removeTray();
     icons_.clear();
@@ -1120,6 +1157,7 @@ void MainWindow::selectKeyboard(const std::string& alias) {
     for (size_t i = 0; i < tiles_.size(); ++i)
         if (tiles_[i].binding >= 0) { selectedTile_ = (int)i; break; }
     refreshInspector();
+    refreshMiniDeck();
     InvalidateRect(hwnd_, nullptr, FALSE);
 }
 
@@ -1170,6 +1208,7 @@ void MainWindow::modelChanged(bool relayoutDeck) {
     engine_.updateConfig(config_);
     if (relayoutDeck) layoutDeck();
     refreshInspector();
+    refreshMiniDeck();
     InvalidateRect(hwnd_, nullptr, FALSE);
 }
 
@@ -1735,6 +1774,9 @@ void MainWindow::applyToggleHotkey() {
 
 void MainWindow::showMenu() {
     HMENU m = CreatePopupMenu();
+    AppendMenuW(m, MF_STRING | (mini_.visible() ? MF_CHECKED : 0), IDM_MINIDECK,
+                L"Buttons on top of everything");
+    AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(m, MF_STRING, IDM_SNIP, L"Snip a template image...");
     AppendMenuW(m, MF_STRING, IDM_LAYOUTS, L"Window layouts...");
     AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
@@ -1961,12 +2003,74 @@ void MainWindow::drainKeyEvents() {
         lastKeyText_ = "Last key: " + keys::displayName(e.keyName) + " on " +
                        e.alias + (e.hasMacro ? "" : " (no macro)");
         lastFire_[e.alias + "|" + e.keyName] = GetTickCount();
+        if (e.alias == currentAlias_) mini_.noteFired(e.keyName);
         repaint = true;
     }
     if (repaint) {
         SetTimer(hwnd_, 2, 60, nullptr);
         InvalidateRect(hwnd_, nullptr, FALSE);
     }
+}
+
+// -------------------------------------------------------------- mini deck
+// The small always-on-top palette. It shows the selected keyboard's keys and
+// nothing else: one keyboard's worth of buttons is what fits in a window this
+// size, and guessing which of several pads the user meant would be worse than
+// following the one already on screen behind it.
+void MainWindow::refreshMiniDeck() {
+    cfg::Keyboard* kb = currentKb();
+    std::vector<MiniButton> out;
+    if (kb) {
+        for (const cfg::Binding& b : kb->bindings) {
+            MiniButton mb;
+            mb.key = b.key;
+            mb.title = b.displayTitle();
+            mb.icon = b.icon;
+            mb.color = b.color;
+            mb.hasSteps = !b.steps.empty();
+            if (mb.hasSteps) mb.firstAction = b.steps[0].action;
+            out.push_back(std::move(mb));
+        }
+    }
+    mini_.setButtons(kb ? kb->alias : std::string("MacroDeck"), std::move(out));
+}
+
+void MainWindow::runBindingByKey(const std::string& key) {
+    cfg::Keyboard* kb = currentKb();
+    if (!kb) return;
+    cfg::Binding* b = kb->findKey(key);
+    if (!b || b->steps.empty()) return;
+    // Same path the pad takes, so a macro behaves identically however it was
+    // started - including running with the engine stopped, which is the point
+    // of a palette you can click.
+    pushLog("Buttons: " + keys::displayName(b->key) + " (" +
+            std::to_string(b->steps.size()) + " steps)");
+    lastFire_[currentAlias_ + "|" + b->key] = GetTickCount();
+    SetTimer(hwnd_, 2, 60, nullptr);
+    InvalidateRect(hwnd_, nullptr, FALSE);
+    engine_.runSequenceAsync(b->steps, "Buttons");
+}
+
+void MainWindow::saveMiniPlacement() {
+    MiniPlacement p = mini_.placement();
+    cfg::Settings& st = config_.settings;
+    if (st.miniDeckVisible == p.visible && st.miniDeckX == p.x &&
+        st.miniDeckY == p.y && st.miniDeckTile == p.tile &&
+        st.miniDeckCols == p.cols)
+        return;
+    st.miniDeckVisible = p.visible;
+    st.miniDeckX = p.x;
+    st.miniDeckY = p.y;
+    st.miniDeckTile = p.tile;
+    st.miniDeckCols = p.cols;
+    config_.dirty = true;
+}
+
+void MainWindow::toggleMiniDeck() {
+    refreshMiniDeck();
+    mini_.toggle(inst_);
+    saveMiniPlacement();
+    saveConfig();
 }
 
 // ------------------------------------------------------------------- tray
@@ -2006,6 +2110,8 @@ void MainWindow::trayMenu() {
     AppendMenuW(m, MF_STRING, IDM_TRAY_SHOW, L"Open MacroDeck");
     AppendMenuW(m, MF_STRING, IDM_TRAY_TOGGLE,
                 engine_.running() ? L"Stop listening" : L"Start listening");
+    AppendMenuW(m, MF_STRING | (mini_.visible() ? MF_CHECKED : 0), IDM_TRAY_MINI,
+                L"Buttons on top of everything");
     AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(m, MF_STRING, IDM_TRAY_EXIT, L"Exit");
     POINT p;
@@ -2015,6 +2121,7 @@ void MainWindow::trayMenu() {
                                   0, hwnd_, nullptr);
     DestroyMenu(m);
     if (cmd == IDM_TRAY_SHOW) showWindowAgain();
+    else if (cmd == IDM_TRAY_MINI) toggleMiniDeck();
     else if (cmd == IDM_TRAY_TOGGLE) toggleEngine();
     else if (cmd == IDM_TRAY_EXIT) { quitting_ = true; DestroyWindow(hwnd_); }
 }
@@ -2364,6 +2471,7 @@ LRESULT CALLBACK MainWindow::wndProc(HWND hwnd, UINT msg, WPARAM wp,
                         self->pushLog("Saved template " + path);
                     return 0;
                 }
+                case IDM_MINIDECK: self->toggleMiniDeck(); return 0;
                 case IDM_LAYOUTS: self->showLayouts(); return 0;
                 case IDM_IMPORT: self->importYaml(); return 0;
                 case IDM_SAVE:

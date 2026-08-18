@@ -875,6 +875,43 @@ static void testConfigRescue() {
     ok(hk.settings.toggleHotkey == "ctrl+alt+p", "reloads the shortcut",
        hk.settings.toggleHotkey);
 
+    // The always-on-top palette: where it sat has to survive a restart, or it
+    // reappears in a corner every morning and stops being worth opening.
+    cfg::Config def;
+    ok(!def.settings.miniDeckVisible, "the palette starts closed");
+    ok(def.settings.miniDeckX == INT_MIN && def.settings.miniDeckY == INT_MIN,
+       "with no remembered position");
+    cc.settings.miniDeckVisible = true;
+    cc.settings.miniDeckX = -1400;   // a monitor to the left of the primary
+    cc.settings.miniDeckY = 220;
+    cc.settings.miniDeckTile = 30;
+    cc.settings.miniDeckCols = 8;
+    ok(cc.save(&err), "saves the palette placement", err);
+    cfg::Config md;
+    md.load(conf);
+    ok(md.settings.miniDeckVisible, "reopens if it was open");
+    ok(md.settings.miniDeckX == -1400 && md.settings.miniDeckY == 220,
+       "and comes back on a negative-coordinate monitor",
+       std::to_string(md.settings.miniDeckX) + "," +
+           std::to_string(md.settings.miniDeckY));
+    ok(md.settings.miniDeckTile == 30 && md.settings.miniDeckCols == 8,
+       "keeping its size and column count");
+
+    // Hand-edited nonsense is clamped, not refused: the file still opens.
+    const std::string silly = appPath("selftest-mini.json");
+    ok(writeFileAtomic(
+           silly,
+           R"({"settings":{"miniDeckTile":900,"miniDeckCols":1}})"),
+       "writes an impossible palette size");
+    cfg::Config sc;
+    sc.load(silly);
+    ok(sc.settings.miniDeckTile <= 46 && sc.settings.miniDeckTile >= 30,
+       "clamps a button size bigger than the screen",
+       std::to_string(sc.settings.miniDeckTile));
+    ok(sc.settings.miniDeckCols >= 2, "and a column count below two",
+       std::to_string(sc.settings.miniDeckCols));
+    deleteFile(silly);
+
     deleteFile(path);
     deleteFile(path + ".bak");
     deleteFile(dup);

@@ -3,6 +3,7 @@
 #pragma once
 #include "json.h"
 
+#include <climits>
 #include <string>
 #include <vector>
 
@@ -106,6 +107,15 @@ struct Settings {
     // left armed can always be silenced without hunting for the window.
     // Empty = no shortcut registered.
     std::string toggleHotkey = "ctrl+alt+shift+m";
+
+    // The small always-on-top palette of buttons. Off until asked for, and
+    // remembered where it was left: a launcher that reappears in the middle
+    // of the screen every morning is one you stop opening.
+    bool miniDeckVisible = false;
+    int miniDeckX = INT_MIN;      // INT_MIN = never placed, pick a corner
+    int miniDeckY = INT_MIN;
+    int miniDeckTile = 38;        // design px per button
+    int miniDeckCols = 5;
 };
 
 // Match confidence outside this range is refused by the settings dialog and

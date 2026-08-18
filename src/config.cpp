@@ -377,7 +377,19 @@ void Config::load(const std::string& file) {
         settings.minimizeToTray = s->boolean("minimizeToTray", true);
         settings.startMinimized = s->boolean("startMinimized", false);
         settings.toggleHotkey = s->str("toggleHotkey", settings.toggleHotkey);
+        settings.miniDeckVisible = s->boolean("miniDeckVisible", false);
+        // INT_MIN survives a round trip as "no position saved yet", which is
+        // what tells the palette to pick a corner rather than trust a 0,0
+        // that would put it under the Start button.
+        settings.miniDeckX = (int)s->num("miniDeckX", (double)INT_MIN);
+        settings.miniDeckY = (int)s->num("miniDeckY", (double)INT_MIN);
+        settings.miniDeckTile = (int)s->num("miniDeckTile", 38);
+        settings.miniDeckCols = (int)s->num("miniDeckCols", 5);
     }
+    // Clamped rather than refused: a hand-edited file with a silly size still
+    // opens, it just opens with a usable palette.
+    settings.miniDeckTile = std::max(30, std::min(46, settings.miniDeckTile));
+    settings.miniDeckCols = std::max(2, std::min(10, settings.miniDeckCols));
     if (settings.matchConfidence < kMinConfidence ||
         settings.matchConfidence > kMaxConfidence) {
         loadWarnings.push_back(
@@ -458,6 +470,11 @@ std::string Config::toJson() const {
     s["minimizeToTray"] = settings.minimizeToTray;
     s["startMinimized"] = settings.startMinimized;
     s["toggleHotkey"] = settings.toggleHotkey;
+    s["miniDeckVisible"] = settings.miniDeckVisible;
+    s["miniDeckX"] = (double)settings.miniDeckX;
+    s["miniDeckY"] = (double)settings.miniDeckY;
+    s["miniDeckTile"] = (double)settings.miniDeckTile;
+    s["miniDeckCols"] = (double)settings.miniDeckCols;
     root["settings"] = std::move(s);
 
     js::Value kbs = js::Value::array();
