@@ -30,7 +30,14 @@
 #    a NuGet PACKAGE, not a dotnet tool - "dotnet tool install" will not find
 #    it. Since the service was rebranded the package is called
 #    Microsoft.ArtifactSigning.Client (it was Microsoft.Trusted.Signing.Client).
-#    Download it and unpack it - a .nupkg is a .zip:
+#    Before signing, install the matching .NET 8.0 Runtime on the clean signing
+#    host, because the Azure.CodeSigning.Dlib.dll and signtool.exe both depend on
+#    it at runtime. The runtime architecture must match the selected
+#    signtool.exe architecture (for example, x64 signtool requires the x64 .NET
+#    8 runtime; arm64 signtool requires the arm64 runtime). If you are setting
+#    up a new or clean signing host, install or verify that prerequisite before
+#    attempting to sign. Download and unpack the client package - a .nupkg is a
+#    .zip:
 #
 #        $v    = '1.0.128'
 #        $url  = "https://api.nuget.org/v3-flatcontainer/microsoft.artifactsigning.client/$v/microsoft.artifactsigning.client.$v.nupkg"
