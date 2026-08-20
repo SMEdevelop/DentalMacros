@@ -1,6 +1,7 @@
 #include "minideck.h"
 
 #include "gdiplus_inc.h"
+#include "iconlib.h"
 #include "keys.h"
 #include "theme.h"
 #include "util.h"
@@ -53,6 +54,7 @@ std::map<std::string, Image*>& iconCache() {
 
 Image* iconFor(const std::string& relPath) {
     if (trim(relPath).empty()) return nullptr;
+    if (isLibraryIcon(relPath)) return nullptr;   // drawn, not loaded
     auto& cache = iconCache();
     auto it = cache.find(relPath);
     if (it != cache.end()) return it->second;
@@ -293,8 +295,13 @@ void MiniDeck::paintButton(void* graphics, size_t index) {
     const float iconSize = r.Height * 0.42f;
     RectF iconBox(r.X + (r.Width - iconSize) / 2, r.Y + r.Height * 0.13f,
                   iconSize, iconSize);
-    Image* img = iconFor(b.icon);
-    if (img) {
+    // Library icons are drawn, not loaded, so they cost nothing to cache and
+    // stay crisp at 30 pixels where a downscaled PNG would not.
+    if (isLibraryIcon(b.icon) &&
+        drawLibraryIcon(g, libraryIconId(b.icon), iconBox,
+                        withAlpha(Color(255, 255, 255, 255), 235))) {
+        // drawn
+    } else if (Image* img = iconFor(b.icon)) {
         float iw = (float)img->GetWidth(), ih = (float)img->GetHeight();
         if (iw > 0 && ih > 0) {
             float scale = std::min(iconBox.Width / iw, iconBox.Height / ih);

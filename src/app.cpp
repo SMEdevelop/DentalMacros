@@ -5,6 +5,7 @@
 #include "dialogs.h"
 #include "engine.h"
 #include "gdiplus_inc.h"
+#include "iconlib.h"
 #include "keys.h"
 #include "minideck.h"
 #include "theme.h"
@@ -1091,8 +1092,14 @@ void MainWindow::paintTile(Graphics& g, const DeckTile& tile,
     float iconSize = std::min(r.Width, r.Height) * 0.36f;
     RectF iconBox(r.X + (r.Width - iconSize) / 2, r.Y + r.Height * 0.24f,
                   iconSize, iconSize);
-    Image* img = b->icon.empty() ? nullptr : icons_.get(b->icon);
-    if (img) {
+    // A "lib:" icon is drawn from code and never touches the image cache.
+    if (isLibraryIcon(b->icon) &&
+        drawLibraryIcon(g, libraryIconId(b->icon), iconBox,
+                        withAlpha(Color(255, 255, 255, 255), 235))) {
+        // drawn
+    } else if (Image* img = b->icon.empty() || isLibraryIcon(b->icon)
+                                ? nullptr
+                                : icons_.get(b->icon)) {
         // preserve aspect ratio inside the box
         float iw = (float)img->GetWidth(), ih = (float)img->GetHeight();
         if (iw > 0 && ih > 0) {
@@ -1547,7 +1554,8 @@ void MainWindow::chooseTileIcon() {
     cfg::Binding* b = selectedBinding();
     if (!b) return;
     std::string rel = b->icon;
-    if (!chooseImageFile(hwnd_, rel)) return;
+    // The library first, with Browse still one click away inside it.
+    if (!pickIconDialog(hwnd_, rel)) return;
     b->icon = rel;
     icons_.clear();
     modelChanged(false);

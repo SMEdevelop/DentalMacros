@@ -7,6 +7,7 @@
 #include "app.h"
 #include "config.h"
 #include "gdiplus_inc.h"
+#include "iconlib.h"
 #include "keys.h"
 #include "theme.h"
 #include "util.h"
@@ -81,7 +82,7 @@ int main() {
         return 1;
     }
 
-    const int W = 1180, H = 1000;
+    const int W = 1180, H = 1820;   // the icon library lives below the decks
     int rc = 0;
     {
         Bitmap bmp(W, H, PixelFormat32bppARGB);
@@ -188,6 +189,65 @@ int main() {
                  L"Note the tall Num + and Enter keys and the double-width 0.",
                  RectF(300, ty + 210, 700, 60), 12, theme().textDim, Align::Left,
                  false, false, true);
+
+        // ---- the built-in icon library
+        // Every icon at the size a tile actually draws it, so a shape that
+        // only reads at 200px gets caught here rather than on a real deck.
+        float iy = ty + 530;   // clear of the numpad grid above
+        drawText(g, L"BUILT-IN ICON LIBRARY", RectF(24, iy, 400, 18), 11,
+                 theme().textFaint, Align::Left, true);
+        iy += 26;
+        const int perRow = 12;
+        const float cell = 82;
+        int icol = 0;
+        std::string cat;
+        for (const LibIcon& ic : iconLibrary()) {
+            if (cat != ic.category) {
+                if (icol != 0) { iy += cell; icol = 0; }
+                cat = ic.category;
+                drawText(g, widen(cat), RectF(24, iy, 300, 16), 10,
+                         theme().accent, Align::Left, true);
+                iy += 20;
+            }
+            const float x = 24 + icol * cell;
+            RectF box(x + 20, iy + 4, 40, 40);
+            drawLibraryIcon(g, ic.id, box, theme().text);
+            drawText(g, widen(ic.label), RectF(x, iy + 48, cell, 16), 9,
+                     theme().textDim, Align::Center);
+            if (++icol == perRow) { icol = 0; iy += cell; }
+        }
+        if (icol != 0) iy += cell;
+
+        // Every icon in the table must actually put ink down. An id listed
+        // here but missing from the drawing code would show as a blank tile,
+        // and nobody would notice until it was on somebody's deck.
+        int undrawn = 0, blank = 0;
+        for (const LibIcon& ic : iconLibrary()) {
+            Bitmap probe(48, 48, PixelFormat32bppARGB);
+            Graphics pg(&probe);
+            pg.Clear(Color(0, 0, 0, 0));
+            pg.SetSmoothingMode(SmoothingModeAntiAlias);
+            if (!drawLibraryIcon(pg, ic.id, RectF(4, 4, 40, 40),
+                                 Color(255, 255, 255, 255))) {
+                std::printf("  icon '%s' is listed but not drawn\n", ic.id);
+                ++undrawn;
+                continue;
+            }
+            int ink = 0;
+            for (int py = 0; py < 48 && ink < 24; ++py)
+                for (int px = 0; px < 48 && ink < 24; ++px) {
+                    Color pc;
+                    probe.GetPixel(px, py, &pc);
+                    if (pc.GetA() > 40) ++ink;
+                }
+            if (ink < 24) {
+                std::printf("  icon '%s' drew almost nothing\n", ic.id);
+                ++blank;
+            }
+        }
+        std::printf("icon library: %d icons, %d undrawn, %d blank\n",
+                    (int)iconLibrary().size(), undrawn, blank);
+        if (undrawn || blank) rc = 1;
 
         CLSID png;
         if (encoderClsid(L"image/png", &png)) {

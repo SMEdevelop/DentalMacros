@@ -33,7 +33,7 @@ rem engine.cpp brings in device.cpp and actions.cpp. The tests only ever run
 rem steps with no side effects, so nothing here types, clicks or launches
 rem anything - but the dispatch table and error paths do get exercised.
 cl %TESTFLAGS% /Fobuild\obj-test\ /Fdbuild\obj-test\ ^
-  tests\selftest.cpp src\config.cpp src\import_yaml.cpp src\json.cpp ^
+  tests\selftest.cpp src\config.cpp src\import_yaml.cpp src\json.cpp src\iconlib.cpp ^
   src\keys.cpp src\util.cpp src\vision.cpp src\winman.cpp ^
   src\engine.cpp src\actions.cpp src\device.cpp ^
   /Febuild\selftest.exe ^
@@ -51,7 +51,7 @@ set "TESTRC=%errorlevel%"
 echo.
 echo  Rendering the drawing preview...
 cl %TESTFLAGS% /Fobuild\obj-preview\ /Fdbuild\obj-preview\ ^
-  tests\render_preview.cpp src\theme.cpp src\config.cpp src\import_yaml.cpp ^
+  tests\render_preview.cpp src\theme.cpp src\iconlib.cpp src\config.cpp src\import_yaml.cpp ^
   src\json.cpp src\keys.cpp src\util.cpp ^
   /Febuild\preview.exe ^
   /link /INCREMENTAL:NO gdiplus.lib gdi32.lib user32.lib shell32.lib ole32.lib advapi32.lib

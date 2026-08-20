@@ -207,6 +207,10 @@ key fires, so you can see at a glance that the pad is being read correctly.
 
 **Right — the inspector.** The label, icon and colour for the selected key,
 plus its list of steps with add / edit / remove / reorder and **Test run**.
+
+Click a step to select it; **double-click** it to open the editor. A selected
+step stays selected while you edit, delete or move it, so a run of changes
+does not need a re-click between each one.
 **Record clicks...** builds a click sequence for you: say how many clicks,
 then for each one **right-click** the spot on screen you mean (the small
 status window stays out of the way) and say how long to wait afterwards. It
@@ -225,6 +229,21 @@ is what makes a recorded sequence still work tomorrow.
 
 **Bottom — activity log.** Every macro that fires, and the exact reason for
 anything that fails.
+
+### Icons
+
+**Icon...** in the inspector opens a library of 55 built-in icons — Office,
+Media, Actions, Arrows and Practice — and **Browse for an image file...**
+inside it is still there if you would rather use a picture of your own.
+
+They are drawn in code rather than shipped as image files, for the same
+reason the action glyphs are: nothing to install beside the executable,
+nothing to lose when the folder is moved, identical on every machine, and
+crisp at any size from a 30-pixel launcher button to a full-size deck tile.
+
+A library icon is stored as `"icon": "lib:printer"`. Anything without the
+`lib:` prefix is still read as a file path, so decks built before the library
+existed keep working exactly as they did.
 
 ### Buttons on top of everything
 
@@ -511,6 +530,8 @@ src/
   main.cpp        entry point, single-instance guard, GDI+ lifetime
   app.cpp         main window: deck grid, sidebar, inspector, tray
   minideck.cpp    the small always-on-top window of just the buttons
+  iconlib.cpp     the built-in icon library: the table and the drawing
+  iconpicker.cpp  the library laid out as a grid you click
   dialogs.cpp     keyboard picker, key capture, step editor, snip overlay
   ui_common.cpp   dark-themed controls and the modal host
   theme.cpp       colours, DPI scaling, hand-drawn icons
@@ -526,7 +547,7 @@ src/
   util.cpp        strings, paths, files
   app.ico         generated - see tools/make_icon.cpp
 tests/
-  selftest.cpp        225 checks over every non-UI subsystem
+  selftest.cpp        239 checks over every non-UI subsystem
   render_preview.cpp  renders the icons and tiles to a PNG
 tools/
   make_icon.cpp       exports src\app.ico from theme.cpp's drawAppIcon()

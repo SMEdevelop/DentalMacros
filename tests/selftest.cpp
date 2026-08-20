@@ -9,12 +9,14 @@
 
 #include "config.h"
 #include "engine.h"
+#include "iconlib.h"
 #include "json.h"
 #include "keys.h"
 #include "util.h"
 #include "vision.h"
 #include "winman.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <string>
@@ -1074,6 +1076,68 @@ RECT rectOf(HWND h) {
 
 }  // namespace
 
+// ------------------------------------------------------ built-in icons
+// The drawing itself is checked by render_preview.exe, which has GDI+ up and
+// can see whether an icon put any ink down. What matters here is the table
+// and the "lib:" reference format that goes into macros.json.
+static void testIconLibrary() {
+    section("Built-in icon library");
+    const auto& all = ui::iconLibrary();
+    ok(!all.empty(), "the library has icons in it", std::to_string(all.size()));
+
+    bool named = true, dupes = false;
+    std::vector<std::string> seen;
+    for (const ui::LibIcon& i : all) {
+        if (!i.id || !*i.id || !i.label || !*i.label || !i.category ||
+            !*i.category)
+            named = false;
+        std::string id = i.id;
+        if (std::find(seen.begin(), seen.end(), id) != seen.end()) dupes = true;
+        seen.push_back(id);
+    }
+    ok(named, "every icon has an id, a label and a category");
+    ok(!dupes, "no id appears twice");
+    ok(ui::iconCategories().size() >= 2, "icons are grouped into categories",
+       std::to_string(ui::iconCategories().size()));
+
+    // The reference format that ends up in the config file.
+    const std::string ref = ui::libraryIconRef("printer");
+    ok(ref == "lib:printer", "a library icon is written as lib:<id>", ref);
+    ok(ui::isLibraryIcon(ref), "and recognised on the way back in");
+    ok(ui::libraryIconId(ref) == "printer", "and the id comes back out",
+       ui::libraryIconId(ref));
+    ok(ui::libraryHasIcon("printer"), "a known id is known");
+    ok(!ui::libraryHasIcon("no_such_icon"),
+       "an id from some other build is not");
+
+    // The whole point of the prefix: an icon field is still a file path when
+    // it does not carry one, so decks built before the library keep working.
+    ok(!ui::isLibraryIcon("icons/slack.png"), "a plain path is not a library icon");
+    ok(!ui::isLibraryIcon(""), "and neither is an empty field");
+    ok(ui::libraryIconId("icons/slack.png").empty(),
+       "asking a path for its library id gets nothing");
+
+    // Round trip through the config file, since this shares the `icon` field.
+    cfg::Config c;
+    c.keyboards.push_back({});
+    c.keyboards[0].alias = "Pad";
+    c.keyboards[0].match = "X";
+    cfg::Binding b;
+    b.key = "num1";
+    b.icon = ref;
+    b.steps.push_back({"sleep", js::Value::object()});
+    c.keyboards[0].bindings.push_back(b);
+    const std::string path = appPath("selftest-icons.json");
+    std::string err;
+    ok(c.saveAs(path, &err), "a deck using a library icon saves", err);
+    cfg::Config back;
+    back.load(path);
+    ok(!back.keyboards.empty() && !back.keyboards[0].bindings.empty() &&
+           back.keyboards[0].bindings[0].icon == ref,
+       "and the icon reference survives the round trip");
+    deleteFile(path);
+}
+
 static void testClickWorkflow() {
     section("Recorded-click workflow");
 
@@ -1270,6 +1334,7 @@ int main(int argc, char** argv) {
     testConfigRescue();
     testEngine();
     testClickWorkflow();
+    testIconLibrary();
     if (!yaml.empty()) testYamlImport(yaml);
     testWindows();
     testVision();
