@@ -125,7 +125,7 @@ To check everything works on your machine:
 run_tests.bat
 ```
 
-This runs 216 checks covering JSON, the config model, the step engine, key
+This runs 261 checks covering JSON, the config model, the step engine, key
 tables, deck presets, window management, the image matcher, config recovery,
 the recorded-click workflow, and importing a macrokb `macros.yaml`. The engine
 tests only run steps with no side effects — nothing is typed, clicked or
@@ -175,7 +175,8 @@ half-built binding never silently swallows a key.
 
 The sidebar shows a small badge for anything other than the default: `pass`
 when the keyboard gives up nothing, `some` when it gives up only its macro
-keys. New keyboards take their starting values from **Settings → Macro
+keys, `click` for software buttons with no keyboard behind them. New keyboards
+take their starting values from **Settings → Macro
 keyboards**, and this option applies the moment you change it — unlike the
 first one, it needs no stop-and-start.
 
@@ -186,6 +187,63 @@ Settings save themselves as you work, and the previous day's file is kept in
 pad that has stopped typing can always be handed back without finding the
 window. The Stop button spells the shortcut out while it is listening. Change
 or clear it under **Settings → Start / stop listening shortcut**.
+
+### What blocking costs the keyboard you type on
+
+Worth understanding before you put macros on your **main** keyboard.
+
+Blocking is done with a Windows low-level keyboard hook, and that hook is
+**global and synchronous**: every keystroke from every keyboard in the machine
+goes through MacroDeck before the program you are typing into sees it. To
+decide whether a key belongs to a macro pad, MacroDeck has to work out which
+physical keyboard it came from, and that means waiting briefly for the
+matching raw-input event. Measured here, a keystroke that cannot be matched
+stalls for about **40ms** before being let through.
+
+On a dedicated macro pad that costs nothing you would notice. On the keyboard
+you type on all day it is a different story, and if enough keystrokes queue up
+Windows eventually decides the hook is too slow and stops calling it — which
+looks exactly like dropped keystrokes.
+
+So MacroDeck asks a cheaper question first: *could any keyboard here possibly
+block this key at all?* If the answer is no — and with a handful of macros on
+a keyboard set to take only the macro keys, that is very nearly every key you
+type — the keystroke goes straight through with no waiting and no lookup. The
+answer is worked out whenever the configuration changes, so the hook does a
+flat table read and nothing else.
+
+Two cases must still be paid for, because there is no honest shortcut:
+
+- keys that **actually run a macro** on a blocking keyboard, and
+- **every** key on a keyboard set to *Turn off all normal input*, since the
+  point is that the whole device goes silent, and only the device itself can
+  tell you which keyboard a keystroke came from.
+
+If your main keyboard still feels slow, the options in order of how little you
+give up: untick **Turn off all normal input** so only bound keys are
+inspected; move the macros to **software buttons** (below), which install no
+hook at all; or untick **Block these keys from apps**, which means macro keys
+fire *and* type.
+
+### Buttons with no keyboard
+
+**＋ Add software buttons** in the sidebar makes a deck with no keyboard
+behind it. The buttons live on the deck and on the always-on-top palette, and
+you fire them by clicking. There is no key to press, nothing is taken from
+anything you type, and **no hook is installed** — so this cannot cost a
+keystroke anywhere in Windows, however many buttons you make.
+
+It is the right answer when you want macros but not at the price of touching
+your typing, when the macro pad is not plugged in, or when there is no spare
+keyboard to dedicate to the job.
+
+They need no **Start Listening**: a click is not a keystroke, so there is
+nothing to intercept. If software buttons are all you have configured,
+MacroDeck does not register for raw keyboard input at all, and says so in the
+activity log rather than claiming to be listening to something.
+
+Everything else about them is an ordinary binding — label, icon, colour,
+steps, Test run, and firing from the always-on-top palette.
 
 ---
 
@@ -547,7 +605,7 @@ src/
   util.cpp        strings, paths, files
   app.ico         generated - see tools/make_icon.cpp
 tests/
-  selftest.cpp        239 checks over every non-UI subsystem
+  selftest.cpp        261 checks over every non-UI subsystem
   render_preview.cpp  renders the icons and tiles to a PNG
 tools/
   make_icon.cpp       exports src\app.ico from theme.cpp's drawAppIcon()

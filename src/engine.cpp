@@ -39,6 +39,10 @@ void Engine::log(const std::string& msg) {
 void Engine::updateConfig(const cfg::Config& c) {
     std::lock_guard<std::mutex> lk(cfgMu_);
     cfg_ = c;
+    // Recomputed here, once per edit, rather than per keystroke in the hook.
+    for (int vk = 0; vk < 256; ++vk)
+        couldBlock_[(size_t)vk].store(cfg_.couldBlockVk(vk),
+                                      std::memory_order_relaxed);
 }
 
 // ------------------------------------------------------------------ input
@@ -454,17 +458,25 @@ void Engine::start() {
         lastDown_.clear();
     }
 
-    try {
-        listener_.start([this](const dev::KeyEvent& ev) { onKey(ev); });
-        listenerActive_.store(true);
-    } catch (const std::exception& e) {
-        throw std::runtime_error(std::string("Could not read keyboard input: ") +
-                                 e.what());
+    // Software buttons are clicked, not pressed. If that is all there is,
+    // there is nothing to listen to and no reason to register for raw input.
+    bool anyPhysical = false;
+    for (const auto& k : snapshot.keyboards)
+        if (!k.softwareOnly) anyPhysical = true;
+
+    if (anyPhysical) {
+        try {
+            listener_.start([this](const dev::KeyEvent& ev) { onKey(ev); });
+            listenerActive_.store(true);
+        } catch (const std::exception& e) {
+            throw std::runtime_error(
+                std::string("Could not read keyboard input: ") + e.what());
+        }
     }
 
     bool anyBlocking = false;
     for (const auto& k : snapshot.keyboards)
-        if (k.block) anyBlocking = true;
+        if (k.block && !k.softwareOnly) anyBlocking = true;
 
     if (anyBlocking) {
         try {
@@ -472,6 +484,12 @@ void Engine::start() {
                         [this](const std::string& path, int vk) {
                             std::lock_guard<std::mutex> lk(cfgMu_);
                             return cfg_.blockedForKey(path, vk);
+                        },
+                        // Asked first, for every keystroke in the machine.
+                        [this](int vk) {
+                            return vk >= 0 && vk < 256 &&
+                                   couldBlock_[(size_t)vk].load(
+                                       std::memory_order_relaxed);
                         });
         } catch (const std::exception& e) {
             listener_.stop();
@@ -482,14 +500,19 @@ void Engine::start() {
     }
 
     running_.store(true);
-    log("Listening for macro keys.");
+    // Say what is actually happening. With only software buttons configured
+    // nothing is being listened to, and claiming otherwise is how someone
+    // ends up hunting for latency that is not there.
+    log(anyPhysical ? "Listening for macro keys."
+                    : "Ready. Nothing is being read from any keyboard.");
     for (const auto& k : snapshot.keyboards) {
         int bound = 0;
         for (const auto& b : k.bindings)
             if (!b.steps.empty()) ++bound;
         log("  " + k.alias + " - " + std::to_string(bound) +
             (bound == 1 ? " macro, " : " macros, ") +
-            (!k.block          ? "keys also type normally"
+            (k.softwareOnly    ? "clicked on screen, no keyboard involved"
+             : !k.block        ? "keys also type normally"
              : k.blockAllKeys  ? "every key blocked from apps"
                                : "only macro keys blocked, the rest still type"));
     }

@@ -4,6 +4,7 @@
 #include "config.h"
 #include "device.h"
 
+#include <array>
 #include <atomic>
 #include <condition_variable>
 #include <deque>
@@ -88,6 +89,12 @@ private:
 
     mutable std::mutex cfgMu_;
     cfg::Config cfg_;
+
+    // Which virtual keys any configured keyboard could take from another
+    // program. The hook reads this for every keystroke in the machine, so it
+    // is a flat lookup with no lock: taking cfgMu_ there would put the whole
+    // system's typing behind whatever else happens to hold it.
+    std::array<std::atomic<bool>, 256> couldBlock_{};
 
     std::mutex logMu_;
     LogFn log_;

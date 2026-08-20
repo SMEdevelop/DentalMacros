@@ -89,12 +89,16 @@ public:
     // and keep typing with the rest.
     using ShouldBlock =
         std::function<bool(const std::string& devicePath, int vk)>;
+    // Asked first, on the hook thread, for every keystroke on every keyboard
+    // in the machine. It must be cheap and it must not block: saying no here
+    // is what keeps ordinary typing out of the correlation wait below.
+    using CouldBlock = std::function<bool(int vk)>;
 
     BlockingHook() = default;
     ~BlockingHook();
 
     void start(RawKeyboardListener* listener, ShouldBlock pred,
-               int correlateTimeoutMs = 30);
+               CouldBlock couldBlock = nullptr, int correlateTimeoutMs = 30);
     void stop();
     bool running() const { return running_.load(); }
 
@@ -104,6 +108,7 @@ private:
 
     RawKeyboardListener* listener_ = nullptr;
     ShouldBlock pred_;
+    CouldBlock couldBlock_;
     int timeoutMs_ = 30;
     std::thread thread_;
     std::atomic<bool> running_{false};

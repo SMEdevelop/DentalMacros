@@ -29,6 +29,9 @@ struct MiniButton {
     std::string color;        // "#rrggbb", empty = theme default
     std::string firstAction;  // action id of step 1, for the fallback glyph
     bool hasSteps = false;
+    // False for a software button, which has no key behind it - the key field
+    // is an opaque id and printing it would be noise.
+    bool showKey = true;
 };
 
 // Where the palette sits, how big it is, and whether it was open. Saved with

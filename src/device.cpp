@@ -319,6 +319,7 @@ std::mutex g_hookInstanceMu;
 struct HookState {
     RawKeyboardListener* listener = nullptr;
     BlockingHook::ShouldBlock pred;
+    BlockingHook::CouldBlock couldBlock;
     int timeoutMs = 30;
 };
 HookState g_hookState;
@@ -340,6 +341,22 @@ LRESULT CALLBACK BlockingHook::hookProc(int code, WPARAM w, LPARAM l) {
                 std::lock_guard<std::mutex> lk(g_hookInstanceMu);
                 state = g_hookState;
             }
+            // WH_KEYBOARD_LL is global and synchronous: every keystroke on
+            // every keyboard in the machine comes through here, and the app
+            // the user is typing into does not see it until this returns.
+            // findDevice below waits for the matching raw-input event so the
+            // keystroke can be traced to a physical keyboard, and that wait is
+            // the whole cost. Paying it on keys nothing could ever block -
+            // which on a main keyboard with a handful of macros is very nearly
+            // every key typed all day - is what makes typing feel laggy and
+            // drops keystrokes outright when Windows loses patience with a
+            // slow hook.
+            //
+            // So: ask the cheap question first, and let ordinary typing past
+            // without waiting for anything.
+            if (state.couldBlock && !state.couldBlock((int)info->vkCode))
+                return CallNextHookEx(nullptr, code, w, l);
+
             if (state.listener && state.pred) {
                 std::string path = state.listener->findDevice(
                     (int)info->vkCode, down, state.timeoutMs);
@@ -354,15 +371,17 @@ LRESULT CALLBACK BlockingHook::hookProc(int code, WPARAM w, LPARAM l) {
 }
 
 void BlockingHook::start(RawKeyboardListener* listener, ShouldBlock pred,
-                         int correlateTimeoutMs) {
+                         CouldBlock couldBlock, int correlateTimeoutMs) {
     if (running_.load()) return;
     listener_ = listener;
     pred_ = std::move(pred);
+    couldBlock_ = std::move(couldBlock);
     timeoutMs_ = correlateTimeoutMs;
     {
         std::lock_guard<std::mutex> lk(g_hookInstanceMu);
         g_hookState.listener = listener_;
         g_hookState.pred = pred_;
+        g_hookState.couldBlock = couldBlock_;
         g_hookState.timeoutMs = timeoutMs_;
         g_hookInstance = this;
     }

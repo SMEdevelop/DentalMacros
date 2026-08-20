@@ -409,6 +409,10 @@ void Config::load(const std::string& file) {
                 // Absent in files written before this option existed, and
                 // true is what those files meant.
                 kb.blockAllKeys = k.boolean("blockAllKeys", true);
+                kb.softwareOnly = k.boolean("softwareOnly", false);
+                // Belt and braces: a software deck that somehow arrived with
+                // block set must not install the hook.
+                if (kb.softwareOnly) { kb.block = false; kb.match.clear(); }
                 kb.deck = k.str("deck", "auto");
                 if (kb.alias.empty()) continue;
                 if (const js::Value* bs = k.find("bindings")) {
@@ -429,7 +433,9 @@ void Config::load(const std::string& file) {
                                             bind.steps.push_back(std::move(step));
                                     }
 
-                            if (!keys::toVk(bind.key))
+                            // A software button's key is an opaque id, not
+                            // a key name, so there is nothing to warn about.
+                            if (!kb.softwareOnly && !keys::toVk(bind.key))
                                 loadWarnings.push_back(
                                     "\"" + kb.alias + "\": no key called \"" +
                                     bind.key +
@@ -484,6 +490,7 @@ std::string Config::toJson() const {
         k["match"] = kb.match;
         k["block"] = kb.block;
         k["blockAllKeys"] = kb.blockAllKeys;
+        if (kb.softwareOnly) k["softwareOnly"] = true;
         k["deck"] = kb.deck;
         js::Value bs = js::Value::array();
         for (const Binding& b : kb.bindings) {
@@ -586,6 +593,17 @@ const Keyboard* Config::keyboardForDevice(const std::string& devicePath) const {
 bool Config::blockedForDevice(const std::string& devicePath) const {
     const Keyboard* k = keyboardForDevice(devicePath);
     return k && k->block;
+}
+
+bool Config::couldBlockVk(int vk) const {
+    const std::string name = keys::vkName(vk);
+    for (const Keyboard& k : keyboards) {
+        if (!k.block) continue;
+        if (k.blockAllKeys) return true;   // every key on that device is fair game
+        const Binding* b = k.findKey(name);
+        if (b && !b->steps.empty()) return true;
+    }
+    return false;
 }
 
 bool Config::blockedForKey(const std::string& devicePath, int vk) const {

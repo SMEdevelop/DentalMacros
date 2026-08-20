@@ -8,6 +8,7 @@
 // blocking hook, so it stays a plain console program.
 
 #include "config.h"
+#include "device.h"
 #include "engine.h"
 #include "iconlib.h"
 #include "json.h"
@@ -17,6 +18,7 @@
 #include "winman.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <string>
@@ -1080,6 +1082,136 @@ RECT rectOf(HWND h) {
 // The drawing itself is checked by render_preview.exe, which has GDI+ up and
 // can see whether an icon put any ink down. What matters here is the table
 // and the "lib:" reference format that goes into macros.json.
+// ------------------------------------------------ typing through the hook
+// WH_KEYBOARD_LL is global and synchronous: every keystroke in the machine
+// goes through it before the app being typed into sees it. The hook used to
+// wait for the raw-input event on EVERY key so it could tell which physical
+// keyboard the key came from. On a main keyboard carrying a handful of
+// macros, that is a wait on very nearly every key typed all day.
+static void testHookCost() {
+    section("What the blocking hook costs a keystroke");
+
+    // The wait, measured. Nothing is feeding this listener, so this is the
+    // cost of a keystroke the hook cannot correlate - the bad case that made
+    // typing feel laggy.
+    dev::RawKeyboardListener idle;
+    const auto t0 = std::chrono::steady_clock::now();
+    const std::string got = idle.findDevice('A', true, 30);
+    const double stallMs =
+        std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - t0)
+            .count();
+    ok(got.empty(), "an uncorrelated keystroke finds no device");
+    // The number is in the label, not the failure detail: a measurement is
+    // worth seeing on a passing run too.
+    ok(stallMs >= 20.0,
+       "and only finds that out after stalling for " +
+           std::to_string((int)stallMs) + "ms (timeout is 30ms)");
+
+    // The fix: ask a question that needs no waiting at all first.
+    cfg::Config c;
+    cfg::Keyboard kb;
+    kb.alias = "Main";
+    kb.match = "VID_DEAD";
+    kb.block = true;
+    kb.blockAllKeys = false;      // "only macro keys blocked, the rest type"
+    cfg::Binding macro;
+    macro.key = "f13";
+    macro.steps.push_back({"sleep", js::Value::object()});
+    kb.bindings.push_back(macro);
+    c.keyboards.push_back(kb);
+
+    ok(c.couldBlockVk(keys::toVk("f13")),
+       "a key carrying a macro still has to be looked at");
+    ok(!c.couldBlockVk('A'), "but an ordinary letter is let straight through");
+    ok(!c.couldBlockVk(VK_SPACE), "and so is the space bar");
+    ok(!c.couldBlockVk(VK_RETURN), "and Enter");
+
+    // A half-finished tile must not cost anything either: taking its key
+    // would silence a key for no benefit.
+    cfg::Binding empty;
+    empty.key = "f14";
+    c.keyboards[0].bindings.push_back(empty);
+    ok(!c.couldBlockVk(keys::toVk("f14")),
+       "a key with no steps on it is not worth stopping for");
+
+    // Blocking everything on a device means every key must be correlated -
+    // there is no shortcut available, and claiming one would break blocking.
+    c.keyboards[0].blockAllKeys = true;
+    ok(c.couldBlockVk('A'),
+       "with every key on a device blocked, no key can be shortcut");
+
+    // A keyboard that is not blocking costs nothing whatever it carries.
+    c.keyboards[0].block = false;
+    ok(!c.couldBlockVk('A') && !c.couldBlockVk(keys::toVk("f13")),
+       "a keyboard that blocks nothing never reaches the hook at all");
+}
+
+// -------------------------------------------------- buttons with no keyboard
+static void testSoftwareDeck() {
+    section("Software buttons, with no keyboard behind them");
+
+    cfg::Config c;
+    cfg::Keyboard sw;
+    sw.alias = "Buttons";
+    sw.softwareOnly = true;
+    sw.block = false;
+    sw.match.clear();
+    cfg::Binding b;
+    b.key = "btn1";              // an id, not a key name
+    b.title = "Print the day sheet";
+    b.steps.push_back({"sleep", js::Value::object()});
+    sw.bindings.push_back(b);
+    c.keyboards.push_back(sw);
+
+    // The whole promise: it cannot cost a keystroke, because it matches no
+    // device and nothing it contains reaches the hook.
+    ok(!c.blockedForDevice("\\?\HID#VID_046D&PID_C53D"),
+       "a software deck claims no device");
+    ok(!c.couldBlockVk('A') && !c.couldBlockVk(VK_RETURN),
+       "and puts no key into the hook's shortcut table");
+    ok(c.keyboardForDevice("\\?\HID#VID_046D&PID_C53D") == nullptr,
+       "no device resolves to it");
+    ok(!cfg::specMatches("", "\\?\HID#VID_046D&PID_C53D"),
+       "an empty match string matches nothing at all");
+
+    // Round trip, including the flag and the opaque key id.
+    const std::string path = appPath("selftest-sw.json");
+    std::string err;
+    ok(c.saveAs(path, &err), "a software deck saves", err);
+    cfg::Config back;
+    back.load(path);
+    ok(back.keyboards.size() == 1 && back.keyboards[0].softwareOnly,
+       "and comes back marked software-only");
+    ok(!back.keyboards[0].bindings.empty() &&
+           back.keyboards[0].bindings[0].key == "btn1",
+       "keeping the button id");
+    ok(back.keyboards[0].bindings[0].title == "Print the day sheet",
+       "and its label");
+    // "btn1" is not a key name, and must not be complained about as one.
+    bool moaned = false;
+    for (const std::string& w : back.loadWarnings)
+        if (w.find("btn1") != std::string::npos) moaned = true;
+    ok(!moaned, "and no warning that btn1 is not a real key");
+    deleteFile(path);
+
+    // A file that somehow carries block on a software deck must not be able to
+    // install the hook.
+    const std::string bad = appPath("selftest-sw2.json");
+    ok(writeFileAtomic(
+           bad,
+           R"({"keyboards":[{"alias":"B","softwareOnly":true,"block":true,)"
+           R"("blockAllKeys":true,"match":"VID_9999","bindings":[]}]})"),
+       "writes a software deck that claims to block");
+    cfg::Config forced;
+    forced.load(bad);
+    ok(!forced.keyboards.empty() && !forced.keyboards[0].block,
+       "loading it turns the blocking off");
+    ok(forced.keyboards[0].match.empty(), "and drops the device match");
+    ok(!forced.couldBlockVk('A'), "so it still cannot cost a keystroke");
+    deleteFile(bad);
+}
+
 static void testIconLibrary() {
     section("Built-in icon library");
     const auto& all = ui::iconLibrary();
@@ -1335,6 +1467,8 @@ int main(int argc, char** argv) {
     testEngine();
     testClickWorkflow();
     testIconLibrary();
+    testSoftwareDeck();
+    testHookCost();
     if (!yaml.empty()) testYamlImport(yaml);
     testWindows();
     testVision();

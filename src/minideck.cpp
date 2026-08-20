@@ -317,7 +317,9 @@ void MiniDeck::paintButton(void* graphics, size_t index) {
 
     RectF label(r.X + Sf(1.0f), r.GetBottom() - r.Height * 0.40f,
                 r.Width - Sf(2.0f), r.Height * 0.34f);
-    drawText(g, W(keys::displayName(b.key)), label,
+    // A software button shows the start of its own name instead of a key.
+    const std::string foot = b.showKey ? keys::displayName(b.key) : b.title;
+    drawText(g, W(foot), label,
              place_.tile <= kMiniTileSmall ? 8.0f : 9.0f,
              withAlpha(Color(255, 255, 255, 255), 225), Align::Center, true);
 }
@@ -359,7 +361,9 @@ void MiniDeck::paint(HDC hdc) {
         std::string strip = caption_;
         if (hover_ >= 0 && hover_ < (int)buttons_.size()) {
             const MiniButton& b = buttons_[(size_t)hover_];
-            strip = b.title.empty() ? keys::displayName(b.key) : b.title;
+            strip = !b.title.empty() ? b.title
+                    : b.showKey        ? keys::displayName(b.key)
+                                       : std::string("Button");
             if (!b.hasSteps) strip += " - no steps yet";
         }
         RectF capR(Sf(18.0f), gripR.Y, gripR.Width - Sf(18.0f) - Sf(kGripH),

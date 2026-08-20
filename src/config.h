@@ -86,6 +86,14 @@ struct Keyboard {
     // Defaults to true so that configs written before this option existed keep
     // behaving exactly as they did.
     bool blockAllKeys = true;
+
+    // A deck with no keyboard behind it: buttons that exist only on screen,
+    // fired by clicking them on the deck or the always-on-top palette. It
+    // matches no device, takes no key from anybody, and - the point - never
+    // causes the low-level hook to be installed, so it cannot cost a
+    // keystroke anywhere in the machine.
+    bool softwareOnly = false;
+
     std::string deck = "auto";
     std::vector<Binding> bindings;
 
@@ -161,6 +169,13 @@ struct Config {
     // True if this device blocks anything at all. Used to decide whether the
     // low-level hook is worth installing; it does NOT mean every key is taken.
     bool blockedForDevice(const std::string& devicePath) const;
+    // Could this virtual key be taken from another program by ANY configured
+    // keyboard? The hook asks this first, before it goes to the trouble of
+    // working out which keyboard a keystroke came from. Answering no lets an
+    // ordinary keystroke straight through, which is the difference between
+    // typing normally and typing through a stall on every key.
+    bool couldBlockVk(int vk) const;
+
     // True if this exact keystroke should be taken away from other programs.
     // This is the one the hook asks, and the only one that understands
     // blockAllKeys: with it off, only a key carrying a macro is taken.

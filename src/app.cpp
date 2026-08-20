@@ -229,6 +229,7 @@ private:
 
     // ---- commands
     void addKeyboard();
+    void addSoftwareDeck();
     void keyboardContextMenu(int index, POINT screenPt);
     void tileContextMenu(int tileIndex, POINT screenPt);
     void activateTile(int tileIndex);
@@ -887,7 +888,10 @@ void MainWindow::paintSidebar(Graphics& g) {
         // No badge is the default, fully-blocking case. "pass" = nothing is
         // taken from this keyboard; "some" = only the keys that run macros.
         const wchar_t* badgeText =
-            !kb.block ? L"pass" : (!kb.blockAllKeys ? L"some" : nullptr);
+            kb.softwareOnly ? L"click"
+            : !kb.block     ? L"pass"
+            : !kb.blockAllKeys ? L"some"
+                               : nullptr;
         if (badgeText) {
             RectF badge((REAL)(x + w - S(30)), (REAL)(y + S(8)), (REAL)S(22),
                         (REAL)S(14));
@@ -909,6 +913,25 @@ void MainWindow::paintSidebar(Graphics& g) {
         drawGlyphPlus(g, plus, theme().accent, S(1.6f));
         RectF tr((REAL)(x + S(28)), (REAL)y, (REAL)(w - S(30)), (REAL)S(kRowH));
         drawText(g, L"Add a keyboard", tr, 13, theme().accent, Align::Left);
+        y += S(kRowH) + S(2);
+    }
+
+    {
+        // Buttons with no keyboard behind them. Worth its own row rather than
+        // an option inside the keyboard scan, because the whole point is that
+        // there is no device to go looking for.
+        KbRow row;
+        row.index = -2;
+        row.rect = {x, y, x + w, y + S(kRowH)};
+        kbRows_.push_back(row);
+        bool hot = hoverKb_ == -3;
+        if (hot) fillRounded(g, toRectF(row.rect), S(6.0f), theme().panelAlt);
+        RectF plus((REAL)(x + S(10)), (REAL)(y + S(10)), (REAL)S(10),
+                   (REAL)S(10));
+        drawGlyphPlus(g, plus, theme().accent, S(1.6f));
+        RectF tr((REAL)(x + S(28)), (REAL)y, (REAL)(w - S(30)), (REAL)S(kRowH));
+        drawText(g, L"Add software buttons", tr, 13, theme().accent,
+                 Align::Left);
         y += S(kRowH) + S(14);
     }
 
@@ -1058,7 +1081,7 @@ void MainWindow::paintTile(Graphics& g, const DeckTile& tile,
                    S(18.0f), S(18.0f));
         drawGlyphPlus(g, plus, hover ? theme().accent : theme().textFaint,
                       S(1.8f));
-        if (!tile.key.empty()) {
+        if (!tile.key.empty() && !kb->softwareOnly) {
             RectF kr(r.X, r.GetBottom() - S(22.0f), r.Width, S(16.0f));
             drawText(g, W(keys::displayName(tile.key)), kr, 10,
                      theme().textFaint, Align::Center);
@@ -1079,14 +1102,16 @@ void MainWindow::paintTile(Graphics& g, const DeckTile& tile,
                            : withAlpha(theme().border, 140),
                   selected ? S(2.0f) : 1.0f);
 
-    // key badge
-    RectF badge(r.X + S(7.0f), r.Y + S(6.0f), 0, S(15.0f));
-    std::wstring keyLabel = W(keys::displayName(b->key));
-    SizeF ks = measureText(g, keyLabel, 9, true);
-    badge.Width = ks.Width + S(10.0f);
-    fillRounded(g, badge, S(4.0f), withAlpha(Color(255, 0, 0, 0), 70));
-    drawText(g, keyLabel, badge, 9, withAlpha(theme().text, 220), Align::Center,
-             true);
+    // key badge - meaningless on a button that has no key behind it
+    if (!kb->softwareOnly) {
+        RectF badge(r.X + S(7.0f), r.Y + S(6.0f), 0, S(15.0f));
+        std::wstring keyLabel = W(keys::displayName(b->key));
+        SizeF ks = measureText(g, keyLabel, 9, true);
+        badge.Width = ks.Width + S(10.0f);
+        fillRounded(g, badge, S(4.0f), withAlpha(Color(255, 0, 0, 0), 70));
+        drawText(g, keyLabel, badge, 9, withAlpha(theme().text, 220),
+                 Align::Center, true);
+    }
 
     // icon: custom image if set, otherwise the first step's action glyph
     float iconSize = std::min(r.Width, r.Height) * 0.36f;
@@ -1307,7 +1332,14 @@ void MainWindow::assignKeyToTile(int tileIndex) {
     const cfg::DeckPreset* preset = currentPreset();
 
     std::string key = t.key;
-    if (key.empty()) {
+    if (key.empty() && kb->softwareOnly) {
+        // Nothing to press. The key field is just an id here, so mint one that
+        // no real key name could collide with and get straight to naming it.
+        for (int n = 1;; ++n) {
+            std::string id = "btn" + std::to_string(n);
+            if (!kb->findKey(id)) { key = id; break; }
+        }
+    } else if (key.empty()) {
         // Blank slot on a generic grid (or the flow "+" tile): ask the user to
         // press the key they want this tile to be.
         KeyCaptureResult r = captureKey(
@@ -1841,6 +1873,29 @@ void MainWindow::showMenu() {
     DestroyMenu(m);
 }
 
+void MainWindow::addSoftwareDeck() {
+    std::string name = "Buttons";
+    if (!askText(hwnd_, "Software buttons",
+                 "What should this set of buttons be called?", name,
+                 "They live on the deck and on the always-on-top palette. "
+                 "No keyboard is involved, so nothing is taken from anything "
+                 "you type."))
+        return;
+    cfg::Keyboard kb;
+    kb.alias = config_.uniqueAlias(name.empty() ? "Buttons" : name);
+    kb.softwareOnly = true;
+    kb.block = false;        // never reaches the hook
+    kb.match.clear();        // matches no device: specMatches("") is false
+    kb.deck = "auto";
+    config_.keyboards.push_back(std::move(kb));
+    saveConfig();
+    engine_.updateConfig(config_);
+    selectKeyboard(config_.keyboards.back().alias);
+    pushLog("Added software buttons \"" + config_.keyboards.back().alias +
+            "\". Nothing is taken from any keyboard.");
+    layout();
+}
+
 void MainWindow::keyboardContextMenu(int index, POINT pt) {
     if (index < 0 || index >= (int)config_.keyboards.size()) return;
     cfg::Keyboard& kb = config_.keyboards[(size_t)index];
@@ -2071,6 +2126,7 @@ void MainWindow::refreshMiniDeck() {
             mb.icon = b.icon;
             mb.color = b.color;
             mb.hasSteps = !b.steps.empty();
+            mb.showKey = !kb->softwareOnly;
             if (mb.hasSteps) mb.firstAction = b.steps[0].action;
             out.push_back(std::move(mb));
         }
@@ -2086,8 +2142,11 @@ void MainWindow::runBindingByKey(const std::string& key) {
     // Same path the pad takes, so a macro behaves identically however it was
     // started - including running with the engine stopped, which is the point
     // of a palette you can click.
-    pushLog("Buttons: " + keys::displayName(b->key) + " (" +
-            std::to_string(b->steps.size()) + " steps)");
+    // A software button's key is an id, so name it by its label instead -
+    // "Btn1" tells nobody which button was pressed.
+    pushLog("Buttons: " +
+            (kb->softwareOnly ? b->displayTitle() : keys::displayName(b->key)) +
+            " (" + std::to_string(b->steps.size()) + " steps)");
     lastFire_[currentAlias_ + "|" + b->key] = GetTickCount();
     SetTimer(hwnd_, 2, 60, nullptr);
     InvalidateRect(hwnd_, nullptr, FALSE);
@@ -2333,7 +2392,8 @@ LRESULT CALLBACK MainWindow::wndProc(HWND hwnd, UINT msg, WPARAM wp,
                         self->hoverPalette_ = (int)i;
                 for (const auto& r : self->kbRows_)
                     if (ptIn(r.rect, p))
-                        self->hoverKb_ = r.index >= 0 ? r.index : -2;
+                        self->hoverKb_ =
+                            r.index >= 0 ? r.index : (r.index == -1 ? -2 : -3);
             }
             if (self->dragging_ || oldTile != self->hoverTile_ ||
                 oldPal != self->hoverPalette_ || oldKb != self->hoverKb_)
@@ -2360,7 +2420,8 @@ LRESULT CALLBACK MainWindow::wndProc(HWND hwnd, UINT msg, WPARAM wp,
             }
             for (const auto& r : self->kbRows_) {
                 if (!ptIn(r.rect, p)) continue;
-                if (r.index < 0) self->addKeyboard();
+                if (r.index == -1) self->addKeyboard();
+                else if (r.index == -2) self->addSoftwareDeck();
                 else self->selectKeyboard(
                     self->config_.keyboards[(size_t)r.index].alias);
                 return 0;
