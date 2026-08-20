@@ -219,6 +219,9 @@ private:
     void selectKeyboard(const std::string& alias);
     void selectTile(int tileIndex);
     void refreshInspector();
+    // Enable/disable the step buttons for whatever is selected right now,
+    // without rebuilding the list underneath the user's cursor.
+    void updateStepButtons();
     void refreshDeckCombo();
     void modelChanged(bool relayoutDeck = true);
     void saveConfig();
@@ -282,6 +285,10 @@ private:
     MiniDeck mini_;
 
     std::string currentAlias_;
+    // Which binding the step list was last built for ("alias|key"), so that
+    // keeping the selection across a rebuild does not carry step 3 of one key
+    // over to step 3 of the next one.
+    std::string stepListFor_;
     int selectedTile_ = -1;
     int hoverTile_ = -1;
     int hoverPalette_ = -1;
@@ -1184,6 +1191,18 @@ void MainWindow::refreshInspector() {
     EnableWindow(btnRecord_, has);
     EnableWindow(btnTest_, has && !b->steps.empty());
 
+    // LB_RESETCONTENT throws the selection away, so remember it and put it
+    // back. Without this, clicking a step selected it and deselected it in the
+    // same breath - Edit and Remove went grey again immediately - and the only
+    // way to fix one bad step was to delete them all and record the sequence
+    // over again.
+    const std::string nowFor = has ? currentAlias_ + "|" + b->key : std::string();
+    int keep = (int)SendMessageW(stepList_, LB_GETCURSEL, 0, 0);
+    // A different key is a fresh list. Carrying an index across would land on
+    // whatever step happens to sit at that position in the new one.
+    if (nowFor != stepListFor_) keep = -1;
+    stepListFor_ = nowFor;
+
     SendMessageW(stepList_, LB_RESETCONTENT, 0, 0);
     if (has)
         for (size_t i = 0; i < b->steps.size(); ++i)
@@ -1193,13 +1212,24 @@ void MainWindow::refreshInspector() {
                              .c_str());
     EnableWindow(stepList_, has);
 
+    if (has && keep >= 0) {
+        // The step that was selected may have just been deleted off the end.
+        if (keep >= (int)b->steps.size()) keep = (int)b->steps.size() - 1;
+        if (keep >= 0) SendMessageW(stepList_, LB_SETCURSEL, (WPARAM)keep, 0);
+    }
+
+    updateStepButtons();
+    InvalidateRect(hwnd_, &rcInspector_, FALSE);
+}
+
+void MainWindow::updateStepButtons() {
+    cfg::Binding* b = selectedBinding();
     int sel = (int)SendMessageW(stepList_, LB_GETCURSEL, 0, 0);
-    bool hasStep = has && sel >= 0;
+    const bool hasStep = b && sel >= 0 && sel < (int)b->steps.size();
     EnableWindow(btnEditStep_, hasStep);
     EnableWindow(btnDelStep_, hasStep);
     EnableWindow(btnUp_, hasStep && sel > 0);
-    EnableWindow(btnDown_, hasStep && b && sel < (int)b->steps.size() - 1);
-    InvalidateRect(hwnd_, &rcInspector_, FALSE);
+    EnableWindow(btnDown_, hasStep && sel < (int)b->steps.size() - 1);
 }
 
 void MainWindow::modelChanged(bool relayoutDeck) {
@@ -1318,9 +1348,11 @@ void MainWindow::addStep(const std::string& presetAction) {
     if (!editStepDialog(hwnd_, step, config_.settings)) return;
     b->steps.push_back(step);
     modelChanged();
+    // Land on the step just added, and leave it selected: the refresh that
+    // used to follow this reset the list and threw the selection away again.
     SendMessageW(stepList_, LB_SETCURSEL,
                  (WPARAM)(b->steps.size() - 1), 0);
-    refreshInspector();
+    updateStepButtons();
 }
 
 void MainWindow::editStep() {
@@ -1333,7 +1365,7 @@ void MainWindow::editStep() {
     b->steps[(size_t)sel] = step;
     modelChanged();
     SendMessageW(stepList_, LB_SETCURSEL, (WPARAM)sel, 0);
-    refreshInspector();
+    updateStepButtons();
 }
 
 void MainWindow::removeStep() {
@@ -1343,9 +1375,11 @@ void MainWindow::removeStep() {
     if (sel < 0 || sel >= (int)b->steps.size()) return;
     b->steps.erase(b->steps.begin() + sel);
     modelChanged();
+    // Stay where they were, or on the new last step if the end was removed,
+    // so a run of deletions does not need a re-click between each one.
     SendMessageW(stepList_, LB_SETCURSEL,
                  (WPARAM)std::min(sel, (int)b->steps.size() - 1), 0);
-    refreshInspector();
+    updateStepButtons();
 }
 
 void MainWindow::moveStep(int delta) {
@@ -1356,8 +1390,9 @@ void MainWindow::moveStep(int delta) {
     if (sel < 0 || dst < 0 || dst >= (int)b->steps.size()) return;
     std::swap(b->steps[(size_t)sel], b->steps[(size_t)dst]);
     modelChanged();
+    // Follow the step being moved, so Up can be pressed repeatedly.
     SendMessageW(stepList_, LB_SETCURSEL, (WPARAM)dst, 0);
-    refreshInspector();
+    updateStepButtons();
 }
 
 void MainWindow::recordClicks() {
@@ -2438,7 +2473,10 @@ LRESULT CALLBACK MainWindow::wndProc(HWND hwnd, UINT msg, WPARAM wp,
                     if (notify == BN_CLICKED) self->chooseTileColor();
                     return 0;
                 case ID_STEP_LIST:
-                    if (notify == LBN_SELCHANGE) self->refreshInspector();
+                    // Only the buttons need updating. Rebuilding the whole
+                    // list on a click is what made the selection bounce
+                    // straight back off again.
+                    if (notify == LBN_SELCHANGE) self->updateStepButtons();
                     if (notify == LBN_DBLCLK) self->editStep();
                     return 0;
                 case ID_TITLE_EDIT:
