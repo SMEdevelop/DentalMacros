@@ -320,6 +320,29 @@ void drawActionIcon(Graphics& g, const std::string& id, const RectF& box,
         return;
     }
 
+    if (id == "page_goto") {
+        // Two stacked cards with an arrow across the front one: the page you
+        // are on, another behind it, and the move between them.
+        Pen thin(c, std::max(1.0f, w * 0.75f));
+        g.DrawRectangle(&thin, u.rect(0.34f, 0.16f, 0.50f, 0.40f));
+        g.DrawRectangle(&p, u.rect(0.16f, 0.40f, 0.50f, 0.42f));
+        lineTo(g, p, u, 0.28f, 0.61f, 0.54f, 0.61f);
+        lineTo(g, p, u, 0.44f, 0.51f, 0.54f, 0.61f);
+        lineTo(g, p, u, 0.44f, 0.71f, 0.54f, 0.61f);
+        return;
+    }
+
+    if (id == "page_hold") {
+        // The same two cards, with a finger pressing the front one and
+        // staying there - the layer lasts exactly as long as the press.
+        Pen thin(c, std::max(1.0f, w * 0.75f));
+        g.DrawRectangle(&thin, u.rect(0.34f, 0.14f, 0.50f, 0.38f));
+        g.DrawRectangle(&p, u.rect(0.16f, 0.38f, 0.50f, 0.42f));
+        lineTo(g, p, u, 0.41f, 0.46f, 0.41f, 0.60f);
+        dot(0.41f, 0.67f, 0.075f);
+        return;
+    }
+
     // Unknown action: a neutral dot so the tile still reads as "configured".
     dot(0.5f, 0.5f, 0.16f);
 }

@@ -71,6 +71,41 @@ struct Binding {
     std::string displayTitle() const;   // title, or a sensible fallback
 };
 
+// When a page should put itself in front. The three fields are the ones
+// win::WindowInfo reports, matched the same way win::findWindow matches them:
+// exact on the executable and the window class, case-insensitive substring on
+// the title. Any field left empty is not tested, so a rule of nothing at all
+// matches nothing - that is what makes a page the default rather than one
+// that swallows every application.
+struct AppRule {
+    std::string exe;      // image name only, e.g. "photoshop.exe"
+    std::string cls;      // window class
+    std::string title;    // substring of the title
+
+    bool empty() const;
+    bool matches(const std::string& winExe, const std::string& winCls,
+                 const std::string& winTitle) const;
+    // How specific this rule is, so that the tightest matching page wins when
+    // several could claim the same window.
+    int specificity() const;
+    std::string summary() const;   // one line for the page strip and menus
+};
+
+// One layer of the deck: a full set of bindings for the same keys. Six of
+// these is what turns thirteen keys on a macro pad into seventy-eight.
+struct Page {
+    std::string name;
+    std::string color;    // "#rrggbb", empty = theme default
+    AppRule rule;         // empty = this page is not tied to an application
+    std::vector<Binding> bindings;
+
+    Binding* findKey(const std::string& key);
+    const Binding* findKey(const std::string& key) const;
+    Binding* findSlot(int slot);
+
+    std::string displayName() const;   // name, or a sensible fallback
+};
+
 struct Keyboard {
     std::string alias;
     std::string match;    // substring of the Raw Input device path
@@ -95,11 +130,41 @@ struct Keyboard {
     bool softwareOnly = false;
 
     std::string deck = "auto";
-    std::vector<Binding> bindings;
 
+    // Never empty: load(), and every operation that can remove one, keep at
+    // least a single page, so active() always has something to return and no
+    // caller has to check.
+    std::vector<Page> pages{Page{}};
+    // Which page is in front. Not saved: a deck should come back on the page
+    // its rules ask for, not the one that happened to be up when the app was
+    // last closed.
+    int activePage = 0;
+
+    Page& active();
+    const Page& active() const;
+    // Clamps to a real page and guarantees at least one exists. Called by
+    // load() and by anything that edits the page list.
+    void normalizePages();
+
+    // The page shown when no application rule matches - the first page
+    // without a rule, or the first page if they all have one.
+    int defaultPage() const;
+    // The page that claims this window, or defaultPage() if none does. The
+    // most specific rule wins, so a page tied to one document in an app beats
+    // a page tied to the whole app.
+    int pageForApp(const std::string& winExe, const std::string& winCls,
+                   const std::string& winTitle) const;
+    int pageByName(const std::string& name) const;   // -1 if there is no such page
+    std::string uniquePageName(const std::string& wanted) const;
+
+    // Search the page that is currently in front.
     Binding* findKey(const std::string& key);
     const Binding* findKey(const std::string& key) const;
     Binding* findSlot(int slot);
+    // Does this key carry a macro on ANY page? Blocking asks this rather than
+    // asking the active page, so that a macro key does not start typing into
+    // your document the moment you switch to a page that leaves it empty.
+    bool anyPageHasMacro(const std::string& key) const;
 };
 
 struct Settings {
@@ -111,6 +176,12 @@ struct Settings {
     bool startEngineOnLaunch = false;
     bool minimizeToTray = true;
     bool startMinimized = false;
+    // Whether a deck follows the application in front, switching to the page
+    // whose rule matches it. On by default: a page with an application rule
+    // has said what it wants, and a rule that never fires is a puzzle rather
+    // than a preference. The padlock in the page strip turns it off.
+    bool switchPageWithApp = true;
+
     // System-wide shortcut that starts and stops the engine, so a macro pad
     // left armed can always be silenced without hunting for the window.
     // Empty = no shortcut registered.

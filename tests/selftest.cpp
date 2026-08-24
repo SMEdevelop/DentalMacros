@@ -232,7 +232,7 @@ static void testConfig() {
     s2.action = "sleep";
     s2.params["seconds"] = 1.5;
     b.steps.push_back(s2);
-    kb.bindings.push_back(b);
+    kb.active().bindings.push_back(b);
     c.keyboards.push_back(kb);
 
     std::string err;
@@ -249,9 +249,9 @@ static void testConfig() {
     if (!loaded.keyboards.empty()) {
         const cfg::Keyboard& k = loaded.keyboards[0];
         ok(k.alias == "Test pad" && k.deck == "numpad", "keeps keyboard fields");
-        ok(k.bindings.size() == 1, "keeps the binding");
-        if (!k.bindings.empty()) {
-            const cfg::Binding& lb = k.bindings[0];
+        ok(k.active().bindings.size() == 1, "keeps the binding");
+        if (!k.active().bindings.empty()) {
+            const cfg::Binding& lb = k.active().bindings[0];
             ok(lb.key == "num1" && lb.title == "Say hello", "keeps key + title");
             ok(lb.color == "#3b82f6", "keeps the colour");
             ok(lb.steps.size() == 2, "keeps both steps");
@@ -365,11 +365,11 @@ static void testSelectiveBlocking() {
     st.action = "type";
     st.params["text"] = "hi";
     bound.steps.push_back(st);
-    kb.bindings.push_back(bound);
+    kb.active().bindings.push_back(bound);
 
     cfg::Binding empty;          // num1 is a tile with no steps yet
     empty.key = "num1";
-    kb.bindings.push_back(empty);
+    kb.active().bindings.push_back(empty);
 
     c.keyboards.push_back(kb);
     cfg::Keyboard& live = c.keyboards[0];
@@ -459,12 +459,12 @@ static void testYamlImport(const std::string& yamlPath) {
 
     const cfg::Keyboard& kb = c.keyboards[0];
     ok(!kb.match.empty(), "keyboard has a match string: " + kb.match);
-    ok(!kb.bindings.empty(),
-       "imported bindings: " + std::to_string(kb.bindings.size()));
+    ok(!kb.active().bindings.empty(),
+       "imported bindings: " + std::to_string(kb.active().bindings.size()));
 
     int totalSteps = 0, badActions = 0;
     bool foundType = false, foundMultiStep = false;
-    for (const auto& b : kb.bindings) {
+    for (const auto& b : kb.active().bindings) {
         totalSteps += (int)b.steps.size();
         if (b.steps.size() > 1) foundMultiStep = true;
         for (const auto& s : b.steps) {
@@ -481,7 +481,7 @@ static void testYamlImport(const std::string& yamlPath) {
     ok(c.settings.matchConfidence > 0 && c.settings.matchConfidence <= 1,
        "imported a sensible match confidence");
 
-    for (const auto& b : kb.bindings)
+    for (const auto& b : kb.active().bindings)
         if (b.key == "d") {
             ok(b.steps.size() == 3, "the 'd' macro kept all 3 steps",
                std::to_string(b.steps.size()));
@@ -845,9 +845,9 @@ static void testConfigRescue() {
     cfg::Config d;
     d.load(dup);
     ok(d.loadError.empty(), "still loads", d.loadError);
-    ok(d.keyboards.size() == 1 && d.keyboards[0].bindings.size() == 2,
+    ok(d.keyboards.size() == 1 && d.keyboards[0].active().bindings.size() == 2,
        "collapses the duplicate to one binding");
-    if (!d.keyboards.empty() && !d.keyboards[0].bindings.empty()) {
+    if (!d.keyboards.empty() && !d.keyboards[0].active().bindings.empty()) {
         const cfg::Binding* n1 = d.keyboards[0].findKey("num1");
         ok(n1 && n1->steps.size() == 1 && n1->title == "real",
            "keeps the copy that actually has steps");
@@ -1010,7 +1010,7 @@ static void testEngine() {
         s.params["cmd"] = "whatever";
         s.params[cfg::kContinueOnError] = true;
         b.steps.push_back(s);
-        kb.bindings.push_back(b);
+        kb.active().bindings.push_back(b);
         c.keyboards.push_back(kb);
         std::string err;
         ok(c.save(&err), "saves a continue-on-error step", err);
@@ -1118,7 +1118,7 @@ static void testHookCost() {
     cfg::Binding macro;
     macro.key = "f13";
     macro.steps.push_back({"sleep", js::Value::object()});
-    kb.bindings.push_back(macro);
+    kb.active().bindings.push_back(macro);
     c.keyboards.push_back(kb);
 
     ok(c.couldBlockVk(keys::toVk("f13")),
@@ -1131,7 +1131,7 @@ static void testHookCost() {
     // would silence a key for no benefit.
     cfg::Binding empty;
     empty.key = "f14";
-    c.keyboards[0].bindings.push_back(empty);
+    c.keyboards[0].active().bindings.push_back(empty);
     ok(!c.couldBlockVk(keys::toVk("f14")),
        "a key with no steps on it is not worth stopping for");
 
@@ -1145,6 +1145,198 @@ static void testHookCost() {
     c.keyboards[0].block = false;
     ok(!c.couldBlockVk('A') && !c.couldBlockVk(keys::toVk("f13")),
        "a keyboard that blocks nothing never reaches the hook at all");
+}
+
+
+// ------------------------------------------------------------------- pages
+static void testPages() {
+    section("Pages and per-application decks");
+
+    // ---- what an application rule matches, and what it must not ----------
+    cfg::AppRule none;
+    ok(none.empty(), "a rule with nothing in it is empty");
+    ok(!none.matches("chrome.exe", "Chrome_WidgetWin_1", "Docs"),
+       "and matches nothing at all - an empty rule is a default page, "
+       "not a wildcard");
+
+    cfg::AppRule byExe;
+    byExe.exe = "photoshop.exe";
+    ok(byExe.matches("Photoshop.exe", "Photoshop", "untitled-1"),
+       "the executable matches without regard to case");
+    ok(!byExe.matches("photoshopped.exe", "Photoshop", ""),
+       "but not as a prefix of a different program");
+
+    cfg::AppRule byTitle;
+    byTitle.exe = "chrome.exe";
+    byTitle.title = "GitHub";
+    ok(byTitle.matches("chrome.exe", "Chrome_WidgetWin_1", "PR #4 - GitHub"),
+       "a title rule matches on a substring");
+    ok(!byTitle.matches("chrome.exe", "Chrome_WidgetWin_1", "BBC News"),
+       "and fails when the substring is absent");
+    ok(!byTitle.matches("firefox.exe", "MozillaWindowClass", "GitHub"),
+       "every filled-in field has to agree, not just one");
+    ok(byTitle.specificity() > byExe.specificity(),
+       "a rule naming two things is more specific than one naming one");
+
+    // ---- which page an application gets ----------------------------------
+    cfg::Keyboard kb;
+    kb.alias = "Pad";
+    kb.pages.clear();
+    cfg::Page base;
+    base.name = "Base";
+    cfg::Page chrome;
+    chrome.name = "Chrome";
+    chrome.rule.exe = "chrome.exe";
+    cfg::Page github;
+    github.name = "GitHub";
+    github.rule.exe = "chrome.exe";
+    github.rule.title = "GitHub";
+    kb.pages.push_back(base);
+    kb.pages.push_back(chrome);
+    kb.pages.push_back(github);
+    kb.normalizePages();
+
+    ok(kb.defaultPage() == 0, "the page with no rule is the default");
+    ok(kb.pageForApp("notepad.exe", "Notepad", "readme") == 0,
+       "an application nothing claims lands on the default page");
+    ok(kb.pageForApp("chrome.exe", "Chrome_WidgetWin_1", "BBC News") == 1,
+       "a program with a page of its own gets it");
+    ok(kb.pageForApp("chrome.exe", "Chrome_WidgetWin_1", "PR - GitHub") == 2,
+       "and the more specific of two matching pages wins");
+    ok(kb.pageByName("chrome") == 1, "pages are found by name, case aside");
+    ok(kb.pageByName("nothing") == -1, "and a name nobody has is not found");
+    ok(kb.uniquePageName("Base") == "Base 2",
+       "a name already taken comes back with a number on it");
+
+    // A deck with every page ruled still has to answer with something.
+    cfg::Keyboard allRuled;
+    allRuled.pages.clear();
+    allRuled.pages.push_back(chrome);
+    allRuled.pages.push_back(github);
+    allRuled.normalizePages();
+    ok(allRuled.defaultPage() == 0,
+       "with no unruled page, the first one stands in as the default");
+    ok(allRuled.pageForApp("notepad.exe", "Notepad", "") == 0,
+       "so an unclaimed application still has somewhere to go");
+
+    // ---- the same key on two pages ---------------------------------------
+    cfg::Binding one;
+    one.key = "num1";
+    one.title = "Cut";
+    one.steps.push_back({"sleep", js::Value::object()});
+    cfg::Binding two;
+    two.key = "num1";
+    two.title = "Crop";
+    two.steps.push_back({"sleep", js::Value::object()});
+    kb.pages[0].bindings.push_back(one);
+    kb.pages[1].bindings.push_back(two);
+
+    kb.activePage = 0;
+    ok(kb.findKey("num1") && kb.findKey("num1")->title == "Cut",
+       "a key resolves against the page that is in front");
+    kb.activePage = 1;
+    ok(kb.findKey("num1") && kb.findKey("num1")->title == "Crop",
+       "and means something else on the next page - the whole point");
+    ok(kb.anyPageHasMacro("num1"), "the key carries a macro somewhere");
+    ok(!kb.anyPageHasMacro("num9"), "and this one carries none anywhere");
+
+    // ---- blocking spans every page ---------------------------------------
+    // A key that types into your document on one page and fires a macro on
+    // another would be worse than either answer on its own.
+    cfg::Config c;
+    cfg::Keyboard blocking;
+    blocking.alias = "Pad";
+    blocking.match = "VID_046D&PID_C53D";
+    blocking.block = true;
+    blocking.blockAllKeys = false;
+    blocking.pages.clear();
+    cfg::Page p1, p2;
+    p1.name = "One";
+    p2.name = "Two";
+    cfg::Binding f13;
+    f13.key = "f13";
+    f13.steps.push_back({"sleep", js::Value::object()});
+    p2.bindings.push_back(f13);      // the macro lives on the SECOND page
+    blocking.pages.push_back(p1);
+    blocking.pages.push_back(p2);
+    blocking.normalizePages();
+    blocking.activePage = 0;         // ...while the FIRST one is in front
+    c.keyboards.push_back(blocking);
+
+    ok(c.couldBlockVk(keys::toVk("f13")),
+       "a key with a macro on any page is still worth looking at");
+    ok(c.blockedForKey("\\\\?\\HID#VID_046D&PID_C53D", keys::toVk("f13")),
+       "and is taken from other programs even while another page is up");
+    ok(!c.couldBlockVk(keys::toVk("f14")),
+       "a key with no macro on any page is left alone");
+
+    // ---- the file --------------------------------------------------------
+    cfg::Config multi;
+    multi.keyboards.push_back(kb);
+    const std::string path = appPath("selftest-pages.json");
+    std::string err;
+    ok(multi.saveAs(path, &err), "a deck with pages saves", err);
+
+    std::string written;
+    readFile(path, written);
+    ok(written.find("\"pages\"") != std::string::npos,
+       "and is written in the pages shape");
+
+    cfg::Config back;
+    back.load(path);
+    ok(back.keyboards.size() == 1 && back.keyboards[0].pages.size() == 3,
+       "all three pages come back");
+    if (!back.keyboards.empty() && back.keyboards[0].pages.size() == 3) {
+        const cfg::Keyboard& r = back.keyboards[0];
+        ok(r.pages[1].name == "Chrome", "with their names");
+        ok(r.pages[1].rule.exe == "chrome.exe", "and their application rules");
+        ok(r.pages[2].rule.title == "GitHub", "including the title part");
+        ok(r.pages[0].bindings.size() == 1 && r.pages[1].bindings.size() == 1,
+           "and a key on each page rather than one of them dropped");
+        ok(r.pages[0].bindings[0].title == "Cut" &&
+               r.pages[1].bindings[0].title == "Crop",
+           "the same key kept a different macro on each page");
+        ok(r.activePage == r.defaultPage(),
+           "and it opens on the page its rules ask for, not the one that "
+           "happened to be up when it was saved");
+    }
+    // Two bindings for one key on ONE page is still wrong, and still refused.
+    bool moaned = false;
+    for (const std::string& w : back.loadWarnings)
+        if (w.find("more than once") != std::string::npos) moaned = true;
+    ok(!moaned,
+       "the same key on two different pages draws no duplicate warning");
+    deleteFile(path);
+
+    // ---- a file from before pages existed --------------------------------
+    const std::string oldPath = appPath("selftest-oldshape.json");
+    writeFileAtomic(oldPath,
+                    "{\"keyboards\":[{\"alias\":\"Pad\","
+                    "\"match\":\"VID_046D\",\"deck\":\"numpad\","
+                    "\"bindings\":[{\"key\":\"num1\",\"title\":\"Slack\","
+                    "\"steps\":[{\"do\":\"sleep\",\"seconds\":1}]}]}]}");
+    cfg::Config old;
+    old.load(oldPath);
+    ok(old.loadError.empty(), "a file written before pages existed still loads",
+       old.loadError);
+    ok(old.keyboards.size() == 1 && old.keyboards[0].pages.size() == 1,
+       "as a deck with exactly one page");
+    ok(!old.keyboards.empty() && old.keyboards[0].findKey("num1") &&
+           old.keyboards[0].findKey("num1")->title == "Slack",
+       "with its keys where they always were");
+
+    // ...and it goes back out in the shape it came in, so an older build can
+    // still read a config this one has touched.
+    const std::string rePath = appPath("selftest-oldshape2.json");
+    ok(old.saveAs(rePath, &err), "and saves again", err);
+    std::string reWritten;
+    readFile(rePath, reWritten);
+    ok(reWritten.find("\"pages\"") == std::string::npos,
+       "still without a pages block - one plain page is written the old way");
+    ok(reWritten.find("\"bindings\"") != std::string::npos,
+       "as plain bindings");
+    deleteFile(oldPath);
+    deleteFile(rePath);
 }
 
 // -------------------------------------------------- buttons with no keyboard
@@ -1161,7 +1353,7 @@ static void testSoftwareDeck() {
     b.key = "btn1";              // an id, not a key name
     b.title = "Print the day sheet";
     b.steps.push_back({"sleep", js::Value::object()});
-    sw.bindings.push_back(b);
+    sw.active().bindings.push_back(b);
     c.keyboards.push_back(sw);
 
     // The whole promise: it cannot cost a keystroke, because it matches no
@@ -1183,10 +1375,10 @@ static void testSoftwareDeck() {
     back.load(path);
     ok(back.keyboards.size() == 1 && back.keyboards[0].softwareOnly,
        "and comes back marked software-only");
-    ok(!back.keyboards[0].bindings.empty() &&
-           back.keyboards[0].bindings[0].key == "btn1",
+    ok(!back.keyboards[0].active().bindings.empty() &&
+           back.keyboards[0].active().bindings[0].key == "btn1",
        "keeping the button id");
-    ok(back.keyboards[0].bindings[0].title == "Print the day sheet",
+    ok(back.keyboards[0].active().bindings[0].title == "Print the day sheet",
        "and its label");
     // "btn1" is not a key name, and must not be complained about as one.
     bool moaned = false;
@@ -1258,14 +1450,14 @@ static void testIconLibrary() {
     b.key = "num1";
     b.icon = ref;
     b.steps.push_back({"sleep", js::Value::object()});
-    c.keyboards[0].bindings.push_back(b);
+    c.keyboards[0].active().bindings.push_back(b);
     const std::string path = appPath("selftest-icons.json");
     std::string err;
     ok(c.saveAs(path, &err), "a deck using a library icon saves", err);
     cfg::Config back;
     back.load(path);
-    ok(!back.keyboards.empty() && !back.keyboards[0].bindings.empty() &&
-           back.keyboards[0].bindings[0].icon == ref,
+    ok(!back.keyboards.empty() && !back.keyboards[0].active().bindings.empty() &&
+           back.keyboards[0].active().bindings[0].icon == ref,
        "and the icon reference survives the round trip");
     deleteFile(path);
 }
@@ -1410,7 +1602,7 @@ static void testClickWorkflow() {
         wait.params["seconds"] = 0.2;
         b.steps.push_back(wait);
         b.steps.push_back(releaseStep);
-        kb.bindings.push_back(b);
+        kb.active().bindings.push_back(b);
         c.keyboards.push_back(kb);
 
         std::string err;
@@ -1468,6 +1660,7 @@ int main(int argc, char** argv) {
     testClickWorkflow();
     testIconLibrary();
     testSoftwareDeck();
+    testPages();
     testHookCost();
     if (!yaml.empty()) testYamlImport(yaml);
     testWindows();

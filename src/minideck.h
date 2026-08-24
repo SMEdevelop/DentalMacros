@@ -34,6 +34,16 @@ struct MiniButton {
     bool showKey = true;
 };
 
+// Which page of the deck the palette is showing, and how many there are.
+// Flattened out of the config for the same reason MiniButton is: this window
+// paints on a different schedule from the editor that owns the model.
+struct MiniPage {
+    std::string name;
+    std::string color;    // "#rrggbb", empty = theme default
+    int index = 0;
+    int count = 1;        // 1 = no page bar; there is nothing to move between
+};
+
 // Where the palette sits, how big it is, and whether it was open. Saved with
 // the config so it comes back where it was left rather than in the middle of
 // the screen every launch.
@@ -58,10 +68,17 @@ public:
     // actual steps onto its worker.
     using RunFn = std::function<void(const std::string& key)>;
     using VoidFn = std::function<void()>;
+    // Move one page left (-1) or right (+1). The palette does not know what a
+    // page is beyond its name; the editor resolves the direction.
+    using PageStepFn = std::function<void(int delta)>;
 
     ~MiniDeck();
 
     void setRunner(RunFn fn) { run_ = std::move(fn); }
+    void setPageStepper(PageStepFn fn) { pageStep_ = std::move(fn); }
+    // Tell the palette which page it is showing. Call it before setButtons,
+    // which is what triggers the relayout.
+    void setPage(const MiniPage& page);
     // "Open MacroDeck" in the context menu.
     void setOpener(VoidFn fn) { open_ = std::move(fn); }
     // Told whenever the user moves or resizes it, so the config can be marked
@@ -104,6 +121,11 @@ private:
     std::vector<MiniButton> buttons_;
     std::vector<RECT> rects_;      // one per button, client coords
     RECT rcGrip_{}, rcClose_{};
+    MiniPage page_;
+    // The page bar, and the two arrows in it. All empty when there is only
+    // one page, which is also when the bar takes no height at all.
+    RECT rcPageBar_{}, rcPagePrev_{}, rcPageNext_{};
+    bool hoverPrev_ = false, hoverNext_ = false;
 
     MiniPlacement place_;
     int hover_ = -1;
@@ -122,6 +144,7 @@ private:
     RunFn run_;
     VoidFn open_;
     VoidFn moved_;
+    PageStepFn pageStep_;
 };
 
 }  // namespace ui

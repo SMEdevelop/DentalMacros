@@ -125,9 +125,10 @@ To check everything works on your machine:
 run_tests.bat
 ```
 
-This runs 261 checks covering JSON, the config model, the step engine, key
-tables, deck presets, window management, the image matcher, config recovery,
-the recorded-click workflow, and importing a macrokb `macros.yaml`. The engine
+This runs 301 checks covering JSON, the config model, pages and their
+application rules, the step engine, key tables, deck presets, window
+management, the image matcher, config recovery, the recorded-click workflow,
+and importing a macrokb `macros.yaml`. The engine
 tests only run steps with no side effects — nothing is typed, clicked or
 launched, and the window tests drive a throwaway window of their own.
 
@@ -252,9 +253,10 @@ steps, Test run, and firing from the always-on-top palette.
 **Left sidebar** — your macro keyboards, and the palette of actions. Drag any
 action onto a key to add it as a step.
 
-**Middle — the deck.** One tile per key. Each tile shows its key name, an
-icon, and the label you give it. Tiles light up green for a moment when their
-key fires, so you can see at a glance that the pad is being read correctly.
+**Middle — the deck.** A strip of [pages](#pages) along the top, and below it
+one tile per key. Each tile shows its key name, an icon, and the label you
+give it. Tiles light up green for a moment when their key fires, so you can
+see at a glance that the pad is being read correctly.
 
 - **Click** an empty tile to assign a key to it
 - **Click** a configured tile to select and edit it
@@ -342,6 +344,12 @@ It shows the keys of the **selected keyboard**. One keyboard's worth of
 buttons is what fits in a window this size, and guessing between several pads
 would be worse than following the one already on screen behind it.
 
+When that keyboard has more than one [page](#pages), a thin bar appears under
+the grip strip: `‹ Design 2/3 ›`, with the page's colour as a line beneath the
+name. The arrows move between pages and wrap round at each end, since on a
+strip this narrow an arrow that does nothing is just a dead spot. With one
+page the bar is not there at all and costs no height.
+
 ### Deck layouts
 
 | Layout | What it's for |
@@ -354,6 +362,70 @@ would be worse than following the one already on screen behind it.
 The numpad and F-key layouts already know their key names, so clicking an
 empty square binds that exact key with no key-pressing needed. On the blank
 grids, clicking an empty square asks you to press the key you want there.
+
+### Pages
+
+The strip above the deck is its pages. Each one is a **complete set of
+bindings for the same keys**, so twelve buttons on four pages are
+forty-eight macros, and `num1` can be *Cut* on one page and *Crop* on the
+next. Every deck has one page until you press **+**; nothing changes for a
+setup that never uses them.
+
+- **Click** a page to switch to it
+- **Double-click** to rename
+- **Right-click** for its colour, its application rule, duplicating,
+  reordering and removal
+
+A page's colour is what tells you which one you are on without reading -
+the same job the RGB backlight does on a hardware macro pad. It tints the
+page's own tab and the palette's page bar.
+
+Two actions let a key on the pad move between them, so pages work with the
+pad in your hand and not only from this window:
+
+| Action | |
+|---|---|
+| **Go to a page** | By name, or next / previous / back to the default. |
+| **Hold for a page** | Only while the key is held. Let go and you are back where you were - what the touch strip does on a Creator Micro. |
+
+**Blocking looks at every page, not just the one in front.** A key that
+carries a macro anywhere is taken from other programs everywhere. What a key
+*does* is allowed to change with the page; whether it reaches the application
+underneath is not, because a key that types into your document on page two
+and fires a macro on page three is worse than either answer on its own.
+
+### A page per application
+
+Right-click a page → **Show this page for an application...** and pick from
+what is running. From then on that page comes to the front by itself whenever
+that program does, and the deck goes back to the **default page** - the one
+with no rule - when you move to anything else.
+
+Where two pages could both claim a window, the **more specific rule wins**: a
+page matched on `chrome.exe` *and* a title containing "GitHub" beats one
+matched on `chrome.exe` alone. Where several are equally specific, the one
+earliest in the strip wins, because page order is something you can see and
+drag.
+
+Three things make it liveable rather than infuriating:
+
+- **A page you pick by hand stays put** until you move to a different
+  application. Switching away the moment you touch it would be useless.
+- **The padlock** at the right of the strip turns the whole thing off. Green
+  and open means the deck follows what you are doing; grey and shut means it
+  stays exactly where you left it. It is remembered in `macros.json` as
+  `switchPageWithApp`.
+- **Coming here does not count.** MacroDeck's own window taking focus is
+  never treated as an application change, so a page cannot slide out from
+  under you while you are editing it.
+
+Matching uses the same three fields, with the same meanings, as
+[Why recorded clicks keep working](#why-recorded-clicks-keep-working): exact
+on the program and the window class, case-insensitive substring on the title.
+Picking an application from the list fills in the **program** only -
+deliberately, since adding the class would make the rule miss the moment that
+program opened a different kind of window. Add a class or title by hand in
+`macros.json` when you want a page for one document rather than one app.
 
 ---
 
@@ -373,6 +445,8 @@ grids, clicking an empty square asks you to press the key you want there.
 | Focus / Move / Minimise / Maximise a window | By title, program, window class, or any combination. |
 | Lock a window in place for clicking / Release it | Put a window back where recorded clicks expect it, then undo that. |
 | Save / Restore the window layout | Snapshot every window, put them back later. |
+| Go to a page | Switch this deck to another page, by name or direction. |
+| Hold for a page | Show another page only while the key is held down. |
 
 Steps run top to bottom. If one fails, the macro stops and the log says which
 step and why — unless that step has **Keep going if this step fails** ticked,
@@ -481,6 +555,7 @@ Both read keyboards the same way, so device ids carry over unchanged.
     "matchConfidence": 0.85,
     "layoutsDir": "layouts",
     "startEngineOnLaunch": false,
+    "switchPageWithApp": true,
     "minimizeToTray": true,
     "startMinimized": false,
     "toggleHotkey": "ctrl+alt+shift+m",
@@ -508,6 +583,42 @@ Both read keyboards the same way, so device ids carry over unchanged.
   ]
 }
 ```
+
+### Pages in the file
+
+A deck that uses one plain page is written exactly as it always was, with
+`bindings` straight on the keyboard - so an ordinary config stays readable by
+a build from before pages existed, and a file written by one still loads here
+as a deck with a single page. The moment a deck has a second page, a colour or
+an application rule, it is written as `pages` instead:
+
+```json
+{
+  "alias": "Buttons",
+  "softwareOnly": true,
+  "deck": "auto",
+  "pages": [
+    { "name": "General", "bindings": [ ... ] },
+    {
+      "name": "Design",
+      "color": "#a855f7",
+      "appRule": { "exe": "photoshop.exe" },
+      "bindings": [ { "key": "num1", "title": "Crop", "steps": [ ... ] } ]
+    }
+  ]
+}
+```
+
+`appRule` takes any of `exe`, `class` and `title`; the ones you leave out are
+not tested, and a rule with none of them is a page no application claims -
+which is what makes it the default. **Which page is in front is deliberately
+not saved.** A deck comes back on the page its rules ask for, not the one that
+happened to be up when you last closed it, and changing page never rewrites
+this file.
+
+The same key appearing twice on *one* page is still refused, with the same
+warning as before. On two different pages it is the entire point, and draws no
+complaint.
 
 `matchConfidence` must be between 0.5 and 1.0; anything else is reported and
 reset to 0.85. "Run at sign-in" is deliberately *not* here — it lives in the
@@ -605,7 +716,7 @@ src/
   util.cpp        strings, paths, files
   app.ico         generated - see tools/make_icon.cpp
 tests/
-  selftest.cpp        261 checks over every non-UI subsystem
+  selftest.cpp        301 checks over every non-UI subsystem
   render_preview.cpp  renders the icons and tiles to a PNG
 tools/
   make_icon.cpp       exports src\app.ico from theme.cpp's drawAppIcon()

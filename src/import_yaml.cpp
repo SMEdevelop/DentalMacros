@@ -318,7 +318,7 @@ bool importMacroKbYaml(const std::string& yamlPath, Config& out,
                                         step.params[p.first] = p.second;
                                 b.steps.push_back(std::move(step));
                             }
-                        kb.bindings.push_back(std::move(b));
+                        kb.active().bindings.push_back(std::move(b));
                     }
             }
         }

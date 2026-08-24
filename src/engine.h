@@ -30,11 +30,17 @@ class Engine {
 public:
     using LogFn = std::function<void(const std::string&)>;
     using MonitorFn = std::function<void(const MonitorEvent&)>;
+    // Told when a macro asks for a different page of a deck. The app owns
+    // which page is in front - it has to, because software buttons still
+    // change page with the engine stopped - so the engine only ever asks,
+    // and sees the answer when the app hands back a fresh snapshot.
+    using PageFn = std::function<void(const std::string& alias, int page)>;
 
     Engine() = default;
     ~Engine();
 
     void setLog(LogFn fn);
+    void setPageChanger(PageFn fn);
     // The monitor callback fires for EVERY keystroke on every keyboard, so
     // the UI can show a live key trace. Set to nullptr to turn it off.
     void setMonitor(MonitorFn fn);
@@ -47,9 +53,12 @@ public:
     void stop();
     bool running() const { return running_.load(); }
 
-    // Run a sequence on the worker thread (used by the Test button).
+    // Run a sequence on the worker thread (used by the Test button and by
+    // clicking a software button). `alias` says which deck it belongs to, so
+    // a page step in the sequence knows whose pages it is talking about.
     void runSequenceAsync(const std::vector<cfg::Step>& steps,
-                          const std::string& label);
+                          const std::string& label,
+                          const std::string& alias = "");
     // Run a sequence on the calling thread; throws on the first failing step.
     void runSequence(const std::vector<cfg::Step>& steps);
 
@@ -61,9 +70,17 @@ private:
     struct Job {
         std::vector<cfg::Step> steps;
         std::string label;
+        // Which deck fired it, so a "Go to a page" step knows whose pages it
+        // is talking about. Empty for a Test run from the editor.
+        std::string alias;
     };
 
     void onKey(const dev::KeyEvent& ev);
+    // Resolve a page name or direction against a keyboard. Returns -1 if
+    // there is no such page. Takes cfgMu_ itself.
+    int resolvePage(const std::string& alias, const std::string& name,
+                    const std::string& direction) const;
+    void requestPage(const std::string& alias, int page);
     // True when this key-down is the keyboard repeating a key the user is
     // still holding, rather than a fresh press.
     bool isAutoRepeat(const dev::KeyEvent& ev);
@@ -99,6 +116,18 @@ private:
     std::mutex logMu_;
     LogFn log_;
     MonitorFn monitor_;
+    PageFn page_;
+
+    // Keys currently holding a page open, and the page each should put back
+    // when it is released. Keyed the same way lastDown_ is, so two pads can
+    // each hold a page of their own without colliding.
+    std::mutex holdMu_;
+    std::map<std::pair<std::string, int>, std::pair<std::string, int>> holds_;
+
+    // The deck whose macro the worker is running, for "Go to a page". Only
+    // touched from the worker thread between picking a job up and finishing
+    // it, so it needs no lock of its own.
+    std::string runningAlias_;
 
     std::mutex jobMu_;
     std::condition_variable jobCv_;

@@ -22,6 +22,7 @@ constexpr wchar_t kClassName[] = L"MacroDeckMini";
 constexpr int kPad = 5;
 constexpr int kGap = 4;
 constexpr int kGripH = 15;
+constexpr int kPageBarH = 15;
 constexpr int kFlashMs = 450;
 
 enum {
@@ -86,6 +87,12 @@ void MiniDeck::setButtons(const std::string& caption,
         relayout();
         InvalidateRect(hwnd_, nullptr, FALSE);
     }
+}
+
+void MiniDeck::setPage(const MiniPage& page) {
+    page_ = page;
+    // No relayout here: setButtons follows immediately and does it once,
+    // rather than resizing the window twice for one change.
 }
 
 MiniPlacement MiniDeck::placement() const {
@@ -207,6 +214,10 @@ void MiniDeck::relayout() {
     const int pad = S(kPad);
     const int grip = S(kGripH);
 
+    // The page bar only exists when there is somewhere to go. One page is
+    // the ordinary case and it should cost no height at all.
+    const int pageBar = page_.count > 1 ? S(kPageBarH) : 0;
+
     const int n = (int)buttons_.size();
     const int cols = std::max(1, std::min(place_.cols, std::max(1, n)));
     const int rows = n > 0 ? (n + cols - 1) / cols : 1;
@@ -215,7 +226,7 @@ void MiniDeck::relayout() {
     // An empty palette still has to be wide enough to say that it is empty.
     if (n == 0) contentW = std::max(contentW, S(190));
     const int w = contentW + pad * 2;
-    const int h = grip + pad +
+    const int h = grip + pageBar + pad +
                   (n > 0 ? rows * tile + (rows - 1) * gap : S(22)) + pad;
 
     rects_.clear();
@@ -224,7 +235,7 @@ void MiniDeck::relayout() {
         const int r = i / cols, c = i % cols;
         RECT rc;
         rc.left = pad + c * (tile + gap);
-        rc.top = grip + pad + r * (tile + gap);
+        rc.top = grip + pageBar + pad + r * (tile + gap);
         rc.right = rc.left + tile;
         rc.bottom = rc.top + tile;
         rects_.push_back(rc);
@@ -232,6 +243,13 @@ void MiniDeck::relayout() {
 
     rcGrip_ = RECT{0, 0, w, grip};
     rcClose_ = RECT{w - grip, 0, w, grip};
+    if (pageBar) {
+        rcPageBar_ = RECT{0, grip, w, grip + pageBar};
+        rcPagePrev_ = RECT{0, grip, S(18), grip + pageBar};
+        rcPageNext_ = RECT{w - S(18), grip, w, grip + pageBar};
+    } else {
+        rcPageBar_ = rcPagePrev_ = rcPageNext_ = RECT{};
+    }
 
     RECT cur{};
     GetWindowRect(hwnd_, &cur);
@@ -371,6 +389,42 @@ void MiniDeck::paint(HDC hdc) {
         drawText(g, W(strip), capR, 9,
                  hover_ >= 0 ? theme().text : theme().textDim, Align::Left);
 
+        // The page bar. Name in the middle, an arrow at each end - the
+        // smallest thing that says which layer these buttons belong to and
+        // lets you move off it without going back to the editor.
+        if (page_.count > 1) {
+            RectF bar = toRectF(rcPageBar_);
+            SolidBrush barBg(theme().panel);
+            g.FillRectangle(&barBg, bar);
+            // The page's own colour as a thin line under the name: enough to
+            // recognise a page by at a glance, not enough to shout.
+            if (!page_.color.empty()) {
+                SolidBrush accent(readableTileColor(page_.color, theme().accent));
+                g.FillRectangle(&accent, bar.X, bar.GetBottom() - Sf(1.5f),
+                                bar.Width, Sf(1.5f));
+            }
+
+            auto arrow = [&](const RECT& box, bool left, bool hot) {
+                RectF r = toRectF(box);
+                Pen pen(hot ? theme().text : theme().textFaint, Sf(1.2f));
+                const float cx = r.X + r.Width / 2, cy2 = r.Y + r.Height / 2;
+                const float d = Sf(2.6f);
+                const float tip = left ? cx - d : cx + d;
+                const float tail = left ? cx + d : cx - d;
+                g.DrawLine(&pen, tail, cy2 - d, tip, cy2);
+                g.DrawLine(&pen, tip, cy2, tail, cy2 + d);
+            };
+            arrow(rcPagePrev_, true, hoverPrev_);
+            arrow(rcPageNext_, false, hoverNext_);
+
+            RectF nameR(bar.X + Sf(18.0f), bar.Y, bar.Width - Sf(36.0f),
+                        bar.Height);
+            const std::string label =
+                page_.name + "   " + std::to_string(page_.index + 1) + "/" +
+                std::to_string(page_.count);
+            drawText(g, W(label), nameR, 9, theme().textDim, Align::Center);
+        }
+
         RectF cl = toRectF(rcClose_);
         Pen x(hoverClose_ ? theme().danger : theme().textFaint, Sf(1.3f));
         const float m = Sf(4.5f);
@@ -380,10 +434,13 @@ void MiniDeck::paint(HDC hdc) {
                    cl.GetBottom() - m);
 
         if (buttons_.empty()) {
-            RectF empty(Sf(8.0f), (REAL)S(kGripH), (REAL)w - Sf(16.0f),
-                        (REAL)h - (REAL)S(kGripH));
-            drawText(g, L"No keys on this keyboard yet", empty, 10,
-                     theme().textFaint, Align::Center);
+            const REAL top = (REAL)S(kGripH) +
+                             (page_.count > 1 ? (REAL)S(kPageBarH) : 0.0f);
+            RectF empty(Sf(8.0f), top, (REAL)w - Sf(16.0f), (REAL)h - top);
+            drawText(g,
+                     page_.count > 1 ? L"No keys on this page yet"
+                                     : L"No keys on this keyboard yet",
+                     empty, 10, theme().textFaint, Align::Center);
         } else {
             for (size_t i = 0; i < buttons_.size(); ++i) paintButton(&g, i);
         }
@@ -509,18 +566,23 @@ LRESULT MiniDeck::handle(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         }
         int h = hitTest(p);
         bool hc = ptIn(rcClose_, p);
-        if (h != hover_ || hc != hoverClose_) {
+        bool hp = ptIn(rcPagePrev_, p), hn = ptIn(rcPageNext_, p);
+        if (h != hover_ || hc != hoverClose_ || hp != hoverPrev_ ||
+            hn != hoverNext_) {
             hover_ = h;
             hoverClose_ = hc;
+            hoverPrev_ = hp;
+            hoverNext_ = hn;
             InvalidateRect(hwnd, nullptr, FALSE);
         }
         return 0;
     }
     case WM_MOUSELEAVE:
         tracking_ = false;
-        if (hover_ != -1 || hoverClose_) {
+        if (hover_ != -1 || hoverClose_ || hoverPrev_ || hoverNext_) {
             hover_ = -1;
             hoverClose_ = false;
+            hoverPrev_ = hoverNext_ = false;
             InvalidateRect(hwnd, nullptr, FALSE);
         }
         return 0;
@@ -528,6 +590,10 @@ LRESULT MiniDeck::handle(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     case WM_LBUTTONDOWN: {
         POINT p{GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};
         if (ptIn(rcClose_, p)) { hide(); return 0; }
+        if (page_.count > 1 && pageStep_) {
+            if (ptIn(rcPagePrev_, p)) { pageStep_(-1); return 0; }
+            if (ptIn(rcPageNext_, p)) { pageStep_(+1); return 0; }
+        }
         if (ptIn(rcGrip_, p)) {
             dragging_ = true;
             dragGrab_ = p;

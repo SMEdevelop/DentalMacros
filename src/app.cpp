@@ -36,6 +36,12 @@ namespace {
 constexpr UINT WM_APP_LOG = WM_APP + 1;
 constexpr UINT WM_APP_KEYEVENT = WM_APP + 2;
 constexpr UINT WM_APP_TRAY = WM_APP + 3;
+// A macro asked for a different page. Posted rather than called straight
+// through: the request arrives on the input thread, and everything it moves
+// belongs to the UI one.
+constexpr UINT WM_APP_PAGE = WM_APP + 4;
+// The window in front changed, so the app-linked pages get another look.
+constexpr UINT WM_APP_FOREGROUND = WM_APP + 5;
 
 enum {
     ID_TITLE_EDIT = 200,
@@ -85,6 +91,19 @@ enum {
     IDM_TILE_PASTE_STEPS,
     IDM_TILE_REMOVE,
 
+    IDM_PAGE_RENAME = 470,
+    IDM_PAGE_COLOR,
+    IDM_PAGE_COLOR_CLEAR,
+    IDM_PAGE_APP,
+    IDM_PAGE_APP_CLEAR,
+    IDM_PAGE_DUPLICATE,
+    IDM_PAGE_LEFT,
+    IDM_PAGE_RIGHT,
+    IDM_PAGE_REMOVE,
+    // The running windows offered as an application rule. One id per window,
+    // so the range has to be wide enough for a busy desktop.
+    IDM_PAGE_APP_PICK = 1200,
+
     IDM_TRAY_SHOW = 480,
     IDM_TRAY_TOGGLE,
     IDM_TRAY_EXIT,
@@ -105,12 +124,28 @@ constexpr int kLogH = 132;
 constexpr int kPad = 14;
 constexpr int kRowH = 30;
 
+// Every key on every page. What "all its keys" means when a keyboard is
+// about to be removed, and what an import is really bringing in - the active
+// page alone would undercount both.
+int totalBindings(const cfg::Keyboard& kb) {
+    int n = 0;
+    for (const cfg::Page& p : kb.pages) n += (int)p.bindings.size();
+    return n;
+}
+
 struct DeckTile {
     RECT rect{};
     int slot = -1;          // preset slot index (-1 in flow mode)
     std::string key;        // key this tile represents ("" = not yet assigned)
-    int binding = -1;       // index into keyboard.bindings, -1 if empty
+    int binding = -1;       // index into the active page's bindings, -1 if empty
     bool addTile = false;   // the trailing "+" tile in flow mode
+};
+
+// One tab in the strip above the deck. The "+" at the end is a tab too, so
+// that hit-testing has one list to walk rather than a list and a special case.
+struct PageTab {
+    RECT rect{};
+    int index = -1;         // -1 = the trailing "add a page" tab
 };
 
 struct PaletteRow {
@@ -200,6 +235,7 @@ private:
     // ---- layout & painting
     void layout();
     void layoutDeck();
+    void layoutPages();
     // The listen button's label changes width, so it is sized and placed
     // together rather than pinned to a fixed box.
     std::string engineButtonLabel() const;
@@ -209,6 +245,7 @@ private:
     void paintToolbar(Graphics& g);
     void paintSidebar(Graphics& g);
     void paintDeck(Graphics& g);
+    void paintPages(Graphics& g);
     void paintTile(Graphics& g, const DeckTile& tile, cfg::Keyboard* kb);
     void paintWelcome(Graphics& g);
     void paintDragGhost(Graphics& g);
@@ -255,6 +292,20 @@ private:
     void copySteps();
     void pasteSteps();
 
+    // ---- pages
+    void pageContextMenu(int pageIndex, POINT screenPt);
+    void addPage();
+    void movePage(int pageIndex, int delta);
+    void removePage(int pageIndex);
+    void editPageAppRule(int pageIndex);
+    // The one door every page change goes through, whether it came from a
+    // click, a macro or the application in front.
+    void setActivePage(const std::string& alias, int index);
+    void onForegroundChanged(HWND fg);
+    void drainPageRequests();
+    void startForegroundHook();
+    void stopForegroundHook();
+
     // ---- engine plumbing
     void pushLog(const std::string& line);
     void drainLogs();
@@ -300,6 +351,9 @@ private:
     RECT rcToolbar_{}, rcSidebar_{}, rcDeck_{}, rcInspector_{}, rcLog_{};
     RECT rcWelcomeBtn_{};
     std::vector<DeckTile> tiles_;
+    std::vector<PageTab> pageTabs_;
+    RECT rcPagePin_{};
+    int hoverPageTab_ = -1;      // index into pageTabs_, not into pages
     std::vector<PaletteRow> palette_;
     std::vector<KbRow> kbRows_;
     int paletteScroll_ = 0;
@@ -329,10 +383,19 @@ private:
     // async plumbing
     std::mutex logMu_;
     std::deque<std::string> logQueue_;
+    std::mutex pageMu_;
+    std::deque<std::pair<std::string, int>> pageQueue_;
     std::mutex keyMu_;
     std::deque<eng::MonitorEvent> keyQueue_;
     std::string lastKeyText_;
     std::map<std::string, DWORD> lastFire_;   // "alias|key" -> tick
+
+    // The application the pages were last matched against, as "exe|class|
+    // title". Compared before doing anything, so that clicking around inside
+    // one program is not a stream of page changes - and so a page picked by
+    // hand survives until the front window is really a different one.
+    std::string lastForeground_;
+    HWINEVENTHOOK fgHook_ = nullptr;
 
     bool trayAdded_ = false;
     bool quitting_ = false;
@@ -343,6 +406,20 @@ private:
 };
 
 MainWindow* g_main = nullptr;
+
+// Windows tells us the foreground window changed. Hooked OUTOFCONTEXT, so it
+// already arrives on this thread - but it is posted rather than acted on here,
+// because a page change repaints the deck and this can fire in the middle of
+// anything.
+void CALLBACK foregroundEventProc(HWINEVENTHOOK, DWORD event, HWND hwnd,
+                                  LONG idObject, LONG idChild, DWORD, DWORD) {
+    if (event != EVENT_SYSTEM_FOREGROUND) return;
+    // Only the window itself. A menu opening or a control taking focus inside
+    // the same program is not a change of application.
+    if (idObject != OBJID_WINDOW || idChild != CHILDID_SELF) return;
+    if (!hwnd || !g_main || !g_main->hwnd()) return;
+    PostMessageW(g_main->hwnd(), WM_APP_FOREGROUND, (WPARAM)hwnd, 0);
+}
 
 // ------------------------------------------------------------------ create
 bool MainWindow::create(HINSTANCE inst, int showCmd) {
@@ -408,6 +485,13 @@ void MainWindow::onCreate() {
         }
         PostMessageW(hwnd_, WM_APP_KEYEVENT, 0, 0);
     });
+    engine_.setPageChanger([this](const std::string& alias, int page) {
+        {
+            std::lock_guard<std::mutex> lk(pageMu_);
+            pageQueue_.push_back({alias, page});
+        }
+        PostMessageW(hwnd_, WM_APP_PAGE, 0, 0);
+    });
     engine_.updateConfig(config_);
 
     // ---- toolbar controls
@@ -447,6 +531,11 @@ void MainWindow::onCreate() {
 
     reportLoadProblems();
     applyToggleHotkey();
+    startForegroundHook();
+    // Start on the page the application already in front asks for, rather
+    // than waiting for the user to alt-tab once before the rules mean
+    // anything.
+    onForegroundChanged(GetForegroundWindow());
 
     layout();
     refreshInspector();
@@ -454,6 +543,14 @@ void MainWindow::onCreate() {
     // ---- the always-on-top palette
     mini_.setRunner([this](const std::string& key) { runBindingByKey(key); });
     mini_.setOpener([this] { showWindowAgain(); });
+    mini_.setPageStepper([this](int delta) {
+        cfg::Keyboard* kb = currentKb();
+        if (!kb || kb->pages.size() < 2) return;
+        const int n = (int)kb->pages.size();
+        // Wrapping, because on a strip this narrow the alternative is an
+        // arrow that does nothing at each end.
+        setActivePage(kb->alias, (kb->activePage + delta + n) % n);
+    });
     // Written out as soon as it settles, not only at exit: a palette dragged
     // somewhere better should still be there after a power cut.
     mini_.setOnPlacementChanged([this] {
@@ -499,6 +596,7 @@ void MainWindow::reportLoadProblems() {
 
 void MainWindow::onDestroy() {
     releaseToggleHotkey();
+    stopForegroundHook();
     // Before the config is out of reach: the palette knows where it ended up.
     saveMiniPlacement();
     if (config_.dirty) saveConfig();
@@ -637,11 +735,56 @@ std::string MainWindow::listeningSummary() const {
     return s;
 }
 
+// How far below the top of the deck area the tiles begin. The deck preset
+// combo sits in the first band and the page strip in the second, and both the
+// tile layout and the scroll clip have to agree about where that ends.
+constexpr int kDeckHeaderH = 90;
+constexpr int kPageStripY = 50;
+constexpr int kPageStripH = 26;
+
+void MainWindow::layoutPages() {
+    pageTabs_.clear();
+    rcPagePin_ = RECT{};
+
+    cfg::Keyboard* kb = currentKb();
+    if (!kb) return;
+    kb->normalizePages();
+
+    const int y = rcDeck_.top + S(kPageStripY);
+    const int h = S(kPageStripH);
+    // The padlock is pinned to the right end, and the tabs stop short of it
+    // rather than sliding underneath.
+    const int pinW = S(30);
+    rcPagePin_ = {rcDeck_.right - S(kPad) - pinW, y, rcDeck_.right - S(kPad),
+                  y + h};
+    const int limit = rcPagePin_.left - S(8);
+
+    HDC dc = GetDC(hwnd_);
+    Graphics g(dc);
+    int x = rcDeck_.left + S(kPad);
+    auto place = [&](int index, const std::wstring& label) {
+        const int w = (int)measureText(g, label, 11, false).Width + S(26);
+        if (x + w > limit && !pageTabs_.empty()) return false;
+        PageTab t;
+        t.index = index;
+        t.rect = {x, y, x + w, y + h};
+        pageTabs_.push_back(t);
+        x += w + S(6);
+        return true;
+    };
+    for (size_t i = 0; i < kb->pages.size(); ++i)
+        if (!place((int)i, W(kb->pages[i].displayName()))) break;
+    place(-1, L"+");
+    ReleaseDC(hwnd_, dc);
+}
+
 void MainWindow::layoutDeck() {
     tiles_.clear();
     rcWelcomeBtn_ = RECT{};
     deckContentH_ = 0;
     deckViewH_ = 0;
+
+    layoutPages();
 
     cfg::Keyboard* kb = currentKb();
     if (!kb) {
@@ -653,7 +796,7 @@ void MainWindow::layoutDeck() {
     RECT area = rcDeck_;
     area.left += S(kPad);
     area.right -= S(kPad);
-    area.top += S(56);
+    area.top += S(kDeckHeaderH);
     area.bottom -= S(kPad);
     const int availW = area.right - area.left;
     const int availH = area.bottom - area.top;
@@ -664,7 +807,7 @@ void MainWindow::layoutDeck() {
 
     if (preset->flow) {
         // Flow layout: every binding in order, plus a trailing "add" tile.
-        int count = (int)kb->bindings.size() + 1;
+        int count = (int)kb->active().bindings.size() + 1;
         int cols = std::max(1, std::min(count, (availW + gap) / (S(120) + gap)));
         int rows = (count + cols - 1) / cols;
         // Size tiles from the width alone and scroll if the rows overflow.
@@ -685,9 +828,9 @@ void MainWindow::layoutDeck() {
             const int y0 = area.top + r * (tileH + gap) - deckScroll_;
             DeckTile t;
             t.rect = {x0, y0, x0 + tileW, y0 + tileH};
-            if (i < (int)kb->bindings.size()) {
+            if (i < (int)kb->active().bindings.size()) {
                 t.binding = i;
-                t.key = kb->bindings[(size_t)i].key;
+                t.key = kb->active().bindings[(size_t)i].key;
             } else {
                 t.addTile = true;
             }
@@ -721,8 +864,8 @@ void MainWindow::layoutDeck() {
                       gap * (s.rowSpan - 1)};
 
         // Presets with real key names bind by key; blank grids bind by slot.
-        for (size_t b = 0; b < kb->bindings.size(); ++b) {
-            const cfg::Binding& bind = kb->bindings[b];
+        for (size_t b = 0; b < kb->active().bindings.size(); ++b) {
+            const cfg::Binding& bind = kb->active().bindings[b];
             if (preset->fixedKeys ? (bind.key == s.key)
                                   : (bind.slot == (int)i)) {
                 t.binding = (int)b;
@@ -1029,13 +1172,15 @@ void MainWindow::paintDeck(Graphics& g) {
     // Tiles can be scrolled, so keep them inside the deck area rather than
     // letting them paint over the header, the sidebar or the log.
     RECT clip = rcDeck_;
-    clip.top += S(52);
+    clip.top += S(kDeckHeaderH - 4);
     Region oldClip;
     g.GetClip(&oldClip);
     g.SetClip(Rect(clip.left, clip.top, clip.right - clip.left,
                    std::max(0, (int)(clip.bottom - clip.top))));
     for (const DeckTile& t : tiles_) paintTile(g, t, kb);
     g.SetClip(&oldClip);
+
+    paintPages(g);
 
     // A quiet hint that there is more below, only while it is true.
     if (deckContentH_ > deckViewH_) {
@@ -1050,6 +1195,71 @@ void MainWindow::paintDeck(Graphics& g) {
     }
 }
 
+void MainWindow::paintPages(Graphics& g) {
+    cfg::Keyboard* kb = currentKb();
+    if (!kb || pageTabs_.empty()) return;
+
+    for (size_t i = 0; i < pageTabs_.size(); ++i) {
+        const PageTab& t = pageTabs_[i];
+        RectF r = toRectF(t.rect);
+        const bool hover = hoverPageTab_ == (int)i;
+        const bool add = t.index < 0;
+        const bool current = !add && t.index == kb->activePage;
+
+        if (add) {
+            RectF plus(r.X + r.Width / 2 - S(6.0f),
+                       r.Y + r.Height / 2 - S(6.0f), S(12.0f), S(12.0f));
+            drawGlyphPlus(g, plus, hover ? theme().accent : theme().textFaint,
+                          S(1.6f));
+            if (hover)
+                strokeRounded(g, r, S(6.0f), theme().accent, 1.0f);
+            continue;
+        }
+
+        const cfg::Page& page = kb->pages[(size_t)t.index];
+        // A page's own colour is what tells you which one you are on at a
+        // glance - the same job the RGB does on a hardware pad. It only
+        // paints the tab it belongs to, so an unconfigured strip stays quiet.
+        Color base = current ? readableTileColor(page.color, theme().accentDim)
+                             : (hover ? theme().tileHover : theme().panelAlt);
+        fillRounded(g, r, S(6.0f), base);
+        if (current) strokeRounded(g, r, S(6.0f), theme().accent, S(1.4f));
+
+        RectF label(r.X + S(9.0f), r.Y, r.Width - S(18.0f), r.Height);
+        drawText(g, W(page.displayName()), label, 11,
+                 current ? theme().text : theme().textDim, Align::Center,
+                 current);
+
+        // A dot marks a page that an application can bring up by itself, so
+        // the ones that switch on their own are told apart from the ones that
+        // only ever switch because you asked.
+        if (!page.rule.empty()) {
+            RectF dot(r.GetRight() - S(8.0f), r.Y + S(6.0f), S(4.0f), S(4.0f));
+            SolidBrush b(current ? theme().text : theme().textFaint);
+            g.FillEllipse(&b, dot);
+        }
+    }
+
+    // The padlock: shut means the deck stops following the application in
+    // front. Drawn as a shackle over a body rather than shipped as an image,
+    // like every other glyph here.
+    const bool follow = config_.settings.switchPageWithApp;
+    RectF pin = toRectF(rcPagePin_);
+    const bool pinHover = hoverPageTab_ == -2;
+    if (pinHover) fillRounded(g, pin, S(6.0f), theme().tileHover);
+    Color pc = follow ? theme().good : theme().textFaint;
+    const float bw = S(11.0f), bh = S(8.0f);
+    RectF body(pin.X + (pin.Width - bw) / 2, pin.Y + pin.Height / 2 - S(1.0f),
+               bw, bh);
+    fillRounded(g, body, S(2.0f), pc);
+    Pen pen(pc, S(1.6f));
+    const float ar = S(3.6f);
+    // An open shackle leans out to one side; a shut one sits square on top.
+    RectF arc(body.X + body.Width / 2 - ar - (follow ? 0.0f : S(3.0f)),
+              body.Y - ar * 2 + S(1.0f), ar * 2, ar * 2);
+    g.DrawArc(&pen, arc, 180.0f, follow ? 180.0f : 150.0f);
+}
+
 void MainWindow::paintTile(Graphics& g, const DeckTile& tile,
                            cfg::Keyboard* kb) {
     RectF r = toRectF(tile.rect);
@@ -1059,8 +1269,8 @@ void MainWindow::paintTile(Graphics& g, const DeckTile& tile,
     bool selected = selectedTile_ == index;
 
     const cfg::Binding* b =
-        tile.binding >= 0 && tile.binding < (int)kb->bindings.size()
-            ? &kb->bindings[(size_t)tile.binding]
+        tile.binding >= 0 && tile.binding < (int)kb->active().bindings.size()
+            ? &kb->active().bindings[(size_t)tile.binding]
             : nullptr;
 
     // recently-fired glow
@@ -1182,8 +1392,8 @@ cfg::Binding* MainWindow::selectedBinding() {
     if (!kb) return nullptr;
     if (selectedTile_ < 0 || selectedTile_ >= (int)tiles_.size()) return nullptr;
     int bi = tiles_[(size_t)selectedTile_].binding;
-    if (bi < 0 || bi >= (int)kb->bindings.size()) return nullptr;
-    return &kb->bindings[(size_t)bi];
+    if (bi < 0 || bi >= (int)kb->active().bindings.size()) return nullptr;
+    return &kb->active().bindings[(size_t)bi];
 }
 
 void MainWindow::selectKeyboard(const std::string& alias) {
@@ -1355,7 +1565,7 @@ void MainWindow::assignKeyToTile(int tileIndex) {
     if (kb->findKey(key)) {
         for (size_t i = 0; i < tiles_.size(); ++i)
             if (tiles_[i].binding >= 0 &&
-                kb->bindings[(size_t)tiles_[i].binding].key == key) {
+                kb->active().bindings[(size_t)tiles_[i].binding].key == key) {
                 selectTile((int)i);
                 break;
             }
@@ -1368,11 +1578,11 @@ void MainWindow::assignKeyToTile(int tileIndex) {
     cfg::Binding b;
     b.key = key;
     b.slot = (preset->flow || preset->fixedKeys) ? -1 : t.slot;
-    kb->bindings.push_back(b);
+    kb->active().bindings.push_back(b);
     modelChanged();
 
     for (size_t i = 0; i < tiles_.size(); ++i)
-        if (tiles_[i].binding == (int)kb->bindings.size() - 1) {
+        if (tiles_[i].binding == (int)kb->active().bindings.size() - 1) {
             selectTile((int)i);
             break;
         }
@@ -1555,7 +1765,7 @@ void MainWindow::testRun() {
     if (!b || b->steps.empty()) return;
     pushLog("Test run: " + keys::displayName(b->key) + " (" +
             std::to_string(b->steps.size()) + " steps)");
-    engine_.runSequenceAsync(b->steps, "Test");
+    engine_.runSequenceAsync(b->steps, "Test", currentAlias_);
 }
 
 void MainWindow::clearTile() {
@@ -1572,12 +1782,12 @@ void MainWindow::deleteBinding() {
     cfg::Keyboard* kb = currentKb();
     if (!kb || selectedTile_ < 0) return;
     int bi = tiles_[(size_t)selectedTile_].binding;
-    if (bi < 0 || bi >= (int)kb->bindings.size()) return;
-    std::string name = kb->bindings[(size_t)bi].displayTitle();
+    if (bi < 0 || bi >= (int)kb->active().bindings.size()) return;
+    std::string name = kb->active().bindings[(size_t)bi].displayTitle();
     if (!askYesNo(hwnd_, "Remove this key",
                   "Remove \"" + name + "\" from the deck?"))
         return;
-    kb->bindings.erase(kb->bindings.begin() + bi);
+    kb->active().bindings.erase(kb->active().bindings.begin() + bi);
     selectedTile_ = -1;
     modelChanged();
 }
@@ -1641,7 +1851,7 @@ void MainWindow::importYaml() {
     }
 
     int keys = 0;
-    for (const auto& kb : imported.keyboards) keys += (int)kb.bindings.size();
+    for (const auto& kb : imported.keyboards) keys += totalBindings(kb);
     if (!askYesNo(hwnd_, "Import",
                   "Found " + std::to_string(imported.keyboards.size()) +
                       " keyboard(s) and " + std::to_string(keys) +
@@ -1756,8 +1966,8 @@ void MainWindow::duplicateBinding(int tileIndex) {
     cfg::Keyboard* kb = currentKb();
     if (!kb || tileIndex < 0 || tileIndex >= (int)tiles_.size()) return;
     const int bi = tiles_[(size_t)tileIndex].binding;
-    if (bi < 0 || bi >= (int)kb->bindings.size()) return;
-    const cfg::Binding source = kb->bindings[(size_t)bi];
+    if (bi < 0 || bi >= (int)kb->active().bindings.size()) return;
+    const cfg::Binding source = kb->active().bindings[(size_t)bi];
 
     KeyCaptureResult r =
         captureKey(hwnd_, "Duplicate to which key?",
@@ -1778,12 +1988,12 @@ void MainWindow::duplicateBinding(int tileIndex) {
     copy.key = r.keyName;
     copy.slot = -1;   // let the deck place it
     if (!copy.title.empty()) copy.title += " copy";
-    kb->bindings.push_back(std::move(copy));
+    kb->active().bindings.push_back(std::move(copy));
     modelChanged();
 
     bool shown = false;
     for (size_t i = 0; i < tiles_.size(); ++i)
-        if (tiles_[i].binding == (int)kb->bindings.size() - 1) {
+        if (tiles_[i].binding == (int)kb->active().bindings.size() - 1) {
             selectTile((int)i);
             shown = true;
             break;
@@ -1811,6 +2021,298 @@ void MainWindow::pasteSteps() {
     refreshInspector();
     pushLog("Pasted " + std::to_string(stepClipboard_.size()) +
             " step(s) into \"" + b->displayTitle() + "\".");
+}
+
+// --------------------------------------------------------------- pages
+void MainWindow::setActivePage(const std::string& alias, int index) {
+    cfg::Keyboard* kb = config_.keyboard(alias);
+    if (!kb) return;
+    kb->normalizePages();
+    if (index < 0 || index >= (int)kb->pages.size()) return;
+    if (kb->activePage == index) return;
+    kb->activePage = index;
+
+    // Which page is in front is deliberately not saved. A deck should come
+    // back on the page its rules ask for, not on whichever one happened to be
+    // up when the app was last closed - so this does not mark the config
+    // dirty, and changing page never rewrites macros.json.
+    engine_.updateConfig(config_);
+    if (alias == currentAlias_) {
+        // The selection belonged to the old page's binding list, and index 3
+        // there is not index 3 here.
+        selectedTile_ = -1;
+        hoverTile_ = -1;
+        deckScroll_ = 0;
+        layoutDeck();
+        refreshInspector();
+        InvalidateRect(hwnd_, nullptr, FALSE);
+    }
+    refreshMiniDeck();
+}
+
+void MainWindow::addPage() {
+    cfg::Keyboard* kb = currentKb();
+    if (!kb) return;
+    std::string name =
+        kb->uniquePageName("Page " + std::to_string(kb->pages.size() + 1));
+    if (!askText(hwnd_, "New page", "Name for this page:", name)) return;
+    cfg::Page page;
+    page.name = kb->uniquePageName(name);
+    kb->pages.push_back(std::move(page));
+    const int added = (int)kb->pages.size() - 1;
+    const std::string alias = kb->alias;
+    modelChanged(false);
+    setActivePage(alias, added);
+    pushLog("Added page \"" + name + "\" to " + alias + ".");
+}
+
+void MainWindow::movePage(int pageIndex, int delta) {
+    cfg::Keyboard* kb = currentKb();
+    if (!kb) return;
+    const int to = pageIndex + delta;
+    if (pageIndex < 0 || pageIndex >= (int)kb->pages.size()) return;
+    if (to < 0 || to >= (int)kb->pages.size()) return;
+    std::swap(kb->pages[(size_t)pageIndex], kb->pages[(size_t)to]);
+    // Follow the page that moved rather than the position it left behind.
+    if (kb->activePage == pageIndex) kb->activePage = to;
+    else if (kb->activePage == to) kb->activePage = pageIndex;
+    modelChanged();
+}
+
+void MainWindow::removePage(int pageIndex) {
+    cfg::Keyboard* kb = currentKb();
+    if (!kb || pageIndex < 0 || pageIndex >= (int)kb->pages.size()) return;
+    if (kb->pages.size() == 1) {
+        showMessage(hwnd_, "Remove page",
+                    "A deck always has at least one page. Add another one "
+                    "before removing this.");
+        return;
+    }
+    const std::string removed = kb->pages[(size_t)pageIndex].displayName();
+    if (!askYesNo(hwnd_, "Remove page",
+                  "Remove \"" + removed + "\" and all " +
+                      std::to_string(kb->pages[(size_t)pageIndex].bindings.size()) +
+                      " of its keys?"))
+        return;
+    kb->pages.erase(kb->pages.begin() + pageIndex);
+    if (kb->activePage == pageIndex || kb->activePage >= (int)kb->pages.size())
+        kb->activePage = kb->defaultPage();
+    else if (kb->activePage > pageIndex)
+        --kb->activePage;
+    selectedTile_ = -1;
+    modelChanged();
+    pushLog("Removed page \"" + removed + "\".");
+}
+
+void MainWindow::editPageAppRule(int pageIndex) {
+    cfg::Keyboard* kb = currentKb();
+    if (!kb || pageIndex < 0 || pageIndex >= (int)kb->pages.size()) return;
+
+    // Pick from what is actually running rather than asking anyone to type an
+    // image name.
+    std::vector<win::WindowInfo> wins = win::listWindows();
+    // One entry per program: a rule on the executable is what almost everyone
+    // wants, and six Explorer windows are not six choices.
+    std::vector<win::WindowInfo> uniq;
+    for (const win::WindowInfo& w : wins) {
+        if (w.exe.empty()) continue;
+        bool seen = false;
+        for (const win::WindowInfo& u : uniq)
+            if (iequals(u.exe, w.exe)) { seen = true; break; }
+        if (!seen) uniq.push_back(w);
+    }
+    std::sort(uniq.begin(), uniq.end(),
+              [](const win::WindowInfo& a, const win::WindowInfo& b) {
+                  return lower(a.exe) < lower(b.exe);
+              });
+
+    HMENU m = CreatePopupMenu();
+    AppendMenuW(m, MF_STRING, IDM_PAGE_APP_CLEAR, L"No application rule");
+    AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
+    for (size_t i = 0; i < uniq.size() && i < 60; ++i)
+        AppendMenuW(m, MF_STRING, (UINT_PTR)(IDM_PAGE_APP_PICK + i),
+                    W(uniq[i].exe + "   -   " + uniq[i].title).c_str());
+
+    POINT pt;
+    GetCursorPos(&pt);
+    const int cmd = (int)TrackPopupMenu(
+        m, TPM_RETURNCMD | TPM_LEFTALIGN | TPM_TOPALIGN, pt.x, pt.y, 0, hwnd_,
+        nullptr);
+    DestroyMenu(m);
+    if (!cmd) return;
+
+    cfg::Page& page = kb->pages[(size_t)pageIndex];
+    if (cmd == IDM_PAGE_APP_CLEAR) {
+        page.rule = cfg::AppRule{};
+        pushLog("\"" + page.displayName() +
+                "\" no longer follows an application.");
+    } else {
+        const size_t i = (size_t)(cmd - IDM_PAGE_APP_PICK);
+        if (i >= uniq.size()) return;
+        page.rule = cfg::AppRule{};
+        // Deliberately only the executable. Adding the class as well would
+        // make the rule miss the moment that program opened a different kind
+        // of window, which is the opposite of what picking it here means.
+        page.rule.exe = uniq[i].exe;
+        pushLog("\"" + page.displayName() + "\" now comes up for " +
+                uniq[i].exe + ".");
+    }
+    modelChanged();
+}
+
+void MainWindow::pageContextMenu(int pageIndex, POINT screenPt) {
+    cfg::Keyboard* kb = currentKb();
+    if (!kb || pageIndex < 0 || pageIndex >= (int)kb->pages.size()) return;
+
+    HMENU m = CreatePopupMenu();
+    AppendMenuW(m, MF_STRING, IDM_PAGE_RENAME, L"Rename this page...");
+    AppendMenuW(m, MF_STRING, IDM_PAGE_APP,
+                L"Show this page for an application...");
+    if (!kb->pages[(size_t)pageIndex].rule.empty())
+        AppendMenuW(m, MF_STRING, IDM_PAGE_APP_CLEAR,
+                    L"Stop following an application");
+    AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(m, MF_STRING, IDM_PAGE_COLOR, L"Page colour...");
+    if (!kb->pages[(size_t)pageIndex].color.empty())
+        AppendMenuW(m, MF_STRING, IDM_PAGE_COLOR_CLEAR, L"Clear the colour");
+    AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(m, MF_STRING, IDM_PAGE_DUPLICATE, L"Duplicate this page");
+    AppendMenuW(m, MF_STRING | (pageIndex > 0 ? 0u : (UINT)MF_GRAYED),
+                IDM_PAGE_LEFT, L"Move left");
+    AppendMenuW(m,
+                MF_STRING | (pageIndex + 1 < (int)kb->pages.size()
+                                 ? 0u
+                                 : (UINT)MF_GRAYED),
+                IDM_PAGE_RIGHT, L"Move right");
+    AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(m, MF_STRING, IDM_PAGE_REMOVE, L"Remove this page");
+
+    const int cmd = (int)TrackPopupMenu(
+        m, TPM_RETURNCMD | TPM_LEFTALIGN | TPM_TOPALIGN, screenPt.x, screenPt.y,
+        0, hwnd_, nullptr);
+    DestroyMenu(m);
+    if (!cmd) return;
+
+    cfg::Page& page = kb->pages[(size_t)pageIndex];
+    switch (cmd) {
+        case IDM_PAGE_RENAME: {
+            std::string name = page.name;
+            if (askText(hwnd_, "Rename page", "Name for this page:", name)) {
+                const std::string want = trim(name);
+                // uniquePageName would put a number after a name that is only
+                // taken by this very page, so ask only when it really moved.
+                page.name = (kb->pageByName(want) == pageIndex)
+                                ? want
+                                : kb->uniquePageName(want);
+                modelChanged();
+            }
+            break;
+        }
+        case IDM_PAGE_APP:
+            editPageAppRule(pageIndex);
+            break;
+        case IDM_PAGE_APP_CLEAR:
+            page.rule = cfg::AppRule{};
+            modelChanged();
+            break;
+        case IDM_PAGE_COLOR: {
+            std::string hex = page.color;
+            if (chooseColorHex(hwnd_, hex)) {
+                page.color = hex;
+                modelChanged();
+            }
+            break;
+        }
+        case IDM_PAGE_COLOR_CLEAR:
+            page.color.clear();
+            modelChanged();
+            break;
+        case IDM_PAGE_DUPLICATE: {
+            cfg::Page copy = page;
+            copy.name = kb->uniquePageName(page.displayName() + " copy");
+            // The copy does not inherit the rule: two pages claiming one
+            // application would leave which of them you get down to page
+            // order, which is not what pressing Duplicate asked for.
+            copy.rule = cfg::AppRule{};
+            kb->pages.push_back(std::move(copy));
+            const int added = (int)kb->pages.size() - 1;
+            const std::string alias = kb->alias;
+            modelChanged(false);
+            setActivePage(alias, added);
+            break;
+        }
+        case IDM_PAGE_LEFT:
+            movePage(pageIndex, -1);
+            break;
+        case IDM_PAGE_RIGHT:
+            movePage(pageIndex, +1);
+            break;
+        case IDM_PAGE_REMOVE:
+            removePage(pageIndex);
+            break;
+        default:
+            break;
+    }
+}
+
+void MainWindow::drainPageRequests() {
+    std::deque<std::pair<std::string, int>> pending;
+    {
+        std::lock_guard<std::mutex> lk(pageMu_);
+        pending.swap(pageQueue_);
+    }
+    // A macro asking for a page is not the user picking one by hand, so it
+    // does not stand down the application rules the way a click does.
+    for (const auto& req : pending) setActivePage(req.first, req.second);
+}
+
+void MainWindow::onForegroundChanged(HWND fg) {
+    if (!config_.settings.switchPageWithApp || !fg) return;
+
+    // MacroDeck's own windows are not an application change. Editing a deck
+    // would otherwise count as leaving whatever you were working in, and the
+    // page would move the moment you came here to look at it.
+    DWORD pid = 0;
+    GetWindowThreadProcessId(fg, &pid);
+    if (pid == GetCurrentProcessId()) return;
+
+    win::WindowInfo info;
+    if (!win::describeWindow(fg, info)) return;
+    const std::string id = info.exe + "|" + info.cls + "|" + info.title;
+    // Nothing happens unless the window in front is really a different one.
+    // This is also what makes a page you picked by hand stay put: clicking
+    // around inside the application you are already in raises no event that
+    // could take it away from you, and only moving to another one does.
+    if (id == lastForeground_) return;
+    lastForeground_ = id;
+
+    for (size_t i = 0; i < config_.keyboards.size(); ++i) {
+        config_.keyboards[i].normalizePages();
+        const std::string alias = config_.keyboards[i].alias;
+        const int want = config_.keyboards[i].pageForApp(info.exe, info.cls,
+                                                         info.title);
+        if (want == config_.keyboards[i].activePage) continue;
+        setActivePage(alias, want);
+        if (const cfg::Keyboard* kb = config_.keyboard(alias))
+            pushLog(alias + ": " + info.exe + " brought up \"" +
+                    kb->active().displayName() + "\".");
+    }
+}
+
+void MainWindow::startForegroundHook() {
+    if (fgHook_) return;
+    fgHook_ = SetWinEventHook(EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_FOREGROUND,
+                              nullptr, &foregroundEventProc, 0, 0,
+                              WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS);
+    if (!fgHook_)
+        pushLog("Windows would not say which application is in front - pages "
+                "will only change when you ask them to.");
+}
+
+void MainWindow::stopForegroundHook() {
+    if (!fgHook_) return;
+    UnhookWinEvent(fgHook_);
+    fgHook_ = nullptr;
 }
 
 // ------------------------------------------------------- global start/stop
@@ -1970,7 +2472,7 @@ void MainWindow::keyboardContextMenu(int index, POINT pt) {
         case IDM_KB_REMOVE: {
             if (!askYesNo(hwnd_, "Remove keyboard",
                           "Remove \"" + kb.alias + "\" and all " +
-                              std::to_string(kb.bindings.size()) +
+                              std::to_string(totalBindings(kb)) +
                               " of its keys?"))
                 break;
             std::string removed = kb.alias;
@@ -2118,8 +2620,14 @@ void MainWindow::drainKeyEvents() {
 void MainWindow::refreshMiniDeck() {
     cfg::Keyboard* kb = currentKb();
     std::vector<MiniButton> out;
+    MiniPage page;
     if (kb) {
-        for (const cfg::Binding& b : kb->bindings) {
+        kb->normalizePages();
+        page.name = kb->active().displayName();
+        page.color = kb->active().color;
+        page.index = kb->activePage;
+        page.count = (int)kb->pages.size();
+        for (const cfg::Binding& b : kb->active().bindings) {
             MiniButton mb;
             mb.key = b.key;
             mb.title = b.displayTitle();
@@ -2131,6 +2639,7 @@ void MainWindow::refreshMiniDeck() {
             out.push_back(std::move(mb));
         }
     }
+    mini_.setPage(page);
     mini_.setButtons(kb ? kb->alias : std::string("MacroDeck"), std::move(out));
 }
 
@@ -2150,7 +2659,7 @@ void MainWindow::runBindingByKey(const std::string& key) {
     lastFire_[currentAlias_ + "|" + b->key] = GetTickCount();
     SetTimer(hwnd_, 2, 60, nullptr);
     InvalidateRect(hwnd_, nullptr, FALSE);
-    engine_.runSequenceAsync(b->steps, "Buttons");
+    engine_.runSequenceAsync(b->steps, "Buttons", currentAlias_);
 }
 
 void MainWindow::saveMiniPlacement() {
@@ -2323,6 +2832,14 @@ LRESULT CALLBACK MainWindow::wndProc(HWND hwnd, UINT msg, WPARAM wp,
             self->drainKeyEvents();
             return 0;
 
+        case WM_APP_PAGE:
+            self->drainPageRequests();
+            return 0;
+
+        case WM_APP_FOREGROUND:
+            self->onForegroundChanged((HWND)wp);
+            return 0;
+
         case WM_TIMER:
             if (wp == 2) {
                 // fade out the "just fired" glow, then stop ticking
@@ -2379,10 +2896,17 @@ LRESULT CALLBACK MainWindow::wndProc(HWND hwnd, UINT msg, WPARAM wp,
             }
 
             int oldTile = self->hoverTile_, oldPal = self->hoverPalette_,
-                oldKb = self->hoverKb_;
+                oldKb = self->hoverKb_, oldPage = self->hoverPageTab_;
             self->hoverTile_ = -1;
             self->hoverPalette_ = -1;
             self->hoverKb_ = -1;
+            self->hoverPageTab_ = -1;
+            if (!self->dragging_) {
+                for (size_t i = 0; i < self->pageTabs_.size(); ++i)
+                    if (ptIn(self->pageTabs_[i].rect, p))
+                        self->hoverPageTab_ = (int)i;
+                if (ptIn(self->rcPagePin_, p)) self->hoverPageTab_ = -2;
+            }
             for (size_t i = 0; i < self->tiles_.size(); ++i)
                 if (ptIn(self->tiles_[i].rect, p)) self->hoverTile_ = (int)i;
             if (!self->dragging_) {
@@ -2396,7 +2920,8 @@ LRESULT CALLBACK MainWindow::wndProc(HWND hwnd, UINT msg, WPARAM wp,
                             r.index >= 0 ? r.index : (r.index == -1 ? -2 : -3);
             }
             if (self->dragging_ || oldTile != self->hoverTile_ ||
-                oldPal != self->hoverPalette_ || oldKb != self->hoverKb_)
+                oldPal != self->hoverPalette_ || oldKb != self->hoverKb_ ||
+                oldPage != self->hoverPageTab_)
                 InvalidateRect(hwnd, nullptr, FALSE);
 
             TRACKMOUSEEVENT tme{sizeof(tme), TME_LEAVE, hwnd, 0};
@@ -2407,6 +2932,7 @@ LRESULT CALLBACK MainWindow::wndProc(HWND hwnd, UINT msg, WPARAM wp,
         case WM_MOUSELEAVE:
             self->hoverTile_ = self->hoverPalette_ = -1;
             self->hoverKb_ = -1;
+            self->hoverPageTab_ = -1;
             InvalidateRect(hwnd, nullptr, FALSE);
             return 0;
 
@@ -2424,6 +2950,29 @@ LRESULT CALLBACK MainWindow::wndProc(HWND hwnd, UINT msg, WPARAM wp,
                 else if (r.index == -2) self->addSoftwareDeck();
                 else self->selectKeyboard(
                     self->config_.keyboards[(size_t)r.index].alias);
+                return 0;
+            }
+            if (ptIn(self->rcPagePin_, p)) {
+                bool& follow = self->config_.settings.switchPageWithApp;
+                follow = !follow;
+                self->saveConfig();
+                self->engine_.updateConfig(self->config_);
+                if (follow) {
+                    // Catch up straight away rather than waiting for the next
+                    // time the user happens to change window.
+                    self->lastForeground_.clear();
+                    self->onForegroundChanged(GetForegroundWindow());
+                }
+                self->pushLog(follow ? "Pages follow the application in front."
+                                     : "Pages stay where you put them.");
+                InvalidateRect(hwnd, nullptr, FALSE);
+                return 0;
+            }
+            for (const PageTab& t : self->pageTabs_) {
+                if (!ptIn(t.rect, p)) continue;
+                if (t.index < 0) self->addPage();
+                else if (cfg::Keyboard* kb = self->currentKb())
+                    self->setActivePage(kb->alias, t.index);
                 return 0;
             }
             for (size_t i = 0; i < self->palette_.size(); ++i) {
@@ -2469,6 +3018,23 @@ LRESULT CALLBACK MainWindow::wndProc(HWND hwnd, UINT msg, WPARAM wp,
 
         case WM_LBUTTONDBLCLK: {
             POINT p{GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};
+            // Double-click renames a page, the same as it renames a tile.
+            for (const PageTab& t : self->pageTabs_)
+                if (ptIn(t.rect, p) && t.index >= 0) {
+                    if (cfg::Keyboard* kb = self->currentKb()) {
+                        std::string name = kb->pages[(size_t)t.index].name;
+                        if (askText(hwnd, "Rename page", "Name for this page:",
+                                    name)) {
+                            const std::string want = trim(name);
+                            kb->pages[(size_t)t.index].name =
+                                (kb->pageByName(want) == t.index)
+                                    ? want
+                                    : kb->uniquePageName(want);
+                            self->modelChanged();
+                        }
+                    }
+                    return 0;
+                }
             for (size_t i = 0; i < self->tiles_.size(); ++i)
                 if (ptIn(self->tiles_[i].rect, p) &&
                     self->tiles_[i].binding >= 0) {
@@ -2487,6 +3053,11 @@ LRESULT CALLBACK MainWindow::wndProc(HWND hwnd, UINT msg, WPARAM wp,
             for (const auto& r : self->kbRows_)
                 if (ptIn(r.rect, p) && r.index >= 0) {
                     self->keyboardContextMenu(r.index, screen);
+                    return 0;
+                }
+            for (const PageTab& t : self->pageTabs_)
+                if (ptIn(t.rect, p) && t.index >= 0) {
+                    self->pageContextMenu(t.index, screen);
                     return 0;
                 }
             for (size_t i = 0; i < self->tiles_.size(); ++i)

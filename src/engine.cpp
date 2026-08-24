@@ -22,6 +22,41 @@ void Engine::setLog(LogFn fn) {
     log_ = std::move(fn);
 }
 
+void Engine::setPageChanger(PageFn fn) {
+    std::lock_guard<std::mutex> lk(logMu_);
+    page_ = std::move(fn);
+}
+
+int Engine::resolvePage(const std::string& alias, const std::string& name,
+                        const std::string& direction) const {
+    std::lock_guard<std::mutex> lk(cfgMu_);
+    const cfg::Keyboard* kb = nullptr;
+    for (const auto& k : cfg_.keyboards)
+        if (k.alias == alias) { kb = &k; break; }
+    if (!kb || kb->pages.empty()) return -1;
+
+    const int n = (int)kb->pages.size();
+    const int cur = kb->activePage >= 0 && kb->activePage < n ? kb->activePage
+                                                             : kb->defaultPage();
+    const std::string dir = lower(trim(direction));
+    if (dir == "next") return (cur + 1) % n;
+    // Adding n before the modulo: C++ leaves a negative operand negative, and
+    // page -1 is not a page.
+    if (dir == "previous") return (cur - 1 + n) % n;
+    if (dir == "default") return kb->defaultPage();
+    return kb->pageByName(name);
+}
+
+void Engine::requestPage(const std::string& alias, int page) {
+    if (page < 0) return;
+    PageFn fn;
+    {
+        std::lock_guard<std::mutex> lk(logMu_);
+        fn = page_;
+    }
+    if (fn) fn(alias, page);
+}
+
 void Engine::setMonitor(MonitorFn fn) {
     std::lock_guard<std::mutex> lk(logMu_);
     monitor_ = std::move(fn);
@@ -75,6 +110,11 @@ void Engine::onKey(const dev::KeyEvent& ev) {
     std::string alias;
     std::vector<cfg::Step> steps;
     bool hasMacro = false;
+    // A "Hold for a page" step on this key, resolved while we still have the
+    // config in hand: the page to show while it is down, and the one to put
+    // back when it comes up.
+    std::string holdPage;
+    int returnPage = -1;
     {
         std::lock_guard<std::mutex> lk(cfgMu_);
         const cfg::Keyboard* kb = cfg_.keyboardForDevice(ev.devicePath);
@@ -83,7 +123,43 @@ void Engine::onKey(const dev::KeyEvent& ev) {
             if (const cfg::Binding* b = kb->findKey(keyName)) {
                 hasMacro = !b->steps.empty();
                 if (ev.down && hasMacro) steps = b->steps;
+                for (const cfg::Step& s : b->steps)
+                    if (s.action == "page_hold") {
+                        holdPage = s.params.str("page");
+                        break;
+                    }
             }
+            returnPage = kb->activePage;
+        }
+    }
+
+    // Momentary page switching is answered here rather than on the worker
+    // thread, because it has to be undone on key-up: a release that arrived
+    // while the press was still queued would put the wrong page back, or
+    // none at all.
+    if (!alias.empty()) {
+        const std::pair<std::string, int> id{ev.devicePath, ev.vk};
+        if (ev.down && !holdPage.empty()) {
+            bool fresh = false;
+            {
+                std::lock_guard<std::mutex> lk(holdMu_);
+                fresh = holds_.emplace(id, std::make_pair(alias, returnPage))
+                            .second;
+            }
+            if (fresh) requestPage(alias, resolvePage(alias, holdPage, "named"));
+        } else if (!ev.down) {
+            std::pair<std::string, int> back;
+            bool had = false;
+            {
+                std::lock_guard<std::mutex> lk(holdMu_);
+                auto it = holds_.find(id);
+                if (it != holds_.end()) {
+                    back = it->second;
+                    had = true;
+                    holds_.erase(it);
+                }
+            }
+            if (had) requestPage(back.first, back.second);
         }
     }
 
@@ -107,6 +183,7 @@ void Engine::onKey(const dev::KeyEvent& ev) {
 
     Job job;
     job.steps = std::move(steps);
+    job.alias = alias;
     job.label = "[" + alias + "] " + keys::displayName(keyName);
     {
         std::lock_guard<std::mutex> lk(jobMu_);
@@ -132,6 +209,7 @@ void Engine::workerMain() {
             job = std::move(jobs_.front());
             jobs_.pop_front();
         }
+        runningAlias_ = job.alias;
         try {
             log(job.label + " - running " + std::to_string(job.steps.size()) +
                 (job.steps.size() == 1 ? " step" : " steps"));
@@ -139,11 +217,13 @@ void Engine::workerMain() {
         } catch (const std::exception& e) {
             log(job.label + " - stopped: " + e.what());
         }
+        runningAlias_.clear();
     }
 }
 
 void Engine::runSequenceAsync(const std::vector<cfg::Step>& steps,
-                              const std::string& label) {
+                              const std::string& label,
+                              const std::string& alias) {
     if (steps.empty()) return;
     if (!worker_.joinable()) {
         // Test runs work even when the engine isn't started.
@@ -153,6 +233,7 @@ void Engine::runSequenceAsync(const std::vector<cfg::Step>& steps,
     Job job;
     job.steps = steps;
     job.label = label;
+    job.alias = alias;
     {
         std::lock_guard<std::mutex> lk(jobMu_);
         jobs_.push_back(std::move(job));
@@ -432,6 +513,27 @@ void Engine::runStep(const cfg::Step& s) {
         return;
     }
 
+    if (a == "page_goto") {
+        if (runningAlias_.empty())
+            throw std::runtime_error(
+                "a page step only means something on a deck's own key");
+        const std::string dir = trim(p.str("direction", "named"));
+        const std::string name = trim(p.str("page"));
+        int target = resolvePage(runningAlias_, name, dir);
+        if (target < 0)
+            throw std::runtime_error(
+                name.empty() ? "which page? name one, or pick a direction"
+                             : "there is no page called \"" + name + "\"");
+        requestPage(runningAlias_, target);
+        return;
+    }
+
+    // The switch itself happened on key-down, and the switch back happens on
+    // key-up, both in onKey where the release can be seen. Reaching it here
+    // means the sequence ran - a Test run, or a key that carries other steps
+    // alongside it - and there is nothing left to do.
+    if (a == "page_hold") return;
+
     throw std::runtime_error("unknown action \"" + a + "\"");
 }
 
@@ -507,10 +609,14 @@ void Engine::start() {
                     : "Ready. Nothing is being read from any keyboard.");
     for (const auto& k : snapshot.keyboards) {
         int bound = 0;
-        for (const auto& b : k.bindings)
-            if (!b.steps.empty()) ++bound;
+        for (const auto& pg : k.pages)
+            for (const auto& b : pg.bindings)
+                if (!b.steps.empty()) ++bound;
         log("  " + k.alias + " - " + std::to_string(bound) +
             (bound == 1 ? " macro, " : " macros, ") +
+            (k.pages.size() > 1
+                 ? "across " + std::to_string(k.pages.size()) + " pages, "
+                 : "") +
             (k.softwareOnly    ? "clicked on screen, no keyboard involved"
              : !k.block        ? "keys also type normally"
              : k.blockAllKeys  ? "every key blocked from apps"

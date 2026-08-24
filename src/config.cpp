@@ -159,6 +159,22 @@ const std::vector<ActionDef>& actionDefs() {
         {"window_restore", "Restore a window layout", "Windows",
          "Puts every window back where a saved layout had it.",
          {{"layout", "Layout name", FieldKind::Layout, "main", true, "", ""}}},
+
+        {"page_goto", "Go to a page", "Pages",
+         "Brings another page of this deck to the front, and leaves it there.",
+         {{"page", "Page", FieldKind::Text, "", false, "",
+           "The page's name. Leave blank and use the direction below "
+           "instead."},
+          {"direction", "Or move", FieldKind::Choice, "named", false,
+           "named,next,previous,default",
+           "\"Default\" is the page with no application rule."}}},
+
+        {"page_hold", "Hold for a page", "Pages",
+         "Shows another page only while this key is held down, and goes back "
+         "the moment it is released. A key on the pad doing what the touch "
+         "strip does on a hardware macro pad.",
+         {{"page", "Page", FieldKind::Text, "", true, "",
+           "The page to show while the key is held."}}},
     };
     return defs;
 }
@@ -290,24 +306,155 @@ std::string Binding::displayTitle() const {
     return "Empty";
 }
 
-// -------------------------------------------------------------- Keyboard
-Binding* Keyboard::findKey(const std::string& key) {
+// --------------------------------------------------------------- AppRule
+bool AppRule::empty() const {
+    return trim(exe).empty() && trim(cls).empty() && trim(title).empty();
+}
+
+bool AppRule::matches(const std::string& winExe, const std::string& winCls,
+                      const std::string& winTitle) const {
+    // A rule with nothing in it belongs to no window at all. Treating it as a
+    // wildcard would mean the first unconfigured page grabbed every app and
+    // no other page ever got a turn.
+    if (empty()) return false;
+    if (!trim(exe).empty() && lower(trim(exe)) != lower(trim(winExe)))
+        return false;
+    if (!trim(cls).empty() && trim(cls) != trim(winCls)) return false;
+    if (!trim(title).empty() &&
+        lower(winTitle).find(lower(trim(title))) == std::string::npos)
+        return false;
+    return true;
+}
+
+int AppRule::specificity() const {
+    int n = 0;
+    if (!trim(exe).empty()) ++n;
+    if (!trim(cls).empty()) ++n;
+    if (!trim(title).empty()) ++n;
+    return n;
+}
+
+std::string AppRule::summary() const {
+    if (empty()) return "Any application";
+    std::string s;
+    auto add = [&](const std::string& label, const std::string& v) {
+        if (trim(v).empty()) return;
+        if (!s.empty()) s += ", ";
+        s += label + " " + trim(v);
+    };
+    add("", exe);
+    add("class", cls);
+    add("title contains", title);
+    return s;
+}
+
+// ------------------------------------------------------------------ Page
+Binding* Page::findKey(const std::string& key) {
     for (auto& b : bindings)
         if (b.key == key) return &b;
     return nullptr;
 }
 
-const Binding* Keyboard::findKey(const std::string& key) const {
+const Binding* Page::findKey(const std::string& key) const {
     for (const auto& b : bindings)
         if (b.key == key) return &b;
     return nullptr;
 }
 
-Binding* Keyboard::findSlot(int slot) {
+Binding* Page::findSlot(int slot) {
     if (slot < 0) return nullptr;
     for (auto& b : bindings)
         if (b.slot == slot) return &b;
     return nullptr;
+}
+
+std::string Page::displayName() const {
+    if (!trim(name).empty()) return trim(name);
+    if (!rule.empty()) return rule.summary();
+    return "Page";
+}
+
+// -------------------------------------------------------------- Keyboard
+void Keyboard::normalizePages() {
+    if (pages.empty()) pages.push_back(Page{});
+    if (activePage < 0 || activePage >= (int)pages.size())
+        activePage = defaultPage();
+}
+
+Page& Keyboard::active() {
+    normalizePages();
+    return pages[(size_t)activePage];
+}
+
+const Page& Keyboard::active() const {
+    if (pages.empty()) {
+        // Only reachable if a caller emptied the vector by hand. A static
+        // stand-in is better than undefined behaviour on a const path that
+        // cannot repair itself.
+        static const Page fallback;
+        return fallback;
+    }
+    int i = activePage;
+    if (i < 0 || i >= (int)pages.size()) i = defaultPage();
+    return pages[(size_t)i];
+}
+
+int Keyboard::defaultPage() const {
+    for (size_t i = 0; i < pages.size(); ++i)
+        if (pages[i].rule.empty()) return (int)i;
+    return 0;
+}
+
+int Keyboard::pageForApp(const std::string& winExe, const std::string& winCls,
+                         const std::string& winTitle) const {
+    int best = -1, bestScore = 0;
+    for (size_t i = 0; i < pages.size(); ++i) {
+        if (!pages[i].rule.matches(winExe, winCls, winTitle)) continue;
+        const int score = pages[i].rule.specificity();
+        // Strictly greater, so the first page written wins a tie. Page order
+        // is something you can see and drag; "whichever we happened to visit
+        // last" is not.
+        if (score > bestScore) { bestScore = score; best = (int)i; }
+    }
+    return best >= 0 ? best : defaultPage();
+}
+
+int Keyboard::pageByName(const std::string& name) const {
+    const std::string want = lower(trim(name));
+    if (want.empty()) return -1;
+    for (size_t i = 0; i < pages.size(); ++i)
+        if (lower(trim(pages[i].name)) == want) return (int)i;
+    return -1;
+}
+
+std::string Keyboard::uniquePageName(const std::string& wanted) const {
+    std::string base = trim(wanted);
+    if (base.empty()) base = "Page";
+    if (pageByName(base) < 0) return base;
+    for (int n = 2; n < 1000; ++n) {
+        std::string tryName = base + " " + std::to_string(n);
+        if (pageByName(tryName) < 0) return tryName;
+    }
+    return base;
+}
+
+Binding* Keyboard::findKey(const std::string& key) {
+    return active().findKey(key);
+}
+
+const Binding* Keyboard::findKey(const std::string& key) const {
+    return active().findKey(key);
+}
+
+Binding* Keyboard::findSlot(int slot) {
+    return active().findSlot(slot);
+}
+
+bool Keyboard::anyPageHasMacro(const std::string& key) const {
+    for (const Page& p : pages)
+        if (const Binding* b = p.findKey(key))
+            if (!b->steps.empty()) return true;
+    return false;
 }
 
 // ----------------------------------------------------------------- Config
@@ -374,6 +521,7 @@ void Config::load(const std::string& file) {
         settings.matchConfidence = s->num("matchConfidence", kDefaultConfidence);
         settings.layoutsDir = s->str("layoutsDir", "layouts");
         settings.startEngineOnLaunch = s->boolean("startEngineOnLaunch", false);
+        settings.switchPageWithApp = s->boolean("switchPageWithApp", true);
         settings.minimizeToTray = s->boolean("minimizeToTray", true);
         settings.startMinimized = s->boolean("startMinimized", false);
         settings.toggleHotkey = s->str("toggleHotkey", settings.toggleHotkey);
@@ -415,49 +563,89 @@ void Config::load(const std::string& file) {
                 if (kb.softwareOnly) { kb.block = false; kb.match.clear(); }
                 kb.deck = k.str("deck", "auto");
                 if (kb.alias.empty()) continue;
-                if (const js::Value* bs = k.find("bindings")) {
-                    if (bs->isArr())
-                        for (const js::Value& b : bs->arr) {
-                            Binding bind;
-                            bind.key = lower(trim(b.str("key")));
-                            if (bind.key.empty()) continue;
-                            bind.title = b.str("title");
-                            bind.icon = b.str("icon");
-                            bind.color = b.str("color");
-                            bind.slot = b.integer("slot", -1);
-                            if (const js::Value* st = b.find("steps"))
-                                if (st->isArr())
-                                    for (const js::Value& s : st->arr) {
-                                        Step step = stepFromJson(s);
-                                        if (!step.action.empty())
-                                            bind.steps.push_back(std::move(step));
-                                    }
 
-                            // A software button's key is an opaque id, not
-                            // a key name, so there is nothing to warn about.
-                            if (!kb.softwareOnly && !keys::toVk(bind.key))
-                                loadWarnings.push_back(
-                                    "\"" + kb.alias + "\": no key called \"" +
-                                    bind.key +
-                                    "\" - that macro can never fire.");
+                // Reading one page's worth of bindings. Duplicate keys are
+                // still refused, but only within a page: the whole point of
+                // pages is that the same key means different things on each
+                // of them, so comparing across pages would reject exactly
+                // what the feature is for.
+                auto readBindings = [&](const js::Value& src, Page& page,
+                                        const std::string& where) {
+                    if (!src.isArr()) return;
+                    for (const js::Value& b : src.arr) {
+                        Binding bind;
+                        bind.key = lower(trim(b.str("key")));
+                        if (bind.key.empty()) continue;
+                        bind.title = b.str("title");
+                        bind.icon = b.str("icon");
+                        bind.color = b.str("color");
+                        bind.slot = b.integer("slot", -1);
+                        if (const js::Value* st = b.find("steps"))
+                            if (st->isArr())
+                                for (const js::Value& s : st->arr) {
+                                    Step step = stepFromJson(s);
+                                    if (!step.action.empty())
+                                        bind.steps.push_back(std::move(step));
+                                }
 
-                            // Lookup resolves to the first binding for a key,
-                            // so a second one is dead weight. Prefer whichever
-                            // copy actually has steps rather than blindly
-                            // keeping the first and silently dropping work.
-                            if (Binding* clash = kb.findKey(bind.key)) {
-                                const std::string dupKey = bind.key;
-                                if (clash->steps.empty() && !bind.steps.empty())
-                                    *clash = std::move(bind);
-                                loadWarnings.push_back(
-                                    "\"" + kb.alias + "\": \"" + dupKey +
-                                    "\" is listed more than once - only one "
-                                    "macro per key is kept.");
-                                continue;
-                            }
-                            kb.bindings.push_back(std::move(bind));
+                        // A software button's key is an opaque id, not a key
+                        // name, so there is nothing to warn about.
+                        if (!kb.softwareOnly && !keys::toVk(bind.key))
+                            loadWarnings.push_back(
+                                where + ": no key called \"" + bind.key +
+                                "\" - that macro can never fire.");
+
+                        // Lookup resolves to the first binding for a key, so
+                        // a second one is dead weight. Prefer whichever copy
+                        // actually has steps rather than blindly keeping the
+                        // first and silently dropping work.
+                        if (Binding* clash = page.findKey(bind.key)) {
+                            const std::string dupKey = bind.key;
+                            if (clash->steps.empty() && !bind.steps.empty())
+                                *clash = std::move(bind);
+                            loadWarnings.push_back(
+                                where + ": \"" + dupKey +
+                                "\" is listed more than once - only one "
+                                "macro per key is kept.");
+                            continue;
                         }
+                        page.bindings.push_back(std::move(bind));
+                    }
+                };
+
+                kb.pages.clear();
+                const js::Value* ps = k.find("pages");
+                if (ps && ps->isArr() && !ps->arr.empty()) {
+                    for (const js::Value& p : ps->arr) {
+                        Page page;
+                        page.name = p.str("name");
+                        page.color = p.str("color");
+                        if (const js::Value* r = p.find("appRule")) {
+                            if (r->isObj()) {
+                                page.rule.exe = r->str("exe");
+                                page.rule.cls = r->str("class");
+                                page.rule.title = r->str("title");
+                            }
+                        }
+                        if (page.name.empty())
+                            page.name = "Page " +
+                                        std::to_string(kb.pages.size() + 1);
+                        if (const js::Value* bs = p.find("bindings"))
+                            readBindings(*bs, page,
+                                         "\"" + kb.alias + "\" / \"" +
+                                             page.name + "\"");
+                        kb.pages.push_back(std::move(page));
+                    }
+                } else {
+                    // No pages in the file: everything written before this
+                    // feature existed, and one page is exactly what it meant.
+                    Page page;
+                    if (const js::Value* bs = k.find("bindings"))
+                        readBindings(*bs, page, "\"" + kb.alias + "\"");
+                    kb.pages.push_back(std::move(page));
                 }
+                kb.normalizePages();
+                kb.activePage = kb.defaultPage();
                 keyboards.push_back(std::move(kb));
             }
         }
@@ -473,6 +661,7 @@ std::string Config::toJson() const {
     s["matchConfidence"] = settings.matchConfidence;
     s["layoutsDir"] = settings.layoutsDir;
     s["startEngineOnLaunch"] = settings.startEngineOnLaunch;
+    s["switchPageWithApp"] = settings.switchPageWithApp;
     s["minimizeToTray"] = settings.minimizeToTray;
     s["startMinimized"] = settings.startMinimized;
     s["toggleHotkey"] = settings.toggleHotkey;
@@ -492,20 +681,53 @@ std::string Config::toJson() const {
         k["blockAllKeys"] = kb.blockAllKeys;
         if (kb.softwareOnly) k["softwareOnly"] = true;
         k["deck"] = kb.deck;
-        js::Value bs = js::Value::array();
-        for (const Binding& b : kb.bindings) {
-            js::Value jb = js::Value::object();
-            jb["key"] = b.key;
-            if (!b.title.empty()) jb["title"] = b.title;
-            if (!b.icon.empty()) jb["icon"] = b.icon;
-            if (!b.color.empty()) jb["color"] = b.color;
-            if (b.slot >= 0) jb["slot"] = b.slot;
-            js::Value st = js::Value::array();
-            for (const Step& s2 : b.steps) st.push(stepToJson(s2));
-            jb["steps"] = std::move(st);
-            bs.push(std::move(jb));
+
+        auto bindingsJson = [](const Page& p) {
+            js::Value bs = js::Value::array();
+            for (const Binding& b : p.bindings) {
+                js::Value jb = js::Value::object();
+                jb["key"] = b.key;
+                if (!b.title.empty()) jb["title"] = b.title;
+                if (!b.icon.empty()) jb["icon"] = b.icon;
+                if (!b.color.empty()) jb["color"] = b.color;
+                if (b.slot >= 0) jb["slot"] = b.slot;
+                js::Value st = js::Value::array();
+                for (const Step& s2 : b.steps) st.push(stepToJson(s2));
+                jb["steps"] = std::move(st);
+                bs.push(std::move(jb));
+            }
+            return bs;
+        };
+
+        // A deck that uses one plain page is written the way it always was.
+        // The file only grows the new shape once there is something in it
+        // that the old shape cannot hold, which means an ordinary config
+        // stays readable by a build from before pages existed.
+        const bool plain = kb.pages.size() == 1 && kb.pages[0].rule.empty() &&
+                           kb.pages[0].color.empty();
+        if (plain) {
+            k["bindings"] = bindingsJson(kb.pages[0]);
+        } else {
+            js::Value ps = js::Value::array();
+            for (size_t i = 0; i < kb.pages.size(); ++i) {
+                const Page& p = kb.pages[i];
+                js::Value jp = js::Value::object();
+                jp["name"] = p.name.empty()
+                                 ? "Page " + std::to_string(i + 1)
+                                 : p.name;
+                if (!p.color.empty()) jp["color"] = p.color;
+                if (!p.rule.empty()) {
+                    js::Value r = js::Value::object();
+                    if (!p.rule.exe.empty()) r["exe"] = p.rule.exe;
+                    if (!p.rule.cls.empty()) r["class"] = p.rule.cls;
+                    if (!p.rule.title.empty()) r["title"] = p.rule.title;
+                    jp["appRule"] = std::move(r);
+                }
+                jp["bindings"] = bindingsJson(p);
+                ps.push(std::move(jp));
+            }
+            k["pages"] = std::move(ps);
         }
-        k["bindings"] = std::move(bs);
         kbs.push(std::move(k));
     }
     root["keyboards"] = std::move(kbs);
@@ -600,8 +822,7 @@ bool Config::couldBlockVk(int vk) const {
     for (const Keyboard& k : keyboards) {
         if (!k.block) continue;
         if (k.blockAllKeys) return true;   // every key on that device is fair game
-        const Binding* b = k.findKey(name);
-        if (b && !b->steps.empty()) return true;
+        if (k.anyPageHasMacro(name)) return true;
     }
     return false;
 }
@@ -615,8 +836,12 @@ bool Config::blockedForKey(const std::string& devicePath, int vk) const {
     // binding with no steps is a half-finished tile, not a macro - taking its
     // key would silence a key for no benefit, which is precisely the
     // complaint this option exists to fix.
-    const Binding* b = k->findKey(keys::vkName(vk));
-    return b && !b->steps.empty();
+    //
+    // Asked of every page, not just the one in front. A key that types into
+    // your document on page 2 and runs a macro on page 3 would be worse than
+    // either answer on its own: what a key does could still change with the
+    // page, but whether it reaches the application underneath should not.
+    return k->anyPageHasMacro(keys::vkName(vk));
 }
 
 bool specMatches(const std::string& match, const std::string& devicePath) {
