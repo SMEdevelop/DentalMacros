@@ -37,7 +37,7 @@ cl %TESTFLAGS% /Fobuild\obj-test\ /Fdbuild\obj-test\ ^
   src\keys.cpp src\util.cpp src\vision.cpp src\winman.cpp ^
   src\engine.cpp src\actions.cpp src\device.cpp ^
   /Febuild\selftest.exe ^
-  /link /INCREMENTAL:NO gdiplus.lib gdi32.lib user32.lib shell32.lib ole32.lib advapi32.lib psapi.lib
+  /link /INCREMENTAL:NO gdiplus.lib gdi32.lib user32.lib shell32.lib ole32.lib advapi32.lib psapi.lib hid.lib
 if errorlevel 1 ( echo  BUILD FAILED & exit /b 1 )
 
 rem Pass a macrokb macros.yaml as the first argument to also test the importer.
@@ -52,9 +52,9 @@ echo.
 echo  Rendering the drawing preview...
 cl %TESTFLAGS% /Fobuild\obj-preview\ /Fdbuild\obj-preview\ ^
   tests\render_preview.cpp src\theme.cpp src\iconlib.cpp src\config.cpp src\import_yaml.cpp ^
-  src\json.cpp src\keys.cpp src\util.cpp ^
+  src\json.cpp src\keys.cpp src\util.cpp src\device.cpp ^
   /Febuild\preview.exe ^
-  /link /INCREMENTAL:NO gdiplus.lib gdi32.lib user32.lib shell32.lib ole32.lib advapi32.lib
+  /link /INCREMENTAL:NO gdiplus.lib gdi32.lib user32.lib shell32.lib ole32.lib advapi32.lib psapi.lib hid.lib
 if not errorlevel 1 build\preview.exe
 
 rem  Keep a committed copy: build\ is ignored by git, and README.md shows

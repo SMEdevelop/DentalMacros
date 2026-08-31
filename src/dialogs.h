@@ -21,8 +21,11 @@ KeyCaptureResult captureKey(HWND parent, const std::string& title,
                             const std::string& restrictMatch = "",
                             bool comboMode = false, bool allowPickByName = true);
 
-// Scan attached keyboards and add one to the config. Returns the new alias.
-bool addKeyboardDialog(HWND parent, cfg::Config& config, std::string& newAlias);
+// Scan attached devices and add one to the config. Returns the new alias.
+// `mouse` scans pointing devices instead of keyboards; everything else about
+// the dialog, and about the deck it produces, is the same.
+bool addKeyboardDialog(HWND parent, cfg::Config& config,
+                       std::string& newAlias, bool mouse = false);
 
 // One recorded click: where it landed, and the top-level window it landed in.
 // The window matters because the position is an absolute screen coordinate,

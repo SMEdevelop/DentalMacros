@@ -558,6 +558,9 @@ void Config::load(const std::string& file) {
                 // true is what those files meant.
                 kb.blockAllKeys = k.boolean("blockAllKeys", true);
                 kb.softwareOnly = k.boolean("softwareOnly", false);
+                // Absent in every file written before mice were supported,
+                // and "keyboard" is what those files meant.
+                kb.isMouse = lower(trim(k.str("device"))) == "mouse";
                 // Belt and braces: a software deck that somehow arrived with
                 // block set must not install the hook.
                 if (kb.softwareOnly) { kb.block = false; kb.match.clear(); }
@@ -580,13 +583,27 @@ void Config::load(const std::string& file) {
                         bind.icon = b.str("icon");
                         bind.color = b.str("color");
                         bind.slot = b.integer("slot", -1);
-                        if (const js::Value* st = b.find("steps"))
-                            if (st->isArr())
-                                for (const js::Value& s : st->arr) {
-                                    Step step = stepFromJson(s);
-                                    if (!step.action.empty())
-                                        bind.steps.push_back(std::move(step));
-                                }
+                        auto readSteps = [&](const char* field,
+                                             std::vector<Step>& into) {
+                            const js::Value* st = b.find(field);
+                            if (!st || !st->isArr()) return;
+                            for (const js::Value& s : st->arr) {
+                                Step step = stepFromJson(s);
+                                if (!step.action.empty())
+                                    into.push_back(std::move(step));
+                            }
+                        };
+                        readSteps("steps", bind.steps);
+                        readSteps("scrollUp", bind.scrollUp);
+                        readSteps("scrollDown", bind.scrollDown);
+
+                        if (!keyBindable(bind.key)) {
+                            loadWarnings.push_back(
+                                where + ": \"" + bind.key +
+                                "\" cannot carry a macro - left click has to "
+                                "keep working. That binding is ignored.");
+                            continue;
+                        }
 
                         // A software button's key is an opaque id, not a key
                         // name, so there is nothing to warn about.
@@ -680,6 +697,7 @@ std::string Config::toJson() const {
         k["block"] = kb.block;
         k["blockAllKeys"] = kb.blockAllKeys;
         if (kb.softwareOnly) k["softwareOnly"] = true;
+        if (kb.isMouse) k["device"] = std::string("mouse");
         k["deck"] = kb.deck;
 
         auto bindingsJson = [](const Page& p) {
@@ -694,6 +712,17 @@ std::string Config::toJson() const {
                 js::Value st = js::Value::array();
                 for (const Step& s2 : b.steps) st.push(stepToJson(s2));
                 jb["steps"] = std::move(st);
+                // Only written when there is something to write: a tile that
+                // is not a dial should not grow two empty arrays.
+                auto putSteps = [&](const char* field,
+                                    const std::vector<Step>& from) {
+                    if (from.empty()) return;
+                    js::Value arr = js::Value::array();
+                    for (const Step& s3 : from) arr.push(stepToJson(s3));
+                    jb[field] = std::move(arr);
+                };
+                putSteps("scrollUp", b.scrollUp);
+                putSteps("scrollDown", b.scrollDown);
                 bs.push(std::move(jb));
             }
             return bs;
@@ -703,8 +732,13 @@ std::string Config::toJson() const {
         // The file only grows the new shape once there is something in it
         // that the old shape cannot hold, which means an ordinary config
         // stays readable by a build from before pages existed.
+        // The name counts too. Without it here, naming your one page and
+        // saving would write it in the old shape and quietly lose the name -
+        // the file only earns the old shape when it holds nothing the old
+        // shape cannot express.
         const bool plain = kb.pages.size() == 1 && kb.pages[0].rule.empty() &&
-                           kb.pages[0].color.empty();
+                           kb.pages[0].color.empty() &&
+                           trim(kb.pages[0].name).empty();
         if (plain) {
             k["bindings"] = bindingsJson(kb.pages[0]);
         } else {
@@ -818,6 +852,9 @@ bool Config::blockedForDevice(const std::string& devicePath) const {
 }
 
 bool Config::couldBlockVk(int vk) const {
+    // Same rule as blockedForKey, applied to the cheap pre-filter so the
+    // primary button never even reaches the correlation wait.
+    if (dev::isPrimaryButtonVk(vk) && pointerCount <= 1) return false;
     const std::string name = keys::vkName(vk);
     for (const Keyboard& k : keyboards) {
         if (!k.block) continue;
@@ -827,9 +864,40 @@ bool Config::couldBlockVk(int vk) const {
     return false;
 }
 
+bool keyBindable(const std::string& key, std::string* why) {
+    if (lower(trim(key)) == "mouseleft") {
+        if (why)
+            *why =
+                "Left click is how you work the machine, so it cannot carry a "
+                "macro. A macro there would fire on every click you made "
+                "anywhere - and if it were blocked as well, there would be no "
+                "way left to click your way out of it.\n\nEvery other button "
+                "on the mouse is yours, including the wheel and the thumb "
+                "buttons.";
+        return false;
+    }
+    return true;
+}
+
+bool Config::anyMouseBlocks() const {
+    for (const Keyboard& k : keyboards)
+        if (k.isMouse && k.block && !k.softwareOnly) return true;
+    return false;
+}
+
 bool Config::blockedForKey(const std::string& devicePath, int vk) const {
     const Keyboard* k = keyboardForDevice(devicePath);
     if (!k || !k->block) return false;
+
+    // The escape hatch for a keyboard is that you can still type
+    // Ctrl+Alt+Shift+M. There is no equivalent for a pointer: swallow the
+    // primary button on the only mouse in the machine and there is no way
+    // left to click the thing that would turn this off. So that one button is
+    // never taken, whatever the configuration says - not even under "block
+    // every key". With a second pointer attached there is still a way out, so
+    // a genuinely spare mouse can give up all of its buttons.
+    if (dev::isPrimaryButtonVk(vk) && pointerCount <= 1) return false;
+
     if (k->blockAllKeys) return true;
 
     // Selective mode: take only the keys that actually run something. A
@@ -849,8 +917,8 @@ bool specMatches(const std::string& match, const std::string& devicePath) {
     return lower(devicePath).find(lower(match)) != std::string::npos;
 }
 
-std::string chooseMatch(const dev::KeyboardDevice& d,
-                        const std::vector<dev::KeyboardDevice>& all,
+std::string chooseMatch(const dev::InputDevice& d,
+                        const std::vector<dev::InputDevice>& all,
                         bool* stable) {
     if (stable) *stable = true;
     if (!d.vid.empty()) {
@@ -924,6 +992,30 @@ const std::vector<DeckPreset>& deckPresets() {
         slot(3, 3, "enter", 1, 2);
         slot(4, 0, "num0", 2, 1); slot(4, 2, "numdecimal");
         out.push_back(np);
+
+        DeckPreset ms;
+        ms.id = "mouse";
+        ms.label = "Mouse buttons";
+        ms.cols = 3;
+        ms.rows = 3;
+        ms.fixedKeys = true;
+        auto mslot = [&](int r, int c, const char* key) {
+            DeckSlot s;
+            s.row = r;
+            s.col = c;
+            s.key = key;
+            ms.slots.push_back(s);
+        };
+        // Laid out the way the hand meets it: thumb buttons out to the
+        // sides, the wheel running down the middle. There is deliberately no
+        // slot for left click - see keyBindable() - and the space it would
+        // have taken goes to the first of the extra buttons a multi-button
+        // mouse has instead.
+        mslot(0, 0, "mouse4"); mslot(0, 1, "wheelup"); mslot(0, 2, "mouse5");
+        mslot(1, 0, "mouse6"); mslot(1, 1, "mousemiddle");
+        mslot(1, 2, "mouseright");
+        mslot(2, 0, "mouse7"); mslot(2, 1, "wheeldown"); mslot(2, 2, "mouse8");
+        out.push_back(ms);
 
         DeckPreset fk;
         fk.id = "fkeys";

@@ -60,6 +60,11 @@ enum {
     ID_BTN_MENU,
     ID_BTN_SETTINGS,
     ID_DECK_COMBO,
+    // The three gestures a tile can carry. One list is shown at a time and
+    // every step button below acts on whichever is selected.
+    ID_GESTURE_PRESS,
+    ID_GESTURE_UP,
+    ID_GESTURE_DOWN,
 
     IDM_IMPORT = 400,
     IDM_SAVE,
@@ -253,9 +258,17 @@ private:
     // ---- model helpers
     cfg::Keyboard* currentKb();
     cfg::Binding* selectedBinding();
+    // The step list the inspector is editing: a tile's press, or one of the
+    // two wheel directions that make it a dial.
+    std::vector<cfg::Step>* editingSteps();
+    void setGesture(int gesture);
+    void refreshGestureButtons();
     const cfg::DeckPreset* currentPreset();
     void selectKeyboard(const std::string& alias);
     void selectTile(int tileIndex);
+    // True if the tile under this point carries a wheel macro in that
+    // direction - and, if so, runs it.
+    bool tileUnderCursorIsDial(POINT p, bool up);
     void refreshInspector();
     // Enable/disable the step buttons for whatever is selected right now,
     // without rebuilding the list underneath the user's cursor.
@@ -266,6 +279,9 @@ private:
 
     // ---- commands
     void addKeyboard();
+    void addMouse();
+    // Refresh config_.pointerCount from the machine.
+    void countPointers();
     void addSoftwareDeck();
     void keyboardContextMenu(int index, POINT screenPt);
     void tileContextMenu(int tileIndex, POINT screenPt);
@@ -315,6 +331,10 @@ private:
     void applyToggleHotkey();
     void releaseToggleHotkey();
 
+    // Fire a tile's wheel-up or wheel-down macro. Returns false if that
+    // tile is not a dial, so the caller can fall back to scrolling.
+    bool runDial(const std::string& key, bool up);
+
     // ---- mini deck
     void toggleMiniDeck();
     void refreshMiniDeck();
@@ -343,6 +363,10 @@ private:
     // over to step 3 of the next one.
     std::string stepListFor_;
     int selectedTile_ = -1;
+    // 0 = press, 1 = wheel up, 2 = wheel down. Reset to press whenever the
+    // selection moves, so editing a dial never leaves the next tile you click
+    // quietly showing its scroll list instead of its steps.
+    int gesture_ = 0;
     int hoverTile_ = -1;
     int hoverPalette_ = -1;
     int hoverKb_ = -1;
@@ -373,6 +397,8 @@ private:
     // controls
     HWND titleEdit_ = nullptr, stepList_ = nullptr, logEdit_ = nullptr;
     HWND deckCombo_ = nullptr;
+    HWND btnGesturePress_ = nullptr, btnGestureUp_ = nullptr,
+         btnGestureDown_ = nullptr;
     HWND btnAddStep_ = nullptr, btnEditStep_ = nullptr, btnDelStep_ = nullptr;
     HWND btnUp_ = nullptr, btnDown_ = nullptr, btnTest_ = nullptr;
     HWND btnRecord_ = nullptr;
@@ -475,6 +501,7 @@ void MainWindow::onCreate() {
     if (dpi >= 72 && dpi <= 480) setDpiScale(dpi / 96.0f);
 
     config_.load(appPath("macros.json"));
+    countPointers();
 
     engine_.setLog([this](const std::string& m) { pushLog(m); });
     engine_.setMonitor([this](const eng::MonitorEvent& e) {
@@ -513,6 +540,12 @@ void MainWindow::onCreate() {
     titleEdit_ = makeEdit(hwnd_, "", 0, 0, 100, 26, ID_TITLE_EDIT);
     btnIcon_ = makeButton(hwnd_, "Icon...", 0, 0, 90, 28, ID_BTN_ICON);
     btnColor_ = makeButton(hwnd_, "Colour...", 0, 0, 90, 28, ID_BTN_COLOR);
+    btnGesturePress_ = makeButton(hwnd_, "Press", 0, 0, 76, 26,
+                                  ID_GESTURE_PRESS);
+    btnGestureUp_ = makeButton(hwnd_, "Wheel \u2191", 0, 0, 76, 26,
+                               ID_GESTURE_UP);
+    btnGestureDown_ = makeButton(hwnd_, "Wheel \u2193", 0, 0, 76, 26,
+                                 ID_GESTURE_DOWN);
     stepList_ = makeList(hwnd_, 0, 0, 100, 100, ID_STEP_LIST);
     btnAddStep_ = makeButton(hwnd_, "Add step", 0, 0, 90, 30, ID_BTN_ADD_STEP,
                              true);
@@ -543,6 +576,9 @@ void MainWindow::onCreate() {
     // ---- the always-on-top palette
     mini_.setRunner([this](const std::string& key) { runBindingByKey(key); });
     mini_.setOpener([this] { showWindowAgain(); });
+    mini_.setDialer([this](const std::string& key, bool up) {
+        return runDial(key, up);
+    });
     mini_.setPageStepper([this](int delta) {
         cfg::Keyboard* kb = currentKb();
         if (!kb || kb->pages.size() < 2) return;
@@ -660,6 +696,11 @@ void MainWindow::layout() {
     MoveWindow(btnIcon_, ix, y, S(100), S(28), TRUE);
     MoveWindow(btnColor_, ix + S(108), y, S(100), S(28), TRUE);
     y += S(50);
+
+    MoveWindow(btnGesturePress_, ix, y, S(76), S(26), TRUE);
+    MoveWindow(btnGestureUp_, ix + S(80), y, S(76), S(26), TRUE);
+    MoveWindow(btnGestureDown_, ix + S(160), y, S(76), S(26), TRUE);
+    y += S(32);
 
     int listBottom = rcInspector_.bottom - S(kPad) - S(34) * 3 - S(8);
     MoveWindow(stepList_, ix, y, iw, std::max(S(60), listBottom - y), TRUE);
@@ -1032,11 +1073,16 @@ void MainWindow::paintSidebar(Graphics& g) {
         // taken from this keyboard; "some" = only the keys that run macros.
         const wchar_t* badgeText =
             kb.softwareOnly ? L"click"
+            : kb.isMouse && !kb.block ? L"mouse"
             : !kb.block     ? L"pass"
             : !kb.blockAllKeys ? L"some"
                                : nullptr;
         if (badgeText) {
-            RectF badge((REAL)(x + w - S(30)), (REAL)(y + S(8)), (REAL)S(22),
+            // Sized to its text rather than to a fixed box: "mouse" is longer
+            // than "some", and a clipped badge reads as a rendering bug.
+            const REAL bw =
+                measureText(g, badgeText, 8).Width + (REAL)S(8);
+            RectF badge((REAL)(x + w - S(8)) - bw, (REAL)(y + S(8)), bw,
                         (REAL)S(14));
             fillRounded(g, badge, S(4.0f), theme().panelAlt);
             drawText(g, badgeText, badge, 8, theme().textFaint, Align::Center);
@@ -1056,6 +1102,25 @@ void MainWindow::paintSidebar(Graphics& g) {
         drawGlyphPlus(g, plus, theme().accent, S(1.6f));
         RectF tr((REAL)(x + S(28)), (REAL)y, (REAL)(w - S(30)), (REAL)S(kRowH));
         drawText(g, L"Add a keyboard", tr, 13, theme().accent, Align::Left);
+        y += S(kRowH) + S(2);
+    }
+
+    {
+        // A spare mouse or a trackpad. Its own row rather than a checkbox in
+        // the keyboard scan, because you are looking for a different piece of
+        // hardware and the list you need is a different list.
+        KbRow row;
+        row.index = -3;
+        row.rect = {x, y, x + w, y + S(kRowH)};
+        kbRows_.push_back(row);
+        bool hot = hoverKb_ == -4;
+        if (hot) fillRounded(g, toRectF(row.rect), S(6.0f), theme().panelAlt);
+        RectF plus((REAL)(x + S(10)), (REAL)(y + S(10)), (REAL)S(10),
+                   (REAL)S(10));
+        drawGlyphPlus(g, plus, theme().accent, S(1.6f));
+        RectF tr((REAL)(x + S(28)), (REAL)y, (REAL)(w - S(30)), (REAL)S(kRowH));
+        drawText(g, L"Add a mouse or trackpad", tr, 13, theme().accent,
+                 Align::Left);
         y += S(kRowH) + S(2);
     }
 
@@ -1353,15 +1418,29 @@ void MainWindow::paintTile(Graphics& g, const DeckTile& tile,
                  withAlpha(theme().textFaint, 200), Align::Center, true);
     }
 
+    // A tile you can also turn says so, in the corner the key badge does
+    // not use. Without it a dial is a feature nobody discovers.
+    if (b->isDial()) {
+        RectF mark(r.GetRight() - S(20.0f), r.Y + S(7.0f), S(12.0f), S(14.0f));
+        drawGlyphDial(g, mark, withAlpha(theme().text, 170));
+    }
+
     // label
     RectF label(r.X + S(5.0f), r.GetBottom() - S(30.0f), r.Width - S(10.0f),
                 S(26.0f));
     drawText(g, W(b->displayTitle()), label, 11,
              Color(255, 255, 255, 255), Align::Center, false, true, true);
 
-    if (b->steps.empty()) {
+    if (b->steps.empty() && !b->isDial()) {
         RectF warn(r.X, r.Y + r.Height * 0.60f, r.Width, S(14.0f));
         drawText(g, L"no steps yet", warn, 9, theme().warn, Align::Center);
+    } else if (b->steps.empty()) {
+        // A dial with nothing on its press is finished, not half-built: it
+        // does its job when you scroll it. Saying "no steps yet" here would
+        // be telling the user to fix something that is not broken.
+        RectF hint(r.X, r.Y + r.Height * 0.60f, r.Width, S(14.0f));
+        drawText(g, L"scroll to use", hint, 9, theme().textFaint,
+                 Align::Center);
     }
 }
 
@@ -1431,7 +1510,9 @@ void MainWindow::refreshInspector() {
     EnableWindow(btnColor_, has);
     EnableWindow(btnAddStep_, has);
     EnableWindow(btnRecord_, has);
-    EnableWindow(btnTest_, has && !b->steps.empty());
+    const std::vector<cfg::Step>* shown = editingSteps();
+    EnableWindow(btnTest_, shown && !shown->empty());
+    refreshGestureButtons();
 
     // LB_RESETCONTENT throws the selection away, so remember it and put it
     // back. Without this, clicking a step selected it and deselected it in the
@@ -1447,16 +1528,17 @@ void MainWindow::refreshInspector() {
 
     SendMessageW(stepList_, LB_RESETCONTENT, 0, 0);
     if (has)
-        for (size_t i = 0; i < b->steps.size(); ++i)
+        for (size_t i = 0; shown && i < shown->size(); ++i)
             SendMessageW(stepList_, LB_ADDSTRING, 0,
                          (LPARAM)W(std::to_string(i + 1) + ".  " +
-                                   b->steps[i].summary())
+                                   (*shown)[i].summary())
                              .c_str());
     EnableWindow(stepList_, has);
 
     if (has && keep >= 0) {
         // The step that was selected may have just been deleted off the end.
-        if (keep >= (int)b->steps.size()) keep = (int)b->steps.size() - 1;
+        if (shown && keep >= (int)shown->size())
+            keep = (int)shown->size() - 1;
         if (keep >= 0) SendMessageW(stepList_, LB_SETCURSEL, (WPARAM)keep, 0);
     }
 
@@ -1465,13 +1547,13 @@ void MainWindow::refreshInspector() {
 }
 
 void MainWindow::updateStepButtons() {
-    cfg::Binding* b = selectedBinding();
+    const std::vector<cfg::Step>* list = editingSteps();
     int sel = (int)SendMessageW(stepList_, LB_GETCURSEL, 0, 0);
-    const bool hasStep = b && sel >= 0 && sel < (int)b->steps.size();
+    const bool hasStep = list && sel >= 0 && sel < (int)list->size();
     EnableWindow(btnEditStep_, hasStep);
     EnableWindow(btnDelStep_, hasStep);
     EnableWindow(btnUp_, hasStep && sel > 0);
-    EnableWindow(btnDown_, hasStep && sel < (int)b->steps.size() - 1);
+    EnableWindow(btnDown_, hasStep && sel < (int)list->size() - 1);
 }
 
 void MainWindow::modelChanged(bool relayoutDeck) {
@@ -1511,7 +1593,7 @@ void MainWindow::saveConfig() {
 // ---------------------------------------------------------------- commands
 void MainWindow::addKeyboard() {
     std::string alias;
-    if (!addKeyboardDialog(hwnd_, config_, alias)) return;
+    if (!addKeyboardDialog(hwnd_, config_, alias, false)) return;
     saveConfig();
     engine_.updateConfig(config_);
     selectKeyboard(alias);
@@ -1519,7 +1601,92 @@ void MainWindow::addKeyboard() {
     layout();
 }
 
+void MainWindow::addMouse() {
+    std::string alias;
+    if (!addKeyboardDialog(hwnd_, config_, alias, true)) return;
+    countPointers();
+    saveConfig();
+    engine_.updateConfig(config_);
+    selectKeyboard(alias);
+    pushLog("Added mouse \"" + alias + "\".");
+    if (config_.pointerCount <= 1)
+        pushLog(
+            "  It is the only pointer attached, so left click stays yours - "
+            "MacroDeck will not take it however this deck is configured.");
+    layout();
+}
+
+void MainWindow::countPointers() {
+    // Asked here and kept on the config, because the answer is needed inside
+    // the blocking hook - which cannot afford to enumerate devices, and must
+    // not, on every click.
+    const int n = (int)dev::listMice().size();
+    config_.pointerCount = n > 0 ? n : 1;
+}
+
+bool MainWindow::runDial(const std::string& key, bool up) {
+    cfg::Keyboard* kb = currentKb();
+    if (!kb) return false;
+    cfg::Binding* b = kb->findKey(key);
+    if (!b) return false;
+    const std::vector<cfg::Step>& steps = up ? b->scrollUp : b->scrollDown;
+    if (steps.empty()) return false;
+    lastFire_[currentAlias_ + "|" + b->key] = GetTickCount();
+    SetTimer(hwnd_, 2, 40, nullptr);
+    engine_.runSequenceAsync(steps, "Dial", currentAlias_);
+    return true;
+}
+
+bool MainWindow::tileUnderCursorIsDial(POINT p, bool up) {
+    for (const DeckTile& t : tiles_) {
+        if (!ptIn(t.rect, p) || t.binding < 0) continue;
+        return runDial(t.key, up);
+    }
+    return false;
+}
+
+std::vector<cfg::Step>* MainWindow::editingSteps() {
+    cfg::Binding* b = selectedBinding();
+    if (!b) return nullptr;
+    if (gesture_ == 1) return &b->scrollUp;
+    if (gesture_ == 2) return &b->scrollDown;
+    return &b->steps;
+}
+
+void MainWindow::setGesture(int gesture) {
+    if (gesture_ == gesture) return;
+    gesture_ = gesture;
+    // The list underneath is about to be a different list, so a selection
+    // index carried over from the last one means nothing.
+    stepListFor_.clear();
+    refreshInspector();
+    refreshGestureButtons();
+}
+
+void MainWindow::refreshGestureButtons() {
+    cfg::Binding* b = selectedBinding();
+    const bool has = b != nullptr;
+    EnableWindow(btnGesturePress_, has);
+    EnableWindow(btnGestureUp_, has);
+    EnableWindow(btnGestureDown_, has);
+    setPrimary(btnGesturePress_, gesture_ == 0);
+    setPrimary(btnGestureUp_, gesture_ == 1);
+    setPrimary(btnGestureDown_, gesture_ == 2);
+    // A dot on a direction that already carries something, so a tile's other
+    // gestures are visible without clicking through all three.
+    setText(btnGestureUp_,
+            std::string("Wheel \u2191") +
+                (b && !b->scrollUp.empty() ? " \u2022" : ""));
+    setText(btnGestureDown_,
+            std::string("Wheel \u2193") +
+                (b && !b->scrollDown.empty() ? " \u2022" : ""));
+}
+
 void MainWindow::selectTile(int tileIndex) {
+    // Always land on the press list: the tile you just clicked is a different
+    // tile, and showing its wheel-up steps because the last one was a dial
+    // would be a surprise.
+    gesture_ = 0;
     selectedTile_ = tileIndex;
     refreshInspector();
     InvalidateRect(hwnd_, nullptr, FALSE);
@@ -1560,6 +1727,14 @@ void MainWindow::assignKeyToTile(int tileIndex) {
         key = r.keyName;
     }
 
+    // Some keys are never allowed to carry a macro, however you got here -
+    // pressed on a mouse, typed by name, or arriving in a preset slot.
+    std::string why;
+    if (!cfg::keyBindable(key, &why)) {
+        showMessage(hwnd_, "That one has to keep working", why);
+        return;
+    }
+
     // One binding per key: a second one would be dead weight, since lookup
     // always resolves to the first.
     if (kb->findKey(key)) {
@@ -1595,49 +1770,50 @@ void MainWindow::addStep(const std::string& presetAction) {
     cfg::Step step;
     step.action = presetAction.empty() ? "type" : presetAction;
     if (!editStepDialog(hwnd_, step, config_.settings)) return;
-    b->steps.push_back(step);
+    std::vector<cfg::Step>* steps = editingSteps();
+    if (!steps) return;
+    steps->push_back(step);
     modelChanged();
     // Land on the step just added, and leave it selected: the refresh that
     // used to follow this reset the list and threw the selection away again.
-    SendMessageW(stepList_, LB_SETCURSEL,
-                 (WPARAM)(b->steps.size() - 1), 0);
+    SendMessageW(stepList_, LB_SETCURSEL, (WPARAM)(steps->size() - 1), 0);
     updateStepButtons();
 }
 
 void MainWindow::editStep() {
-    cfg::Binding* b = selectedBinding();
-    if (!b) return;
+    std::vector<cfg::Step>* steps = editingSteps();
+    if (!steps) return;
     int sel = (int)SendMessageW(stepList_, LB_GETCURSEL, 0, 0);
-    if (sel < 0 || sel >= (int)b->steps.size()) return;
-    cfg::Step step = b->steps[(size_t)sel];
+    if (sel < 0 || sel >= (int)steps->size()) return;
+    cfg::Step step = (*steps)[(size_t)sel];
     if (!editStepDialog(hwnd_, step, config_.settings)) return;
-    b->steps[(size_t)sel] = step;
+    (*steps)[(size_t)sel] = step;
     modelChanged();
     SendMessageW(stepList_, LB_SETCURSEL, (WPARAM)sel, 0);
     updateStepButtons();
 }
 
 void MainWindow::removeStep() {
-    cfg::Binding* b = selectedBinding();
-    if (!b) return;
+    std::vector<cfg::Step>* steps = editingSteps();
+    if (!steps) return;
     int sel = (int)SendMessageW(stepList_, LB_GETCURSEL, 0, 0);
-    if (sel < 0 || sel >= (int)b->steps.size()) return;
-    b->steps.erase(b->steps.begin() + sel);
+    if (sel < 0 || sel >= (int)steps->size()) return;
+    steps->erase(steps->begin() + sel);
     modelChanged();
     // Stay where they were, or on the new last step if the end was removed,
     // so a run of deletions does not need a re-click between each one.
     SendMessageW(stepList_, LB_SETCURSEL,
-                 (WPARAM)std::min(sel, (int)b->steps.size() - 1), 0);
+                 (WPARAM)std::min(sel, (int)steps->size() - 1), 0);
     updateStepButtons();
 }
 
 void MainWindow::moveStep(int delta) {
-    cfg::Binding* b = selectedBinding();
-    if (!b) return;
+    std::vector<cfg::Step>* steps = editingSteps();
+    if (!steps) return;
     int sel = (int)SendMessageW(stepList_, LB_GETCURSEL, 0, 0);
     int dst = sel + delta;
-    if (sel < 0 || dst < 0 || dst >= (int)b->steps.size()) return;
-    std::swap(b->steps[(size_t)sel], b->steps[(size_t)dst]);
+    if (sel < 0 || dst < 0 || dst >= (int)steps->size()) return;
+    std::swap((*steps)[(size_t)sel], (*steps)[(size_t)dst]);
     modelChanged();
     // Follow the step being moved, so Up can be pressed repeatedly.
     SendMessageW(stepList_, LB_SETCURSEL, (WPARAM)dst, 0);
@@ -1735,9 +1911,11 @@ void MainWindow::recordClicks() {
         recorded.push_back(release);
     }
 
-    for (auto& s : recorded) b->steps.push_back(s);
+    std::vector<cfg::Step>* steps = editingSteps();
+    if (!steps) return;
+    for (auto& s : recorded) steps->push_back(s);
     modelChanged();
-    SendMessageW(stepList_, LB_SETCURSEL, (WPARAM)(b->steps.size() - 1), 0);
+    SendMessageW(stepList_, LB_SETCURSEL, (WPARAM)(steps->size() - 1), 0);
     refreshInspector();
 
     pushLog("Recorded " + std::to_string(recorded.size()) + " step(s) into \"" +
@@ -1762,10 +1940,14 @@ void MainWindow::recordClicks() {
 
 void MainWindow::testRun() {
     cfg::Binding* b = selectedBinding();
-    if (!b || b->steps.empty()) return;
-    pushLog("Test run: " + keys::displayName(b->key) + " (" +
-            std::to_string(b->steps.size()) + " steps)");
-    engine_.runSequenceAsync(b->steps, "Test", currentAlias_);
+    std::vector<cfg::Step>* steps = editingSteps();
+    if (!b || !steps || steps->empty()) return;
+    pushLog("Test run: " + keys::displayName(b->key) +
+            (gesture_ == 1   ? " wheel up"
+             : gesture_ == 2 ? " wheel down"
+                             : "") +
+            " (" + std::to_string(steps->size()) + " steps)");
+    engine_.runSequenceAsync(*steps, "Test", currentAlias_);
 }
 
 void MainWindow::clearTile() {
@@ -1775,6 +1957,11 @@ void MainWindow::clearTile() {
                   "Remove every step from \"" + b->displayTitle() + "\"?"))
         return;
     b->steps.clear();
+    // Clearing a tile means the whole tile, dial gestures included. Leaving
+    // invisible scroll steps on a "cleared" button is the sort of thing that
+    // gets found months later.
+    b->scrollUp.clear();
+    b->scrollDown.clear();
     modelChanged();
 }
 
@@ -2006,18 +2193,20 @@ void MainWindow::duplicateBinding(int tileIndex) {
 
 void MainWindow::copySteps() {
     cfg::Binding* b = selectedBinding();
-    if (!b || b->steps.empty()) return;
-    stepClipboard_ = b->steps;
+    std::vector<cfg::Step>* steps = editingSteps();
+    if (!b || !steps || steps->empty()) return;
+    stepClipboard_ = *steps;
     pushLog("Copied " + std::to_string(stepClipboard_.size()) +
             " step(s) from \"" + b->displayTitle() + "\".");
 }
 
 void MainWindow::pasteSteps() {
     cfg::Binding* b = selectedBinding();
-    if (!b || stepClipboard_.empty()) return;
-    for (const cfg::Step& s : stepClipboard_) b->steps.push_back(s);
+    std::vector<cfg::Step>* steps = editingSteps();
+    if (!b || !steps || stepClipboard_.empty()) return;
+    for (const cfg::Step& s : stepClipboard_) steps->push_back(s);
     modelChanged();
-    SendMessageW(stepList_, LB_SETCURSEL, (WPARAM)(b->steps.size() - 1), 0);
+    SendMessageW(stepList_, LB_SETCURSEL, (WPARAM)(steps->size() - 1), 0);
     refreshInspector();
     pushLog("Pasted " + std::to_string(stepClipboard_.size()) +
             " step(s) into \"" + b->displayTitle() + "\".");
@@ -2634,6 +2823,7 @@ void MainWindow::refreshMiniDeck() {
             mb.icon = b.icon;
             mb.color = b.color;
             mb.hasSteps = !b.steps.empty();
+            mb.isDial = b.isDial();
             mb.showKey = !kb->softwareOnly;
             if (mb.hasSteps) mb.firstAction = b.steps[0].action;
             out.push_back(std::move(mb));
@@ -2873,6 +3063,10 @@ LRESULT CALLBACK MainWindow::wndProc(HWND hwnd, UINT msg, WPARAM wp,
                 self->paletteScroll_ = std::min(self->paletteScroll_, maxScroll);
                 InvalidateRect(hwnd, nullptr, FALSE);
             } else if (ptIn(self->rcDeck_, p) &&
+                       self->tileUnderCursorIsDial(p, delta > 0)) {
+                // Handled: a dial swallows the notch rather than also
+                // scrolling the deck out from under the tile being turned.
+            } else if (ptIn(self->rcDeck_, p) &&
                        self->deckContentH_ > self->deckViewH_) {
                 self->deckScroll_ = std::max(
                     0, std::min(self->deckScroll_ - delta / 2,
@@ -2917,7 +3111,7 @@ LRESULT CALLBACK MainWindow::wndProc(HWND hwnd, UINT msg, WPARAM wp,
                 for (const auto& r : self->kbRows_)
                     if (ptIn(r.rect, p))
                         self->hoverKb_ =
-                            r.index >= 0 ? r.index : (r.index == -1 ? -2 : -3);
+                            r.index >= 0 ? r.index : r.index - 1;
             }
             if (self->dragging_ || oldTile != self->hoverTile_ ||
                 oldPal != self->hoverPalette_ || oldKb != self->hoverKb_ ||
@@ -2947,6 +3141,7 @@ LRESULT CALLBACK MainWindow::wndProc(HWND hwnd, UINT msg, WPARAM wp,
             for (const auto& r : self->kbRows_) {
                 if (!ptIn(r.rect, p)) continue;
                 if (r.index == -1) self->addKeyboard();
+                else if (r.index == -3) self->addMouse();
                 else if (r.index == -2) self->addSoftwareDeck();
                 else self->selectKeyboard(
                     self->config_.keyboards[(size_t)r.index].alias);
@@ -3071,6 +3266,15 @@ LRESULT CALLBACK MainWindow::wndProc(HWND hwnd, UINT msg, WPARAM wp,
         case WM_COMMAND: {
             int id = LOWORD(wp), notify = HIWORD(wp);
             switch (id) {
+                case ID_GESTURE_PRESS:
+                    if (notify == BN_CLICKED) self->setGesture(0);
+                    return 0;
+                case ID_GESTURE_UP:
+                    if (notify == BN_CLICKED) self->setGesture(1);
+                    return 0;
+                case ID_GESTURE_DOWN:
+                    if (notify == BN_CLICKED) self->setGesture(2);
+                    return 0;
                 case ID_BTN_ENGINE:
                     if (notify == BN_CLICKED) self->toggleEngine();
                     return 0;

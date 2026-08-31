@@ -127,7 +127,7 @@ public:
 private:
     HWND status_ = nullptr;
     HWND combo_ = nullptr;
-    dev::RawKeyboardListener listener_;
+    dev::RawInputListener listener_;
     std::mutex mu_;
     std::vector<dev::KeyEvent> pending_;
 };
@@ -301,26 +301,46 @@ class AddKeyboardDialog : public Modal {
 public:
     cfg::Config* config = nullptr;
     std::string newAlias;
+    // Which kind of device is being added. The dialog is otherwise identical
+    // for both: a mouse button is a key as far as everything here is
+    // concerned, so only the wording and the list it scans change.
+    bool wantMouse = false;
+
+    const char* noun() const { return wantMouse ? "mouse" : "keyboard"; }
 
     ~AddKeyboardDialog() override { listener_.stop(); }
 
     void build() override {
-        makeLabel(hwnd_, "Choose the keyboard you want to use for macros:", 20,
-                  16, 480, 22, -1, false, true);
+        makeLabel(hwnd_,
+                  wantMouse
+                      ? "Choose the mouse or trackpad you want to use for "
+                        "macros:"
+                      : "Choose the keyboard you want to use for macros:",
+                  20, 16, 480, 22, -1, false, true);
         list_ = makeList(hwnd_, 20, 44, 480, 150, ID_FIRST_USER);
         makeButton(hwnd_, "Rescan", 20, 202, 96, 30, ID_FIRST_USER + 1);
-        identifyBtn_ = makeButton(hwnd_, "Identify by pressing a key", 124, 202,
-                                  200, 30, ID_FIRST_USER + 2);
+        identifyBtn_ = makeButton(hwnd_,
+                                  wantMouse ? "Identify by pressing a button"
+                                            : "Identify by pressing a key",
+                                  124, 202, 200, 30, ID_FIRST_USER + 2);
         status_ = makeLabel(hwnd_, "", 20, 240, 480, 22, -1, true);
 
         warn_ = makeLabel(
             hwnd_,
-            "Heads up: keys on the keyboard you pick will stop typing into "
-            "your apps while MacroDeck is listening - they only fire macros. "
-            "Pick a spare keyboard or numpad, not the one you type on.",
+            wantMouse
+                ? "Heads up: buttons on the mouse you pick will stop working "
+                  "normally in your apps while MacroDeck is listening. Pick a "
+                  "spare mouse, not the one you point with. Left click is "
+                  "never taken while it is the only pointer you have, so you "
+                  "can always click your way back here."
+                : "Heads up: keys on the keyboard you pick will stop typing "
+                  "into your apps while MacroDeck is listening - they only "
+                  "fire macros. Pick a spare keyboard or numpad, not the one "
+                  "you type on.",
             20, 266, 480, 56, -1, true);
 
-        layoutFooter(ID_OK, "Add keyboard", ID_CANCEL, "Cancel");
+        layoutFooter(ID_OK, wantMouse ? "Add mouse" : "Add keyboard",
+                     ID_CANCEL, "Cancel");
         rescan();
     }
 
@@ -336,17 +356,18 @@ public:
         int sel = (int)SendMessageW(list_, LB_GETCURSEL, 0, 0);
         if (sel < 0 || sel >= (int)devices_.size()) {
             showMessage(hwnd_, "Nothing selected",
-                        "Pick a keyboard from the list first, or press Rescan "
-                        "if the list is empty.");
+                        std::string("Pick a ") + noun() +
+                            " from the list first, or press Rescan if the "
+                            "list is empty.");
             return false;
         }
-        const dev::KeyboardDevice& d = devices_[(size_t)sel];
+        const dev::InputDevice& d = devices_[(size_t)sel];
 
         for (const auto& kb : config->keyboards) {
             if (cfg::specMatches(kb.match, d.path)) {
                 if (!askYesNo(hwnd_, "Already added",
-                              "This keyboard is already set up as \"" +
-                                  kb.alias +
+                              std::string("This ") + noun() +
+                                  " is already set up as \"" + kb.alias +
                                   "\".\n\nAdd it a second time anyway?"))
                     return false;
                 break;
@@ -356,28 +377,39 @@ public:
         bool stable = true;
         std::string match = cfg::chooseMatch(d, devices_, &stable);
 
-        std::string suggested =
-            config->uniqueAlias(d.name.empty() ? "Macro pad" : d.name);
-        if (!askText(hwnd_, "Name this keyboard",
+        std::string suggested = config->uniqueAlias(
+            !d.name.empty() ? d.name
+                            : (wantMouse ? "Macro mouse" : "Macro pad"));
+        if (!askText(hwnd_,
+                     wantMouse ? "Name this mouse" : "Name this keyboard",
                      "What do you want to call it?", suggested))
             return false;
 
         cfg::Keyboard kb;
         kb.alias = config->uniqueAlias(suggested);
         kb.match = match;
+        kb.isMouse = wantMouse;
         kb.block = config->settings.blockByDefault;
-        kb.blockAllKeys = config->settings.blockAllKeysByDefault;
-        kb.deck = "auto";
+        // Never "take everything" by default on a pointer. A mouse with all
+        // its buttons swallowed the moment it is added is a nasty surprise,
+        // and unlike a keyboard there is no spare one to undo it with.
+        kb.blockAllKeys =
+            wantMouse ? false : config->settings.blockAllKeysByDefault;
+        // A mouse has a known, fixed set of buttons, so it can start on a
+        // deck that already names them rather than an empty grid.
+        kb.deck = wantMouse ? "mouse" : "auto";
         config->keyboards.push_back(kb);
         config->dirty = true;
         newAlias = kb.alias;
 
         if (!stable)
-            showMessage(hwnd_, "Keyboard added",
-                        "Two identical keyboards are attached, so MacroDeck "
-                        "had to identify this one by which USB port it is "
-                        "plugged into.\n\nKeep it in the same port, or it will "
-                        "stop being recognised.");
+            showMessage(hwnd_, wantMouse ? "Mouse added" : "Keyboard added",
+                        std::string("Two identical ") +
+                            (wantMouse ? "mice are" : "keyboards are") +
+                            " attached, so MacroDeck had to identify this one "
+                            "by which USB port it is plugged into.\n\nKeep it "
+                            "in the same port, or it will stop being "
+                            "recognised.");
         return true;
     }
 
@@ -391,11 +423,16 @@ public:
             batch.swap(pending_);
         }
         for (const auto& ev : batch) {
+            // While adding a mouse, a stray keystroke must not pick an entry
+            // out of a list of mice - and vice versa.
+            if (dev::isMouseVk(ev.vk) != wantMouse) continue;
             for (size_t i = 0; i < devices_.size(); ++i) {
                 if (devices_[i].path == ev.devicePath) {
                     SendMessageW(list_, LB_SETCURSEL, (WPARAM)i, 0);
-                    setText(status_, "That key came from: " +
-                                         devices_[i].display());
+                    setText(status_,
+                            std::string(wantMouse ? "That button came from: "
+                                                  : "That key came from: ") +
+                                devices_[i].display());
                     stopIdentify();
                     out = 0;
                     return true;
@@ -408,16 +445,17 @@ public:
 
 private:
     void rescan() {
-        devices_ = dev::listKeyboards();
+        devices_ = wantMouse ? dev::listMice() : dev::listKeyboards();
         SendMessageW(list_, LB_RESETCONTENT, 0, 0);
         for (const auto& d : devices_)
             SendMessageW(list_, LB_ADDSTRING, 0,
                          (LPARAM)widen(d.display()).c_str());
         if (!devices_.empty()) SendMessageW(list_, LB_SETCURSEL, 0, 0);
-        setText(status_, devices_.empty()
-                             ? "No keyboards detected."
-                             : std::to_string(devices_.size()) +
-                                   " keyboard device(s) found.");
+        setText(status_,
+                devices_.empty()
+                    ? (wantMouse ? "No mice detected." : "No keyboards detected.")
+                    : std::to_string(devices_.size()) + std::string(" ") +
+                          noun() + " device(s) found.");
     }
 
     void identify() {
@@ -426,19 +464,24 @@ private:
             return;
         }
         try {
-            listener_.start([this](const dev::KeyEvent& ev) {
-                if (!ev.down) return;
-                {
-                    std::lock_guard<std::mutex> lk(mu_);
-                    pending_.push_back(ev);
-                }
-                PostMessageW(hwnd_, WM_KEY_ARRIVED, 0, 0);
-            });
+            listener_.start(
+                [this](const dev::KeyEvent& ev) {
+                    if (!ev.down) return;
+                    {
+                        std::lock_guard<std::mutex> lk(mu_);
+                        pending_.push_back(ev);
+                    }
+                    PostMessageW(hwnd_, WM_KEY_ARRIVED, 0, 0);
+                },
+                wantMouse);
             identifying_ = true;
             setText(identifyBtn_, "Stop listening");
-            setText(status_, "Press a key on the keyboard you want to use...");
+            setText(status_,
+                    wantMouse
+                        ? "Press a button on the mouse you want to use..."
+                        : "Press a key on the keyboard you want to use...");
         } catch (const std::exception& e) {
-            setText(status_, std::string("Could not listen for keys: ") +
+            setText(status_, std::string("Could not listen for input: ") +
                                  e.what());
         }
     }
@@ -452,8 +495,8 @@ private:
 
     HWND list_ = nullptr, status_ = nullptr, warn_ = nullptr,
          identifyBtn_ = nullptr;
-    std::vector<dev::KeyboardDevice> devices_;
-    dev::RawKeyboardListener listener_;
+    std::vector<dev::InputDevice> devices_;
+    dev::RawInputListener listener_;
     bool identifying_ = false;
     std::mutex mu_;
     std::vector<dev::KeyEvent> pending_;
@@ -461,10 +504,14 @@ private:
 
 }  // namespace
 
-bool addKeyboardDialog(HWND parent, cfg::Config& config, std::string& newAlias) {
+bool addKeyboardDialog(HWND parent, cfg::Config& config,
+                       std::string& newAlias, bool mouse) {
     AddKeyboardDialog d;
     d.config = &config;
-    if (!d.run(parent, "Add a macro keyboard", 540, 390)) return false;
+    d.wantMouse = mouse;
+    if (!d.run(parent, mouse ? "Add a macro mouse" : "Add a macro keyboard",
+               540, 390))
+        return false;
     newAlias = d.newAlias;
     return !newAlias.empty();
 }

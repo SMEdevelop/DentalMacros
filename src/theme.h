@@ -70,6 +70,9 @@ void drawGlyphPlus(Gdiplus::Graphics& g, const Gdiplus::RectF& box,
                    const Gdiplus::Color& c, float thickness);
 void drawGlyphChevron(Gdiplus::Graphics& g, const Gdiplus::RectF& box,
                       const Gdiplus::Color& c, bool down);
+// Marks a tile whose wheel does something - two chevrons, up and down.
+void drawGlyphDial(Gdiplus::Graphics& g, const Gdiplus::RectF& box,
+                   const Gdiplus::Color& c);
 void drawGlyphPlay(Gdiplus::Graphics& g, const Gdiplus::RectF& box,
                    const Gdiplus::Color& c);
 void drawGlyphStop(Gdiplus::Graphics& g, const Gdiplus::RectF& box,

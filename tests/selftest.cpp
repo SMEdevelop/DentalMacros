@@ -1094,7 +1094,7 @@ static void testHookCost() {
     // The wait, measured. Nothing is feeding this listener, so this is the
     // cost of a keystroke the hook cannot correlate - the bad case that made
     // typing feel laggy.
-    dev::RawKeyboardListener idle;
+    dev::RawInputListener idle;
     const auto t0 = std::chrono::steady_clock::now();
     const std::string got = idle.findDevice('A', true, 30);
     const double stallMs =
@@ -1335,8 +1335,249 @@ static void testPages() {
        "still without a pages block - one plain page is written the old way");
     ok(reWritten.find("\"bindings\"") != std::string::npos,
        "as plain bindings");
+
+    // ...but only while there is genuinely nothing the old shape cannot hold.
+    // A name is such a thing, and writing it away would lose it silently.
+    cfg::Config named;
+    cfg::Keyboard nk;
+    nk.alias = "Pad";
+    nk.pages[0].name = "General";
+    nk.pages[0].bindings.push_back(one);
+    named.keyboards.push_back(nk);
+    const std::string namedPath = appPath("selftest-named.json");
+    ok(named.saveAs(namedPath, &err), "a deck with one named page saves", err);
+    cfg::Config namedBack;
+    namedBack.load(namedPath);
+    ok(!namedBack.keyboards.empty() &&
+           namedBack.keyboards[0].pages.size() == 1 &&
+           namedBack.keyboards[0].pages[0].name == "General",
+       "and keeps the name it was given");
+    deleteFile(namedPath);
     deleteFile(oldPath);
     deleteFile(rePath);
+}
+
+
+// ------------------------------------------------------- mice and trackpads
+static void testMouse() {
+    section("Mice, trackpads and the wheel");
+
+    // ---- buttons are keys ------------------------------------------------
+    ok(keys::toVk("mouseleft") == VK_LBUTTON,
+       "a mouse button uses the virtual key Windows already reserves for it");
+    ok(keys::toVk("mouse4") == VK_XBUTTON1 &&
+           keys::toVk("mouse5") == VK_XBUTTON2,
+       "and the thumb buttons use theirs");
+    ok(keys::toVk("mouseback") == keys::toVk("mouse4"),
+       "\"back\" is accepted for the button that does it");
+    ok(keys::toVk("wheelup") == dev::kVkWheelUp &&
+           keys::toVk("wheeldown") == dev::kVkWheelDown,
+       "the wheel gets codes out of the unassigned block");
+    ok(keys::vkName(dev::kVkWheelUp) == "wheelup",
+       "and names round-trip back out of them");
+    ok(keys::displayName("mouseleft") == "Left click",
+       "buttons read as what they are, not as a code");
+
+    // No mouse code may collide with a key someone might actually press:
+    // that would make one binding fire for two different things.
+    ok(dev::isMouseVk(VK_LBUTTON) && dev::isMouseVk(dev::kVkWheelDown),
+       "pointer keys are recognised as such");
+    ok(!dev::isMouseVk(keys::toVk("a")) && !dev::isMouseVk(keys::toVk("f13")) &&
+           !dev::isMouseVk(VK_SPACE),
+       "and ordinary keys are not");
+    for (int vk = dev::kVkWheelUp; vk <= dev::kVkWheelRight; ++vk) {
+        const std::string n = keys::vkName(vk);
+        ok(n.rfind("wheel", 0) == 0,
+           "wheel code 0x" + std::to_string(vk) + " is not shadowing a key");
+    }
+
+    // ---- left click can never carry a macro ------------------------------
+    // Not a situational rule like blocking's: a binding is written to a file
+    // and read back somewhere else, so "sometimes allowed" would mean a config
+    // that is harmless here and unusable there.
+    std::string why;
+    ok(!cfg::keyBindable("mouseleft", &why),
+       "left click cannot be bound at all");
+    ok(!why.empty(), "and says why, rather than just refusing");
+    ok(cfg::keyBindable("mouseright") && cfg::keyBindable("mousemiddle") &&
+           cfg::keyBindable("mouse4") && cfg::keyBindable("wheelup"),
+       "every other button and the wheel still can");
+    ok(cfg::keyBindable("a") && cfg::keyBindable("num1"),
+       "and no keyboard key is affected");
+    ok(!cfg::keyBindable("MouseLeft") && !cfg::keyBindable("  mouseleft  "),
+       "the refusal is not defeated by case or padding");
+
+    // A file that names it anyway - hand-edited, or written by an older
+    // build - has that binding dropped rather than honoured.
+    const std::string sneaky = appPath("selftest-leftclick.json");
+    writeFileAtomic(sneaky,
+                    "{\"keyboards\":[{\"alias\":\"M\",\"match\":\"VID_1\","
+                    "\"device\":\"mouse\",\"bindings\":["
+                    "{\"key\":\"mouseleft\",\"steps\":[{\"do\":\"sleep\"}]},"
+                    "{\"key\":\"mouse4\",\"steps\":[{\"do\":\"sleep\"}]}]}]}");
+    cfg::Config sneaked;
+    sneaked.load(sneaky);
+    ok(!sneaked.keyboards.empty() &&
+           sneaked.keyboards[0].findKey("mouseleft") == nullptr,
+       "a config naming left click has that binding ignored on load");
+    ok(!sneaked.keyboards.empty() &&
+           sneaked.keyboards[0].findKey("mouse4") != nullptr,
+       "while the rest of that deck loads normally");
+    bool warned = false;
+    for (const std::string& w : sneaked.loadWarnings)
+        if (w.find("mouseleft") != std::string::npos) warned = true;
+    ok(warned, "and it is reported rather than dropped silently");
+    deleteFile(sneaky);
+
+    // ---- the extra buttons a multi-button mouse has ----------------------
+    ok(keys::toVk("mouse6") == dev::kVkMouse6,
+       "button 6 has a key code of its own");
+    ok(keys::toVk("mouse20") == dev::kVkMouseExtraLast,
+       "and the range runs to button 20");
+    ok(dev::isMouseVk(keys::toVk("mouse12")),
+       "an extra button is recognised as a pointer key");
+    ok(dev::vkForHidButton(1) == VK_LBUTTON && dev::vkForHidButton(5) ==
+                                                   VK_XBUTTON2,
+       "HID button numbers 1-5 map onto the codes Windows already has");
+    ok(dev::vkForHidButton(6) == keys::toVk("mouse6") &&
+           dev::vkForHidButton(9) == keys::toVk("mouse9"),
+       "and 6 upwards onto the extra ones");
+    ok(dev::vkForHidButton(0) == 0 && dev::vkForHidButton(99) == 0,
+       "a button number nothing can represent maps to nothing");
+    // The extra codes must not shadow a key someone could actually press,
+    // or one binding would fire for two different things.
+    for (int vk = dev::kVkMouse6; vk <= dev::kVkMouseExtraLast; ++vk) {
+        const std::string n = keys::vkName(vk);
+        ok(n.rfind("mouse", 0) == 0,
+           "extra-button code 0x" + std::to_string(vk) +
+               " is not shadowing a key");
+    }
+
+    // ---- a mouse survives the file ---------------------------------------
+    cfg::Config c;
+    cfg::Keyboard m;
+    m.alias = "Spare mouse";
+    m.match = "VID_046D&PID_C08B";
+    m.isMouse = true;
+    m.block = true;
+    m.blockAllKeys = false;
+    m.deck = "mouse";
+    cfg::Binding side;
+    side.key = "mouse4";
+    side.title = "Undo";
+    side.steps.push_back({"sleep", js::Value::object()});
+    // The same tile as a dial: press does one thing, the wheel does two more.
+    side.scrollUp.push_back({"sleep", js::Value::object()});
+    side.scrollDown.push_back({"sleep", js::Value::object()});
+    m.active().bindings.push_back(side);
+    c.keyboards.push_back(m);
+
+    ok(c.keyboards[0].active().bindings[0].isDial(),
+       "a binding with wheel steps is a dial");
+    ok(c.anyMouseBlocks(), "a blocking mouse asks for the pointer hook");
+
+    const std::string path = appPath("selftest-mouse.json");
+    std::string err;
+    ok(c.saveAs(path, &err), "a mouse deck saves", err);
+    cfg::Config back;
+    back.load(path);
+    ok(back.keyboards.size() == 1 && back.keyboards[0].isMouse,
+       "and comes back marked as a pointer");
+    ok(!back.keyboards.empty() && back.keyboards[0].deck == "mouse",
+       "on the deck shaped like one");
+    const cfg::Binding* rb =
+        back.keyboards.empty() ? nullptr
+                               : back.keyboards[0].findKey("mouse4");
+    ok(rb && rb->scrollUp.size() == 1 && rb->scrollDown.size() == 1,
+       "with both wheel directions intact");
+    ok(rb && rb->steps.size() == 1,
+       "and the press still separate from them");
+    // "mouse4" is a real key here and must not be complained about.
+    bool moaned = false;
+    for (const std::string& w : back.loadWarnings)
+        if (w.find("mouse4") != std::string::npos) moaned = true;
+    ok(!moaned, "and no warning that mouse4 is not a real key");
+    deleteFile(path);
+
+    // A tile that is not a dial must not grow empty arrays in the file.
+    cfg::Config plain;
+    cfg::Keyboard pk;
+    pk.alias = "Pad";
+    cfg::Binding pb;
+    pb.key = "num1";
+    pb.steps.push_back({"sleep", js::Value::object()});
+    pk.active().bindings.push_back(pb);
+    plain.keyboards.push_back(pk);
+    ok(plain.toJson().find("scrollUp") == std::string::npos,
+       "an ordinary key is written without any wheel fields");
+
+    // ---- the primary button is not takeable on a one-pointer machine -----
+    // The escape hatch for a keyboard is that you can still type
+    // Ctrl+Alt+Shift+M. There is none for a pointer, so this rule is what
+    // stands between a bad configuration and a machine you cannot click on.
+    const std::string devPath = "\\\\?\\HID#VID_046D&PID_C08B";
+    cfg::Config one;
+    cfg::Keyboard greedy;
+    greedy.alias = "Mouse";
+    greedy.match = "VID_046D&PID_C08B";
+    greedy.isMouse = true;
+    greedy.block = true;
+    greedy.blockAllKeys = true;      // asked for everything...
+    cfg::Binding lb;
+    lb.key = "mouseleft";
+    lb.steps.push_back({"sleep", js::Value::object()});
+    greedy.active().bindings.push_back(lb);
+    one.keyboards.push_back(greedy);
+    one.pointerCount = 1;
+
+    const int primary =
+        GetSystemMetrics(SM_SWAPBUTTON) ? VK_RBUTTON : VK_LBUTTON;
+    ok(dev::isPrimaryButtonVk(primary),
+       "the primary button is whichever one Windows currently calls primary");
+    ok(!one.blockedForKey(devPath, primary),
+       "...and it is still not taken when it is the only pointer");
+    ok(!one.couldBlockVk(primary),
+       "the cheap pre-filter refuses it too, so it never even correlates");
+    ok(one.blockedForKey(devPath, VK_MBUTTON),
+       "every other button on that mouse is still blocked as asked");
+
+    // With a second pointer attached there is a way out again, so a genuinely
+    // spare mouse may give up all of its buttons.
+    one.pointerCount = 2;
+    ok(one.blockedForKey(devPath, primary),
+       "with a second pointer attached the primary button can be taken");
+
+    // A mouse that blocks nothing must not drag the pointer hook in with it.
+    cfg::Config passive;
+    cfg::Keyboard pm;
+    pm.alias = "Mouse";
+    pm.isMouse = true;
+    pm.block = false;
+    passive.keyboards.push_back(pm);
+    ok(!passive.anyMouseBlocks(),
+       "a mouse that blocks nothing installs no pointer hook");
+
+    // ---- the deck shaped like a mouse ------------------------------------
+    const cfg::DeckPreset* mp = cfg::findPreset("mouse");
+    ok(mp != nullptr, "there is a mouse deck preset");
+    if (mp) {
+        ok(mp->fixedKeys, "which already knows its own button names");
+        bool sawLeft = false, sawWheel = false, sawExtra = false;
+        for (const cfg::DeckSlot& sl : mp->slots) {
+            if (sl.key == "mouseleft") sawLeft = true;
+            if (sl.key == "wheelup") sawWheel = true;
+            if (sl.key == "mouse6") sawExtra = true;
+            ok(sl.key.empty() || keys::toVk(sl.key) != 0,
+               "slot \"" + sl.key + "\" names a key this build knows");
+            ok(cfg::keyBindable(sl.key),
+               "slot \"" + sl.key + "\" offers a key that can be bound");
+        }
+        ok(sawWheel, "including the wheel");
+        ok(!sawLeft,
+           "and deliberately no left click - it has to keep working");
+        ok(sawExtra,
+           "with the space it would have taken given to an extra button");
+    }
 }
 
 // -------------------------------------------------- buttons with no keyboard
@@ -1661,6 +1902,7 @@ int main(int argc, char** argv) {
     testIconLibrary();
     testSoftwareDeck();
     testPages();
+    testMouse();
     testHookCost();
     if (!yaml.empty()) testYamlImport(yaml);
     testWindows();

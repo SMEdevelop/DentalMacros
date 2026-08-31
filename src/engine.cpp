@@ -563,12 +563,17 @@ void Engine::start() {
     // Software buttons are clicked, not pressed. If that is all there is,
     // there is nothing to listen to and no reason to register for raw input.
     bool anyPhysical = false;
-    for (const auto& k : snapshot.keyboards)
-        if (!k.softwareOnly) anyPhysical = true;
+    bool anyMouse = false;
+    for (const auto& k : snapshot.keyboards) {
+        if (k.softwareOnly) continue;
+        anyPhysical = true;
+        if (k.isMouse) anyMouse = true;
+    }
 
     if (anyPhysical) {
         try {
-            listener_.start([this](const dev::KeyEvent& ev) { onKey(ev); });
+            listener_.start([this](const dev::KeyEvent& ev) { onKey(ev); },
+                            anyMouse);
             listenerActive_.store(true);
         } catch (const std::exception& e) {
             throw std::runtime_error(
@@ -592,7 +597,8 @@ void Engine::start() {
                             return vk >= 0 && vk < 256 &&
                                    couldBlock_[(size_t)vk].load(
                                        std::memory_order_relaxed);
-                        });
+                        },
+                        30, snapshot.anyMouseBlocks());
         } catch (const std::exception& e) {
             listener_.stop();
             listenerActive_.store(false);
@@ -605,7 +611,8 @@ void Engine::start() {
     // Say what is actually happening. With only software buttons configured
     // nothing is being listened to, and claiming otherwise is how someone
     // ends up hunting for latency that is not there.
-    log(anyPhysical ? "Listening for macro keys."
+    log(anyPhysical ? (anyMouse ? "Listening for macro keys and buttons."
+                                : "Listening for macro keys.")
                     : "Ready. Nothing is being read from any keyboard.");
     for (const auto& k : snapshot.keyboards) {
         int bound = 0;
@@ -618,8 +625,13 @@ void Engine::start() {
                  ? "across " + std::to_string(k.pages.size()) + " pages, "
                  : "") +
             (k.softwareOnly    ? "clicked on screen, no keyboard involved"
-             : !k.block        ? "keys also type normally"
-             : k.blockAllKeys  ? "every key blocked from apps"
+             : !k.block        ? (k.isMouse ? "buttons also work normally"
+                                            : "keys also type normally")
+             : k.blockAllKeys  ? (k.isMouse
+                                      ? "every button blocked from apps"
+                                      : "every key blocked from apps")
+             : k.isMouse       ? "only macro buttons blocked, the rest still "
+                                 "work"
                                : "only macro keys blocked, the rest still type"));
     }
 }

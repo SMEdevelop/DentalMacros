@@ -299,13 +299,21 @@ void MiniDeck::paintButton(void* graphics, size_t index) {
     if (hover && trim(b.color).empty()) base = theme().tileHover;
     if (fire > 0) base = mix(base, theme().good, fire * 0.6f);
     // A key with nothing on it yet is drawn back towards the panel, so the
-    // palette reads as "these do something" at a glance.
-    if (!b.hasSteps) base = mix(base, theme().panel, 0.5f);
+    // palette reads as "these do something" at a glance. A dial counts as
+    // doing something even with no press bound: scrolling it still works.
+    if (!b.hasSteps && !b.isDial) base = mix(base, theme().panel, 0.5f);
 
     fillRounded(g, r, radius, base);
     strokeRounded(g, r, radius,
                   hover ? theme().accent : withAlpha(theme().border, 150),
                   hover ? Sf(1.6f) : 1.0f);
+
+    // Two chevrons in the corner: scrolling over this one turns it.
+    if (b.isDial) {
+        RectF mark(r.GetRight() - Sf(9.0f), r.Y + Sf(2.5f), Sf(6.0f),
+                   Sf(8.0f));
+        drawGlyphDial(g, mark, withAlpha(theme().text, 150));
+    }
 
     // At this size there is room for a glyph and a key name and nothing else.
     // The title goes in the grip strip on hover rather than being clipped to
@@ -586,6 +594,23 @@ LRESULT MiniDeck::handle(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             InvalidateRect(hwnd, nullptr, FALSE);
         }
         return 0;
+
+    case WM_MOUSEWHEEL: {
+        // Scrolling over a button turns it, if it has anything bound to the
+        // wheel. The palette never scrolls itself - it is sized to its
+        // contents - so there is nothing to fall back to and nothing lost.
+        POINT p{GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};
+        ScreenToClient(hwnd, &p);
+        const int idx = hitTest(p);
+        if (idx >= 0 && idx < (int)buttons_.size() && dial_) {
+            const bool up = GET_WHEEL_DELTA_WPARAM(wp) > 0;
+            if (dial_(buttons_[(size_t)idx].key, up)) {
+                noteFired(buttons_[(size_t)idx].key);
+                return 0;
+            }
+        }
+        return 0;
+    }
 
     case WM_LBUTTONDOWN: {
         POINT p{GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};

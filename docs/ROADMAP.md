@@ -137,13 +137,20 @@ Roughly by value per hour of work, with where the work lands.
 | 1 | **Two-state buttons.** One tile, state A and B, each with its own label, icon, colour and steps; pressing alternates. Mute/unmute, record/stop, VPN on/off. Stream Deck's most-used feature after profiles. | `config` + inspector + `engine` |
 | 2 | **Long press / double press.** One key, up to three macros: tap, double-tap, hold. Steam Input's activators, and free real estate on a 12-key pad. Needs a press timer in `Engine::onKey`, which already tracks key-down times for auto-repeat. | `engine` |
 | 3 | **Folders.** A tile that opens a page and shows a back arrow. Almost entirely free once pages exist — a page, plus a "go to page" action, plus a return button. | `app` |
-| 4 | **Scroll wheel as a dial.** Hover a tile on the palette and scroll: bind scroll-up and scroll-down to their own steps. The Loupedeck/TourBox idea without buying a knob, and the palette already receives the messages. | `minideck` |
+| 4 | ~~**Scroll wheel as a dial.**~~ **Built.** Every tile carries press, wheel-up and wheel-down; scrolling over it on the deck or the palette turns it. Shipped alongside mouse and trackpad support, which was the other half of the same idea. | `minideck` |
 | 5 | **Preset pages.** Ready-made pages for Photoshop, Premiere, VS Code, Excel, Explorer and Chrome, each already app-bound. This is what makes per-app decks worth having on day one rather than after an evening of typing in hotkeys. | data + `config` |
 | 6 | **Export / import a page.** One page to a small file, so a setup can be shared or moved between machines. `saveAs` already writes JSON; this is a subset of it. | `config` |
 | 7 | **Radial menu.** A hotkey pops a ring of up to eight wedges at the pointer; flick and release to fire. Work Louder's joystick menu, driven by the mouse. The only one here needing real new drawing code, and the most distinctive. | new `radial.cpp` |
 | 8 | **Layer overlay.** A page marked "inherit" overrides only the keys it fills; the rest fall through to the default page. Steam Input's action set layers, and it makes an app page a five-key diff instead of a full copy. | `config` + `engine` |
 | 9 | **Live button labels.** Label from a command's output, refreshed every N seconds — clock, CPU, battery, now playing. | `engine` + `app` |
 | 10 | **Chords.** Two keys pressed together as a binding of their own. | `engine` |
+
+**Also built, and not on the original list:** mice and trackpads as macro
+devices. A spare mouse is a deck like any other, because a mouse button
+already has a virtual key no keyboard sends — so the only thing that had to
+learn about pointers was `device.cpp`. Multi-finger trackpad gestures remain
+out: they arrive through a separate HID interface and Windows eats most of the
+standard ones first.
 
 **Deliberately not on this list:** a phone app, or anything that talks to a
 plugin marketplace. "Everything runs locally. There is no network code in this

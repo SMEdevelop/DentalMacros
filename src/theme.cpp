@@ -358,6 +358,24 @@ void drawGlyphPlus(Graphics& g, const RectF& box, const Color& c,
     g.DrawLine(&p, PointF(cx, cy - r), PointF(cx, cy + r));
 }
 
+void drawGlyphDial(Graphics& g, const RectF& box, const Color& c) {
+    // Two small chevrons back to back: the wheel turns both ways. Deliberately
+    // tiny - it marks a tile rather than decorating one.
+    Pen p(c, std::max(1.0f, box.Width * 0.16f));
+    p.SetStartCap(LineCapRound);
+    p.SetEndCap(LineCapRound);
+    p.SetLineJoin(LineJoinRound);
+    const float cx = box.X + box.Width / 2;
+    const float w = box.Width * 0.34f;
+    const float top = box.Y + box.Height * 0.08f;
+    const float bot = box.GetBottom() - box.Height * 0.08f;
+    const float h = box.Height * 0.30f;
+    g.DrawLine(&p, cx - w, top + h, cx, top);
+    g.DrawLine(&p, cx, top, cx + w, top + h);
+    g.DrawLine(&p, cx - w, bot - h, cx, bot);
+    g.DrawLine(&p, cx, bot, cx + w, bot - h);
+}
+
 void drawGlyphChevron(Graphics& g, const RectF& box, const Color& c, bool down) {
     Pen p(c, std::max(1.5f, box.Height * 0.14f));
     p.SetStartCap(LineCapRound);

@@ -7,7 +7,7 @@
 #include <string>
 #include <vector>
 
-namespace dev { struct KeyboardDevice; }
+namespace dev { struct InputDevice; }
 
 namespace cfg {
 
@@ -68,6 +68,15 @@ struct Binding {
     int slot = -1;        // position in a fixed deck preset; -1 = auto flow
     std::vector<Step> steps;
 
+    // Scrolling the wheel over this tile, on the deck or on the palette.
+    // A dial is one control with three gestures - press, up, down - rather
+    // than three controls, so they live on the binding instead of becoming
+    // bindings of their own.
+    std::vector<Step> scrollUp;
+    std::vector<Step> scrollDown;
+
+    bool isDial() const { return !scrollUp.empty() || !scrollDown.empty(); }
+
     std::string displayTitle() const;   // title, or a sensible fallback
 };
 
@@ -121,6 +130,13 @@ struct Keyboard {
     // Defaults to true so that configs written before this option existed keep
     // behaving exactly as they did.
     bool blockAllKeys = true;
+
+    // A pointing device rather than a keyboard: a spare mouse, or a
+    // trackpad. Everything else here treats it identically - its buttons and
+    // wheel notches have virtual keys of their own (see device.h), so they
+    // are "keys" like any other. Only the wording in the UI, the deck it
+    // defaults to, and what may be blocked differ.
+    bool isMouse = false;
 
     // A deck with no keyboard behind it: buttons that exist only on screen,
     // fired by clicking them on the deck or the always-on-top palette. It
@@ -209,6 +225,13 @@ struct Config {
     std::string path;
     bool dirty = false;
 
+    // How many pointing devices are attached, filled in by the app from
+    // dev::listMice(). Blocking consults it so that the primary button is
+    // never taken away on a machine with a single pointer - see
+    // blockedForKey(). Counted when devices change rather than per event,
+    // because the hook cannot afford to enumerate anything.
+    int pointerCount = 1;
+
     std::string loadError;   // set when the file existed but couldn't be used
     // Non-fatal complaints about the file's contents (duplicate keys, key
     // names this build doesn't know). The file still loaded.
@@ -247,11 +270,27 @@ struct Config {
     // typing normally and typing through a stall on every key.
     bool couldBlockVk(int vk) const;
 
+    // Is any configured mouse blocking anything? Deciding whether the
+    // WH_MOUSE_LL hook is worth installing at all: that hook sees every
+    // pointer movement in the machine, so a setup with no macro mouse should
+    // never pay for one.
+    bool anyMouseBlocks() const;
+
     // True if this exact keystroke should be taken away from other programs.
     // This is the one the hook asks, and the only one that understands
     // blockAllKeys: with it off, only a key carrying a macro is taken.
     bool blockedForKey(const std::string& devicePath, int vk) const;
 };
+
+// Can this key carry a macro at all? Left click cannot: it is how you work
+// the machine, and a macro on it would fire on every click you make anywhere,
+// blocked or not. `why` receives a sentence to show the user.
+//
+// This is a flat rule rather than the situational one blocking uses, because
+// a binding is written into a file and read back on another machine, while
+// blocking is decided live. A config that is legal here and catastrophic
+// there would be worse than simply never allowing it.
+bool keyBindable(const std::string& key, std::string* why = nullptr);
 
 // Does a stored match string select this device path?
 bool specMatches(const std::string& match, const std::string& devicePath);
@@ -259,8 +298,8 @@ bool specMatches(const std::string& match, const std::string& devicePath);
 // Pick the most reboot-proof match string for a device. `stable` reports
 // whether the firmware id was usable (false = fell back to the USB port path
 // because an identical twin keyboard is attached).
-std::string chooseMatch(const dev::KeyboardDevice& d,
-                        const std::vector<dev::KeyboardDevice>& all,
+std::string chooseMatch(const dev::InputDevice& d,
+                        const std::vector<dev::InputDevice>& all,
                         bool* stable);
 
 // ------------------------------------------------------------ deck presets

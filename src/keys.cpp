@@ -58,6 +58,22 @@ struct Tables {
         add("browserback", 0xA6); add("browserforward", 0xA7);
         add("browserrefresh", 0xA8);
 
+        // Pointing devices. The buttons keep the virtual keys Windows already
+        // reserves for them, which no keyboard ever sends, so a mouse button
+        // is a key like any other everywhere above here. The wheel has no
+        // virtual key of its own and borrows four from the unassigned block -
+        // see device.h.
+        add("mouseleft", 0x01); add("mouseright", 0x02);
+        add("mousemiddle", 0x04);
+        add("mouse4", 0x05); add("mouse5", 0x06);
+        add("wheelup", 0x88); add("wheeldown", 0x89);
+        add("wheelleft", 0x8A); add("wheelright", 0x8B);
+        // The extra buttons a multi-button mouse carries. Numbered the way
+        // the hardware and its own software number them, continuing straight
+        // on from the thumb buttons.
+        for (int b = 6; b <= 20; ++b)
+            add("mouse" + std::to_string(b), 0xC1 + (b - 6));
+
         aliases = {
             {"escape", "esc"}, {"return", "enter"}, {"control", "ctrl"},
             {"windows", "win"}, {"del", "delete"}, {"ins", "insert"},
@@ -67,6 +83,16 @@ struct Tables {
             {"break", "pause"}, {"caps", "capslock"},
             // the keycap next to right Ctrl is VK_APPS; VK_MENU is Alt
             {"menu", "apps"}, {"contextmenu", "apps"},
+            // Mice get called all sorts of things. "Back" and "forward" are
+            // what the two thumb buttons do on nearly every mouse that has
+            // them, so they are worth accepting even though the hardware only
+            // ever calls them 4 and 5.
+            {"lmb", "mouseleft"}, {"rmb", "mouseright"},
+            {"mmb", "mousemiddle"},
+            {"mouse1", "mouseleft"}, {"mouse2", "mouseright"},
+            {"mouse3", "mousemiddle"},
+            {"mouseback", "mouse4"}, {"mouseforward", "mouse5"},
+            {"scrollup", "wheelup"}, {"scrolldown", "wheeldown"},
         };
 
         modifiers = {0x10, 0x11, 0x12, 0xA0, 0xA1, 0xA2, 0xA3, 0xA4, 0xA5,
@@ -126,6 +152,15 @@ std::string displayName(const std::string& keyName) {
         {"capslock", "Caps"}, {"backspace", "Bksp"},
         {"esc", "Esc"}, {"enter", "Enter"}, {"space", "Space"},
         {"apps", "Menu"}, {"insert", "Ins"}, {"delete", "Del"},
+        {"mouseleft", "Left click"}, {"mouseright", "Right click"},
+        {"mousemiddle", "Middle click"},
+        {"mouse4", "Back"}, {"mouse5", "Forward"},
+        {"mouse6", "Button 6"}, {"mouse7", "Button 7"},
+        {"mouse8", "Button 8"}, {"mouse9", "Button 9"},
+        {"mouse10", "Button 10"}, {"mouse11", "Button 11"},
+        {"mouse12", "Button 12"},
+        {"wheelup", "Wheel \u2191"}, {"wheeldown", "Wheel \u2193"},
+        {"wheelleft", "Wheel \u2190"}, {"wheelright", "Wheel \u2192"},
         {"semicolon", ";"}, {"equals", "="}, {"comma", ","}, {"minus", "-"},
         {"period", "."}, {"slash", "/"}, {"backtick", "`"},
         {"lbracket", "["}, {"backslash", "\\"}, {"rbracket", "]"},

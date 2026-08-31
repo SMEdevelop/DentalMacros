@@ -125,10 +125,10 @@ To check everything works on your machine:
 run_tests.bat
 ```
 
-This runs 301 checks covering JSON, the config model, pages and their
-application rules, the step engine, key tables, deck presets, window
-management, the image matcher, config recovery, the recorded-click workflow,
-and importing a macrokb `macros.yaml`. The engine
+This runs 382 checks covering JSON, the config model, pages and their
+application rules, mice and the wheel, the step engine, key tables, deck
+presets, window management, the image matcher, config recovery, the
+recorded-click workflow, and importing a macrokb `macros.yaml`. The engine
 tests only run steps with no side effects — nothing is typed, clicked or
 launched, and the window tests drive a throwaway window of their own.
 
@@ -246,6 +246,116 @@ activity log rather than claiming to be listening to something.
 Everything else about them is an ordinary binding — label, icon, colour,
 steps, Test run, and firing from the always-on-top palette.
 
+### Mice and trackpads
+
+A spare mouse can be a macro device exactly as a spare keyboard can. **＋ Add
+a mouse or trackpad** in the sidebar scans pointing devices instead of
+keyboards; everything after that is the same deck, the same steps, the same
+pages.
+
+It works because a mouse button already *has* a virtual key of its own that no
+keyboard ever sends — `VK_LBUTTON` and friends — so above the device layer a
+button is a key like any other. The wheel has no such code and is given four
+out of the range Microsoft documents as unassigned. That is the whole trick:
+nothing else in MacroDeck had to learn what a mouse is.
+
+| Name | |
+|---|---|
+| `mouseright` `mousemiddle` | Right and middle. `rmb` / `mmb` also work. |
+| `mouse4` `mouse5` | The thumb buttons. Also accepted as `mouseback` / `mouseforward`, which is what they usually do. |
+| `mouse6` … `mouse20` | The extra buttons on a multi-button mouse, numbered the way its own software numbers them. |
+| `wheelup` `wheeldown` | A notch of the wheel, in either direction. |
+| `wheelleft` `wheelright` | Tilt, on a wheel that has it. |
+
+`mouseleft` is missing from that list on purpose — see below.
+
+A **Windows precision trackpad reports itself as a mouse**, so its clicks and
+two-finger scrolling arrive here too. Multi-finger *gestures* do not — those
+come through a different HID interface entirely, and Windows consumes most of
+the standard ones before any program sees them. They are not supported.
+
+**Left click cannot carry a macro.** Not on a spare mouse, not on any mouse.
+A macro there would fire on every click you made anywhere, and if it were
+blocked as well there would be no way left to click your way out of it — the
+escape hatch for a runaway keyboard is that you can still type
+Ctrl+Alt+Shift+M, and a pointer has no equivalent.
+
+It is refused everywhere rather than in the editor only: the mouse deck has no
+slot for it, assigning it is refused with an explanation, and a `macros.json`
+that names it anyway — hand-edited, or carried over from an older build — has
+that one binding dropped on load and says so in the activity log. The rest of
+that deck loads normally.
+
+This is a flat rule rather than a situational one, deliberately. Blocking can
+afford to ask *how many pointers are attached right now*, because it decides
+live. A binding is written into a file and read back on another machine, so a
+config that was harmless where it was written and catastrophic where it was
+opened would be worse than never allowing it.
+
+Separately, and as a second line of defence, **the primary button is never
+blocked while it is the only pointer** — asked of Windows rather than assumed,
+since swapping your buttons swaps which virtual key is primary.
+
+Two smaller deliberate choices. A mouse is added with blocking **on but not
+greedy** — only the buttons carrying macros are taken — because a mouse whose
+every button stopped working the moment you added it is a nasty surprise. And
+the pointer hook is installed **only when a mouse is actually configured to
+block something**: it sees every movement in the machine, and a setup with no
+macro mouse should never pay for one.
+
+#### Buttons past the fifth
+
+**Windows' mouse packet only ever reports five buttons.** That is a limit of
+Raw Input, not of MacroDeck, and it is why a twelve-button mouse does not
+simply appear as twelve buttons.
+
+What those extra buttons actually do varies by manufacturer, and there are
+three cases:
+
+- **They send keystrokes.** Very common — the mouse presents a second,
+  keyboard-shaped endpoint, and its own software maps the side panel onto
+  key combinations. Add that endpoint with **＋ Add a keyboard**; it appears
+  in the list under the mouse's own name. This works today and needs nothing
+  special.
+- **They arrive as HID buttons on a second collection.** MacroDeck registers
+  for these and reads the Button usage page out of the report, so buttons 6
+  to 20 come through as `mouse6` … `mouse20`. Buttons 1–5 are ignored there,
+  since the ordinary mouse packet already reported them and firing every
+  macro twice would be worse than not supporting them at all.
+- **They are vendor-defined and only its own driver understands them.**
+  Nothing generic can read those. Map them to keystrokes in the vendor
+  software and use the first case.
+
+Note that the HID path can *trigger* a macro but cannot **block** the button:
+the low-level mouse hook only sees the five Windows knows about. In practice
+that costs little, since a button past the fifth usually does nothing in most
+applications anyway.
+
+**Untested against real hardware.** There is no multi-button mouse on the
+machine this was written on, so the HID reading is implemented to spec and
+covered by unit tests, but it has not been proved against an actual side
+panel. If yours does not light up, say so and it can be diagnosed against the
+device.
+
+### The wheel as a dial
+
+A grid of buttons is bad at exactly one thing: a value you want *more* or
+*less* of. Volume, brush size, a timeline. That is what the dials on a
+Loupedeck or a TourBox are for, and any wheel you already own can do it.
+
+Every tile carries three things rather than one. The inspector has
+**Press / Wheel ↑ / Wheel ↓** above the step list; pick one and every button
+below — add, edit, reorder, test, copy and paste — acts on that list.
+
+Then **scroll the wheel over the tile**, on the deck or on the
+always-on-top palette, and that direction runs. A tile with anything bound to
+its wheel is marked with a small pair of chevrons, so a dial is not a feature
+you have to know about to find. A dial with nothing on its press is finished,
+not half-built, and says *scroll to use* rather than *no steps yet*.
+
+The deck stops scrolling under you while you turn a dial: a notch spent on a
+tile is not also spent on the list behind it.
+
 ---
 
 ## The interface
@@ -358,6 +468,7 @@ page the bar is not there at all and costs no height.
 | 3×2, 3×3, 4×3, 5×3, 8×4 | Fixed grids matching common macro pads. |
 | Numeric keypad | Real keypad shape — the tall `+` and `Enter`, wide `0`. |
 | Function keys F1–F12 | Two rows of six. |
+| Mouse buttons | Laid out like a mouse — thumb buttons at the sides, wheel down the middle. |
 
 The numpad and F-key layouts already know their key names, so clicking an
 empty square binds that exact key with no key-pressing needed. On the blank
@@ -609,6 +720,26 @@ an application rule, it is written as `pages` instead:
 }
 ```
 
+A deck on a pointing device carries `"device": "mouse"`, and any binding may
+carry `scrollUp` and `scrollDown` beside its `steps`:
+
+```json
+{
+  "alias": "Spare mouse",
+  "device": "mouse",
+  "deck": "mouse",
+  "bindings": [
+    { "key": "mouse4", "title": "Undo", "steps": [ ... ] },
+    { "key": "mousemiddle", "title": "Zoom",
+      "scrollUp":   [ { "do": "keys", "combo": "ctrl+equals" } ],
+      "scrollDown": [ { "do": "keys", "combo": "ctrl+minus" } ] }
+  ]
+}
+```
+
+Both are omitted entirely on a tile that is not a dial, and `device` on a
+keyboard, so nothing grows fields it does not use.
+
 `appRule` takes any of `exe`, `class` and `title`; the ones you leave out are
 not tested, and a rule with none of them is a page no application claims -
 which is what makes it the default. **Which page is in front is deliberately
@@ -716,7 +847,7 @@ src/
   util.cpp        strings, paths, files
   app.ico         generated - see tools/make_icon.cpp
 tests/
-  selftest.cpp        301 checks over every non-UI subsystem
+  selftest.cpp        382 checks over every non-UI subsystem
   render_preview.cpp  renders the icons and tiles to a PNG
 tools/
   make_icon.cpp       exports src\app.ico from theme.cpp's drawAppIcon()

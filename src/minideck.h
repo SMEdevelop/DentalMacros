@@ -29,6 +29,9 @@ struct MiniButton {
     std::string color;        // "#rrggbb", empty = theme default
     std::string firstAction;  // action id of step 1, for the fallback glyph
     bool hasSteps = false;
+    // Carries a wheel macro, so scrolling over it turns it rather than doing
+    // nothing. Drawn with a mark so a dial is not an invisible feature.
+    bool isDial = false;
     // False for a software button, which has no key behind it - the key field
     // is an opaque id and printing it would be noise.
     bool showKey = true;
@@ -71,11 +74,15 @@ public:
     // Move one page left (-1) or right (+1). The palette does not know what a
     // page is beyond its name; the editor resolves the direction.
     using PageStepFn = std::function<void(int delta)>;
+    // Turn the dial on one button. Returns false if it is not a dial, which
+    // is how the palette knows a notch went unused.
+    using DialFn = std::function<bool(const std::string& key, bool up)>;
 
     ~MiniDeck();
 
     void setRunner(RunFn fn) { run_ = std::move(fn); }
     void setPageStepper(PageStepFn fn) { pageStep_ = std::move(fn); }
+    void setDialer(DialFn fn) { dial_ = std::move(fn); }
     // Tell the palette which page it is showing. Call it before setButtons,
     // which is what triggers the relayout.
     void setPage(const MiniPage& page);
@@ -145,6 +152,7 @@ private:
     VoidFn open_;
     VoidFn moved_;
     PageStepFn pageStep_;
+    DialFn dial_;
 };
 
 }  // namespace ui

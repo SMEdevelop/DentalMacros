@@ -143,7 +143,7 @@ private:
     std::atomic<bool> stopping_{false};
     std::atomic<bool> listenerActive_{false};
 
-    dev::RawKeyboardListener listener_;
+    dev::RawInputListener listener_;
     dev::BlockingHook hook_;
 };
 
