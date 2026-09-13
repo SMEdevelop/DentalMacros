@@ -258,8 +258,13 @@ struct Config {
     Keyboard* keyboard(const std::string& alias);
     std::string uniqueAlias(const std::string& wanted) const;
 
-    // Which configured keyboard (if any) a device path belongs to.
-    const Keyboard* keyboardForDevice(const std::string& devicePath) const;
+    // Which configured keyboard (if any) a device path belongs to. `vk`, when
+    // given, settles the case of two decks on one device - a Bluetooth keypad
+    // added once as a keyboard for its keys and again as a mouse for its
+    // dial - by preferring the deck of the same kind as the key. With only one
+    // deck on the device, that deck gets everything, as it always has.
+    const Keyboard* keyboardForDevice(const std::string& devicePath,
+                                      int vk = 0) const;
     // True if this device blocks anything at all. Used to decide whether the
     // low-level hook is worth installing; it does NOT mean every key is taken.
     bool blockedForDevice(const std::string& devicePath) const;
@@ -292,12 +297,15 @@ struct Config {
 // there would be worse than simply never allowing it.
 bool keyBindable(const std::string& key, std::string* why = nullptr);
 
-// Does a stored match string select this device path?
+// Does a stored match string select this device path? A match naming one input
+// of a Bluetooth keypad by its full path - what older builds stored - selects
+// every input of that keypad.
 bool specMatches(const std::string& match, const std::string& devicePath);
 
-// Pick the most reboot-proof match string for a device. `stable` reports
-// whether the firmware id was usable (false = fell back to the USB port path
-// because an identical twin keyboard is attached).
+// Pick the most reboot-proof match string for a device: a Bluetooth keypad's
+// address, or a USB device's firmware id. `stable` reports whether that was
+// usable (false = fell back to the USB port path because an identical twin
+// keyboard is attached).
 std::string chooseMatch(const dev::InputDevice& d,
                         const std::vector<dev::InputDevice>& all,
                         bool* stable);

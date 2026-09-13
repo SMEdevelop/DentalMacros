@@ -20,6 +20,7 @@
 #include <condition_variable>
 #include <deque>
 #include <functional>
+#include <map>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -36,6 +37,14 @@ struct InputDevice {
     std::string path;    // \\?\HID#VID_046D&PID_C539&MI_00#9&...#{guid}
     std::string vid;     // "046D"
     std::string pid;     // "C539"
+    // The vendor and product ids exactly as the path spells them, which is
+    // what a match string has to contain: "VID_046D&PID_C539" over USB, but
+    // "VID&0203f0_PID&854a" from a Bluetooth keypad, whose vendor id carries
+    // a prefix saying which body issued it.
+    std::string idMatch;
+    // A Bluetooth LE keypad's address, lower-case hex ("d8b663890275"); empty
+    // for anything else. See bluetoothAddress().
+    std::string btAddress;
     std::string name;    // product name, e.g. "USB Receiver" (may be empty)
 
     // Stable firmware id - survives reboots, driver updates and port changes.
@@ -80,6 +89,41 @@ int vkForHidButton(int n);
 // pointer or there is no way left to turn MacroDeck off.
 bool isPrimaryButtonVk(int vk);
 
+// The virtual key Raw Input reports for a key the low-level hook reports as
+// `vk`. The two disagree about exactly three keys: Raw Input says Shift, Ctrl
+// and Alt, while the hook says which side. Blocking has to match one against
+// the other, and bindings are recorded from Raw Input, so the hook's side is
+// the one that gives way.
+int rawInputVk(int vk);
+
+// ------------------------------------------------------------- media keys
+// Media, volume and launcher keys arrive as HID consumer-control usages
+// rather than as keystrokes - and on a Bluetooth keypad, so do many of the
+// extra buttons. Windows turns a handful of usages into virtual keys of its
+// own (volume, tracks, browser back, calculator...) and those keep that code
+// here: a binding on "volumeup" then works however the key arrived, and the
+// hook can still block the copy Windows makes. Every other usage has no
+// virtual key at all and is numbered above the 0-255 range, where nothing
+// Windows sends can collide with it. Those can be pressed and bound, but a
+// macro cannot type one, and there is no keystroke of Windows' to block.
+constexpr int kVkConsumerBase = 0x10000;
+// The key code for consumer usage `usage`; 0 for usage 0, which is a report
+// saying nothing is pressed.
+int vkForConsumerUsage(int usage);
+
+// ------------------------------------------------------ Bluetooth keypads
+// A Bluetooth LE keypad's address, lower-case, out of any of its raw-input
+// paths; "" for a path that is not Bluetooth LE. A keypad presents several
+// inputs - keys, media keys, a mouse, a dial - each with a path of its own,
+// and the address is the one part those paths all share.
+std::string bluetoothAddress(const std::string& path);
+// True when two raw-input paths are inputs of the same physical device, as
+// far as can be told from the paths: the same path, or the same Bluetooth
+// keypad.
+bool sameDevice(const std::string& a, const std::string& b);
+// Fill in vid, pid, idMatch and btAddress from a device path.
+void parseDevicePath(const std::string& path, InputDevice& out);
+
 struct KeyEvent {
     int vk = 0;
     bool down = false;
@@ -115,9 +159,10 @@ private:
     // notch has no release of its own, so it reports down and up together:
     // it is a click, not something that can be held.
     void emitMouse(const RAWINPUT* raw, const std::string& path);
-    // Buttons 6 and up. Windows' mouse packet stops at five, so a side panel
-    // arrives as a HID report instead; this pulls the Button usage page out
-    // of one and reports what changed since that device's last report.
+    // Everything that arrives as a HID report rather than as a keystroke or a
+    // mouse packet: media keys from a consumer-control input, and buttons 6
+    // and up from a mouse's side panel (Windows' mouse packet stops at five).
+    // Reports what changed since that input's last report.
     void emitHidButtons(const RAWINPUT* raw, const std::string& path);
     void push(const KeyEvent& ev);
     static LRESULT CALLBACK wndProc(HWND, UINT, WPARAM, LPARAM);
@@ -136,10 +181,15 @@ private:
     std::deque<KeyEvent> recent_;
     std::unordered_map<void*, std::string> pathCache_;
     // A HID report says which buttons are down, not which changed, so the
-    // previous set has to be remembered per device to tell a press from a
-    // button that was already held. Stored as USHORT rather than USAGE so
-    // this header stays free of hidusage.h, which nothing else here needs.
-    std::unordered_map<void*, std::vector<USHORT>> hidDown_;
+    // previous set has to be remembered to tell a press from a button that
+    // was already held. Per device and per report id: a device that splits
+    // its buttons across several reports only mentions some of them in each.
+    // Stored as USHORT rather than USAGE so this header stays free of
+    // hidusage.h, which nothing else here needs.
+    std::map<std::pair<void*, int>, std::vector<USHORT>> hidDown_;
+    // Each device's report descriptor, fetched on its first report. It never
+    // changes for a device, and asking again on every media key is waste.
+    std::unordered_map<void*, std::vector<BYTE>> preparsed_;
 };
 
 // ------------------------------------------------------------------- hook

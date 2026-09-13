@@ -1720,8 +1720,9 @@ void MainWindow::assignKeyToTile(int tileIndex) {
         // Blank slot on a generic grid (or the flow "+" tile): ask the user to
         // press the key they want this tile to be.
         KeyCaptureResult r = captureKey(
-            hwnd_, "Which key?",
-            "Press the key on \"" + kb->alias + "\" that should run this macro.",
+            hwnd_, kb->isMouse ? "Which button?" : "Which key?",
+            std::string("Press the ") + (kb->isMouse ? "button" : "key") +
+                " on \"" + kb->alias + "\" that should run this macro.",
             kb->match);
         if (!r.ok) return;
         key = r.keyName;
@@ -2156,12 +2157,14 @@ void MainWindow::duplicateBinding(int tileIndex) {
     if (bi < 0 || bi >= (int)kb->active().bindings.size()) return;
     const cfg::Binding source = kb->active().bindings[(size_t)bi];
 
-    KeyCaptureResult r =
-        captureKey(hwnd_, "Duplicate to which key?",
-                   "Press the key on \"" + kb->alias +
-                       "\" that should get a copy of \"" +
-                       source.displayTitle() + "\".",
-                   kb->match);
+    const char* title =
+        kb->isMouse ? "Duplicate to which button?" : "Duplicate to which key?";
+    KeyCaptureResult r = captureKey(
+        hwnd_, title,
+        std::string("Press the ") + (kb->isMouse ? "button" : "key") +
+            " on \"" + kb->alias + "\" that should get a copy of \"" +
+            source.displayTitle() + "\".",
+        kb->match);
     if (!r.ok) return;
 
     if (kb->findKey(r.keyName)) {
@@ -2647,14 +2650,25 @@ void MainWindow::keyboardContextMenu(int index, POINT pt) {
                 "", false, false);
             if (r.ok && !r.devicePath.empty()) {
                 auto all = dev::listKeyboards();
+                // The input the key came in on - or, failing that, another
+                // input of the same keypad: a media key on a Bluetooth keypad
+                // arrives on an input that is not a keyboard at all, and on
+                // some keypads that is every button there is.
+                const dev::InputDevice* found = nullptr;
                 for (const auto& d : all)
-                    if (d.path == r.devicePath) {
-                        bool stable = true;
-                        kb.match = cfg::chooseMatch(d, all, &stable);
-                        modelChanged(false);
-                        pushLog("\"" + kb.alias + "\" now matches " + kb.match);
-                        break;
-                    }
+                    if (d.path == r.devicePath) { found = &d; break; }
+                if (!found)
+                    for (const auto& d : all)
+                        if (dev::sameDevice(d.path, r.devicePath)) {
+                            found = &d;
+                            break;
+                        }
+                if (found) {
+                    bool stable = true;
+                    kb.match = cfg::chooseMatch(*found, all, &stable);
+                    modelChanged(false);
+                    pushLog("\"" + kb.alias + "\" now matches " + kb.match);
+                }
             }
             break;
         }

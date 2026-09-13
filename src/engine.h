@@ -26,6 +26,28 @@ struct MonitorEvent {
     bool hasMacro = false;
 };
 
+// Decides which key-downs are presses. Two kinds are not: a key the keyboard
+// is repeating because it is held, and the second half of a press a keypad
+// sent twice. Key-ups always pass - a release has to reach whatever is
+// waiting for it, such as a page held open.
+class PressFilter {
+public:
+    // True when this key-down should run nothing.
+    bool ignore(const dev::KeyEvent& ev);
+    void clear();
+
+    // The longest gap between a key's release and a press of the same key
+    // that still counts as that one press bouncing.
+    static constexpr double kBounceSeconds = 0.04;
+
+private:
+    std::mutex mu_;
+    // Keyed by (device path, virtual key), so the same key on two pads is two
+    // keys.
+    std::map<std::pair<std::string, int>, double> lastDown_;
+    std::map<std::pair<std::string, int>, double> lastUp_;
+};
+
 class Engine {
 public:
     using LogFn = std::function<void(const std::string&)>;
@@ -81,9 +103,6 @@ private:
     int resolvePage(const std::string& alias, const std::string& name,
                     const std::string& direction) const;
     void requestPage(const std::string& alias, int page);
-    // True when this key-down is the keyboard repeating a key the user is
-    // still holding, rather than a fresh press.
-    bool isAutoRepeat(const dev::KeyEvent& ev);
     void workerMain();
     void runStep(const cfg::Step& step);
     void log(const std::string& msg);
@@ -119,8 +138,8 @@ private:
     PageFn page_;
 
     // Keys currently holding a page open, and the page each should put back
-    // when it is released. Keyed the same way lastDown_ is, so two pads can
-    // each hold a page of their own without colliding.
+    // when it is released. Keyed the same way PressFilter keys presses, so two
+    // pads can each hold a page of their own without colliding.
     std::mutex holdMu_;
     std::map<std::pair<std::string, int>, std::pair<std::string, int>> holds_;
 
@@ -133,10 +152,8 @@ private:
     std::condition_variable jobCv_;
     std::deque<Job> jobs_;
 
-    // Last key-down time per (device, virtual key), used to tell a held key's
-    // repeats apart from real presses.
-    std::mutex heldMu_;
-    std::map<std::pair<std::string, int>, double> lastDown_;
+    // Which key-downs are real presses, rather than repeats or bounces.
+    PressFilter presses_;
 
     std::thread worker_;
     std::atomic<bool> running_{false};

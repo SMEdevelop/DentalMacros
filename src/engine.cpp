@@ -89,12 +89,26 @@ void Engine::updateConfig(const cfg::Config& c) {
 // pad is unplugged mid-press, say): Windows' slowest repeat delay is one
 // second, so anything longer than that is certainly a new press, and the key
 // un-sticks itself rather than staying dead until the engine restarts.
-bool Engine::isAutoRepeat(const dev::KeyEvent& ev) {
+bool PressFilter::ignore(const dev::KeyEvent& ev) {
     const auto id = std::make_pair(ev.devicePath, ev.vk);
-    std::lock_guard<std::mutex> lk(heldMu_);
+    std::lock_guard<std::mutex> lk(mu_);
     if (!ev.down) {
         lastDown_.erase(id);
+        lastUp_[id] = ev.t;
         return false;
+    }
+    // Some keypads send one press as two, the second starting within a few
+    // milliseconds of the first ending - the Huion Keydial's space bar does it
+    // on every press, and would run its macro twice. Nobody lets go of a key
+    // and presses it again that fast, so a press that close behind its own
+    // release is the same press. Not on the wheel, though: a notch is a whole
+    // click with its release sent alongside, and a quick flick is a run of
+    // notches well inside this window.
+    const bool wheel = ev.vk >= dev::kVkWheelUp && ev.vk <= dev::kVkWheelRight;
+    if (!wheel) {
+        auto up = lastUp_.find(id);
+        if (up != lastUp_.end() && ev.t - up->second < kBounceSeconds)
+            return true;
     }
     auto it = lastDown_.find(id);
     const bool repeat = it != lastDown_.end() && (ev.t - it->second) < 1.2;
@@ -102,8 +116,14 @@ bool Engine::isAutoRepeat(const dev::KeyEvent& ev) {
     return repeat;
 }
 
+void PressFilter::clear() {
+    std::lock_guard<std::mutex> lk(mu_);
+    lastDown_.clear();
+    lastUp_.clear();
+}
+
 void Engine::onKey(const dev::KeyEvent& ev) {
-    if (isAutoRepeat(ev)) return;
+    if (presses_.ignore(ev)) return;
 
     std::string keyName = keys::vkName(ev.vk);
 
@@ -117,7 +137,7 @@ void Engine::onKey(const dev::KeyEvent& ev) {
     int returnPage = -1;
     {
         std::lock_guard<std::mutex> lk(cfgMu_);
-        const cfg::Keyboard* kb = cfg_.keyboardForDevice(ev.devicePath);
+        const cfg::Keyboard* kb = cfg_.keyboardForDevice(ev.devicePath, ev.vk);
         if (kb) {
             alias = kb->alias;
             if (const cfg::Binding* b = kb->findKey(keyName)) {
@@ -553,12 +573,9 @@ void Engine::start() {
     stopping_.store(false);
     if (!worker_.joinable()) worker_ = std::thread([this] { workerMain(); });
 
-    {
-        // Anything "held" is a leftover from the last run, not a key the user
-        // is holding now.
-        std::lock_guard<std::mutex> lk(heldMu_);
-        lastDown_.clear();
-    }
+    // Anything "held" is a leftover from the last run, not a key the user is
+    // holding now.
+    presses_.clear();
 
     // Software buttons are clicked, not pressed. If that is all there is,
     // there is nothing to listen to and no reason to register for raw input.
@@ -642,10 +659,7 @@ void Engine::stop() {
         listener_.stop();
         listenerActive_.store(false);
         running_.store(false);
-        {
-            std::lock_guard<std::mutex> lk(heldMu_);
-            lastDown_.clear();
-        }
+        presses_.clear();
         log("Stopped listening - macro keys type normally again.");
     }
     stopping_.store(true);

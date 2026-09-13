@@ -1,4 +1,5 @@
 #include "keys.h"
+#include "device.h"
 #include "util.h"
 #include <algorithm>
 #include <cstdio>
@@ -56,7 +57,21 @@ struct Tables {
         add("medianext", 0xB0); add("mediaprev", 0xB1); add("mediastop", 0xB2);
         add("mediaplay", 0xB3);
         add("browserback", 0xA6); add("browserforward", 0xA7);
-        add("browserrefresh", 0xA8);
+        add("browserrefresh", 0xA8); add("browserstop", 0xA9);
+        add("browsersearch", 0xAA); add("browserfavorites", 0xAB);
+        add("browserhome", 0xAC);
+        add("mail", 0xB4); add("mediaselect", 0xB5);
+        add("thispc", 0xB6); add("calculator", 0xB7);
+
+        // Media keys Windows has no virtual key for, numbered by their HID
+        // consumer usage above the 0-255 range - see device.h. Only the ones
+        // worth a name are named here; any other usage still works, as
+        // consumer_0x###.
+        const int consumer = dev::kVkConsumerBase;
+        add("power", consumer + 0x30); add("sleep", consumer + 0x32);
+        add("brightnessup", consumer + 0x6F);
+        add("brightnessdown", consumer + 0x70);
+        add("zoomin", consumer + 0x22D); add("zoomout", consumer + 0x22E);
 
         // Pointing devices. The buttons keep the virtual keys Windows already
         // reserves for them, which no keyboard ever sends, so a mouse button
@@ -93,6 +108,8 @@ struct Tables {
             {"mouse3", "mousemiddle"},
             {"mouseback", "mouse4"}, {"mouseforward", "mouse5"},
             {"scrollup", "wheelup"}, {"scrolldown", "wheeldown"},
+            {"calc", "calculator"}, {"email", "mail"},
+            {"mute", "volumemute"}, {"playpause", "mediaplay"},
         };
 
         modifiers = {0x10, 0x11, 0x12, 0xA0, 0xA1, 0xA2, 0xA3, 0xA4, 0xA5,
@@ -125,6 +142,11 @@ int toVk(const std::string& name) {
         int v = (int)strtol(n.c_str() + 5, nullptr, 16);
         if (v > 0 && v < 256) return v;
     }
+    // ...and the consumer_0x### form a media key with no name gets
+    if (n.rfind("consumer_0x", 0) == 0) {
+        long v = strtol(n.c_str() + 11, nullptr, 16);
+        if (v > 0 && v <= 0xFFFF) return dev::kVkConsumerBase + (int)v;
+    }
     return 0;
 }
 
@@ -132,7 +154,12 @@ std::string vkName(int vk) {
     auto& T = tab();
     auto it = T.vkToName.find(vk);
     if (it != T.vkToName.end()) return it->second;
-    char buf[16];
+    char buf[24];
+    if (vk > dev::kVkConsumerBase && vk <= dev::kVkConsumerBase + 0xFFFF) {
+        std::snprintf(buf, sizeof(buf), "consumer_0x%03X",
+                      vk - dev::kVkConsumerBase);
+        return buf;
+    }
     std::snprintf(buf, sizeof(buf), "vk_0x%02X", vk & 0xFF);
     return buf;
 }
@@ -170,12 +197,23 @@ std::string displayName(const std::string& keyName) {
         {"mediastop", "Stop"}, {"mediaplay", "Play"},
         {"browserback", "Back"}, {"browserforward", "Fwd"},
         {"browserrefresh", "Reload"},
+        {"browserstop", "Web stop"}, {"browsersearch", "Search"},
+        {"browserfavorites", "Favs"}, {"browserhome", "Web home"},
+        {"mail", "Mail"}, {"mediaselect", "Media"}, {"thispc", "This PC"},
+        {"calculator", "Calc"}, {"power", "Power"}, {"sleep", "Sleep"},
+        {"brightnessup", "Bright +"}, {"brightnessdown", "Bright −"},
+        {"zoomin", "Zoom +"}, {"zoomout", "Zoom −"},
         {"up", "↑"}, {"down", "↓"}, {"left", "←"},
         {"right", "→"},
     };
     auto p = pretty.find(n);
     if (p != pretty.end()) return p->second;
 
+    if (n.rfind("consumer_0x", 0) == 0 && n.size() > 11) {
+        std::string hex = n.substr(11);
+        for (auto& c : hex) c = (char)toupper((unsigned char)c);
+        return "Media " + hex;
+    }
     if (n.size() > 3 && n.rfind("num", 0) == 0 && isdigit((unsigned char)n[3]))
         return "Num " + n.substr(3);
     if (n.size() == 1) return std::string(1, (char)toupper((unsigned char)n[0]));
@@ -202,6 +240,15 @@ std::vector<int> parseCombo(const std::string& combo, std::string* error) {
             out.clear();
             return out;
         }
+        // A media key with no virtual key of its own can be pressed on a
+        // keypad, but SendInput only speaks virtual keys.
+        if (vk > 0xFF) {
+            if (error)
+                *error = part + " is a key a keypad can press, but not one a "
+                                "macro can type";
+            out.clear();
+            return out;
+        }
         out.push_back(vk);
     }
     if (out.empty() && error) *error = "empty key combo";
@@ -222,6 +269,12 @@ bool parseHotkey(const std::string& combo, unsigned& modifiers, int& vk,
             int v = toVk(part);
             if (!v) {
                 if (error) *error = "unknown key name: " + part;
+                return false;
+            }
+            if (v > 0xFF) {
+                if (error)
+                    *error = part + " cannot be a shortcut - Windows has no "
+                                    "key code for it";
                 return false;
             }
             if (vk) {

@@ -246,6 +246,40 @@ activity log rather than claiming to be listening to something.
 Everything else about them is an ordinary binding — label, icon, colour,
 steps, Test run, and firing from the always-on-top palette.
 
+### Bluetooth keypads
+
+A Bluetooth keypad is added with **＋ Add a keyboard** like any other. A
+Bluetooth LE keypad is listed under the name it was paired with.
+
+Windows splits a keypad into several inputs: its keys, its media keys, often a
+mouse, sometimes a dial. MacroDeck matches a Bluetooth LE keypad by its
+address, which all of those inputs share, so one deck hears every button the
+keypad has. Many of those extra buttons are not keys at all but **media keys**,
+and those can carry a macro too:
+
+| Name | |
+|---|---|
+| `volumeup` `volumedown` `volumemute` | Volume. `mute` also works. |
+| `mediaplay` `medianext` `mediaprev` `mediastop` | Play/pause and tracks. `playpause` also works. |
+| `calculator` `mail` `thispc` `mediaselect` | Launcher keys. `calc` and `email` also work. |
+| `browserback` `browserforward` `browserrefresh` `browserstop` `browsersearch` `browserfavorites` `browserhome` | Browser keys. |
+| `zoomin` `zoomout` `brightnessup` `brightnessdown` `sleep` `power` | Media keys Windows has no key code for. |
+| `consumer_0x###` | Any other media key, by its HID usage number — which is what pressing it records. |
+
+The last two rows can be pressed and bound, but a macro cannot *type* one, and
+blocking has nothing to act on: Windows makes no keystroke of its own out of
+them, so there is nothing to take away from other programs.
+
+Some keypads send one press as two, a few milliseconds apart. A press that
+arrives within 40 ms of the same key's release is treated as that same press,
+so its macro runs once.
+
+What MacroDeck cannot do is tell apart two buttons that send exactly the same
+thing. When two keys both send Alt, or a programmable key sends Win+4 (which
+Windows acts on before anything else sees the 4), reassign them in the
+keypad's own software — most keep the assignment in the keypad itself — to
+keys nothing else sends, such as F13–F24.
+
 ### Mice and trackpads
 
 A spare mouse can be a macro device exactly as a spare keyboard can. **＋ Add
@@ -776,6 +810,12 @@ form: it comes from the keyboard's own firmware and survives reboots, driver
 updates and USB port changes. MacroDeck only falls back to the longer
 port-specific path when you have two identical keyboards attached, and tells
 you when it does.
+
+A Bluetooth LE keypad is matched by its address instead, written as `_` and
+twelve hex digits (`"match": "_d8b663890275"`). Every input the keypad has
+shares it, and the keypad keeps it across restarts and reconnecting. A deck
+saved by an older build with the full path of one of a keypad's inputs is
+treated as matching the whole keypad.
 
 ---
 

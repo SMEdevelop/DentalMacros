@@ -840,10 +840,16 @@ std::string Config::uniqueAlias(const std::string& wanted) const {
     }
 }
 
-const Keyboard* Config::keyboardForDevice(const std::string& devicePath) const {
-    for (const auto& k : keyboards)
-        if (specMatches(k.match, devicePath)) return &k;
-    return nullptr;
+const Keyboard* Config::keyboardForDevice(const std::string& devicePath,
+                                          int vk) const {
+    const bool pointer = dev::isMouseVk(vk);
+    const Keyboard* otherKind = nullptr;
+    for (const auto& k : keyboards) {
+        if (!specMatches(k.match, devicePath)) continue;
+        if (vk == 0 || k.isMouse == pointer) return &k;
+        if (!otherKind) otherKind = &k;
+    }
+    return otherKind;
 }
 
 bool Config::blockedForDevice(const std::string& devicePath) const {
@@ -886,7 +892,7 @@ bool Config::anyMouseBlocks() const {
 }
 
 bool Config::blockedForKey(const std::string& devicePath, int vk) const {
-    const Keyboard* k = keyboardForDevice(devicePath);
+    const Keyboard* k = keyboardForDevice(devicePath, vk);
     if (!k || !k->block) return false;
 
     // The escape hatch for a keyboard is that you can still type
@@ -914,19 +920,34 @@ bool Config::blockedForKey(const std::string& devicePath, int vk) const {
 
 bool specMatches(const std::string& match, const std::string& devicePath) {
     if (match.empty() || devicePath.empty()) return false;
-    return lower(devicePath).find(lower(match)) != std::string::npos;
+    if (lower(devicePath).find(lower(match)) != std::string::npos) return true;
+    // A Bluetooth keypad added by a build that did not understand Bluetooth
+    // was tied to the full path of the one input it was identified by - its
+    // keyboard, usually - so its media keys, which arrive on an input of their
+    // own, could never reach its deck. The address in that path names the
+    // whole keypad.
+    const std::string addr = dev::bluetoothAddress(match);
+    return !addr.empty() && dev::bluetoothAddress(devicePath) == addr;
 }
 
 std::string chooseMatch(const dev::InputDevice& d,
                         const std::vector<dev::InputDevice>& all,
                         bool* stable) {
     if (stable) *stable = true;
+    // A Bluetooth keypad is matched by its address. It is the one thing all
+    // of the keypad's inputs share, so its keys and its media keys land on the
+    // same deck, and it is the keypad's own, so it survives restarts and
+    // reconnecting. The ids would share just as well, but they cannot rule
+    // out an identical twin: a keypad that is asleep is not listed at all.
+    if (!d.btAddress.empty()) return "_" + d.btAddress;
     if (!d.vid.empty()) {
         bool twin = false;
         for (const auto& k : all)
             if (&k != &d && k.vid == d.vid && k.pid == d.pid && k.path != d.path)
                 twin = true;
-        if (!twin) return "VID_" + d.vid + "&PID_" + d.pid;
+        if (!twin)
+            return !d.idMatch.empty() ? d.idMatch
+                                      : "VID_" + d.vid + "&PID_" + d.pid;
     }
     // Two identical keyboards: only the port-specific instance path can tell
     // them apart, so the user must keep this one in the same USB port.

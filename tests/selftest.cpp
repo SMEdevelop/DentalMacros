@@ -1883,6 +1883,195 @@ static void testClickWorkflow() {
     pump(40);
 }
 
+// ------------------------------------------------------ Bluetooth keypads
+// What a Bluetooth LE keypad looks like to Raw Input, in the shape real ones
+// have (the addresses here are made up): one keypad, several inputs, each
+// with a path of its own, and nothing shared between those paths but the ids
+// and the address. Its extra buttons mostly arrive as media keys.
+static void testBluetoothKeypads() {
+    section("Bluetooth keypads and media keys");
+
+    const std::string hid = "\\\\?\\HID#{00001812-0000-1000-8000-00805f9b34fb}";
+    const std::string pad = hid + "_Dev_VID&0203f0_PID&854a_REV&044c_a1b2c3d4e5f6";
+    const std::string keysIn =
+        pad + "&Col02#b&365c9656&0&0001#{884b96c3-56ef-11d1-bc8c-00a0c91405dd}";
+    const std::string mediaIn =
+        pad + "&Col03#b&365c9656&0&0002#{4d1e55b2-f16f-11cf-88cb-001111000030}";
+    const std::string mouseIn =
+        pad + "&Col01#b&365c9656&0&0000#{378de44c-56ef-11d1-bc8c-00a0c91405dd}";
+    const std::string otherPad =
+        hid + "_Dev_VID&02256c_PID&8251_REV&0001_0f1e2d3c4b5a";
+    const std::string otherKeys =
+        otherPad + "&Col01#b&2780b1fd&0&0000#{884b96c3-56ef-11d1-bc8c-00a0c91405dd}";
+    // A dial can be a HID device of its own, with no collection number.
+    const std::string otherDial =
+        otherPad + "#b&3b50ed85&0&0000#{4d1e55b2-f16f-11cf-88cb-001111000030}";
+    const std::string usbKeys =
+        "\\\\?\\HID#VID_046D&PID_C539&MI_00#9&36ad48bf&0&0000#{884b96c3-56ef-11d1-bc8c-00a0c91405dd}";
+    const std::string usbMedia =
+        "\\\\?\\HID#VID_046D&PID_C539&MI_01&Col02#9&237d2c81&0&0001#{4d1e55b2-f16f-11cf-88cb-001111000030}";
+
+    // ---- reading a path --------------------------------------------------
+    dev::InputDevice d;
+    dev::parseDevicePath(keysIn, d);
+    ok(d.vid == "03F0" && d.pid == "854A",
+       "reads a Bluetooth keypad's vendor and product id", d.vid + " " + d.pid);
+    ok(d.idMatch == "VID&0203f0_PID&854a",
+       "and keeps them spelled the way its path spells them", d.idMatch);
+    ok(d.btAddress == "a1b2c3d4e5f6", "finds the Bluetooth address",
+       d.btAddress);
+    dev::InputDevice u;
+    dev::parseDevicePath(usbKeys, u);
+    ok(u.vid == "046D" && u.idMatch == "VID_046D&PID_C539" && u.btAddress.empty(),
+       "a USB path reads as it always did");
+    ok(dev::bluetoothAddress(otherDial) == "0f1e2d3c4b5a",
+       "an input with no collection number has the address too");
+    ok(dev::bluetoothAddress("_a1b2c3d4e5f6").empty() &&
+           dev::bluetoothAddress(usbKeys).empty(),
+       "nothing that is not a Bluetooth LE path yields an address");
+
+    ok(dev::sameDevice(keysIn, mediaIn) && dev::sameDevice(mouseIn, keysIn),
+       "a keypad's inputs are one device");
+    ok(!dev::sameDevice(keysIn, otherKeys), "a different keypad is not");
+    ok(dev::sameDevice(usbKeys, usbKeys) && !dev::sameDevice(usbKeys, usbMedia),
+       "a USB input is only ever itself");
+
+    // ---- matching a deck to a keypad -------------------------------------
+    bool stable = false;
+    const std::string m = cfg::chooseMatch(d, {d}, &stable);
+    ok(m == "_a1b2c3d4e5f6" && stable, "a keypad is matched by its address", m);
+    ok(cfg::specMatches(m, keysIn) && cfg::specMatches(m, mediaIn) &&
+           cfg::specMatches(m, mouseIn),
+       "which selects every input it has, media keys included");
+    ok(!cfg::specMatches(m, otherKeys), "and nothing of any other keypad's");
+    ok(cfg::chooseMatch(u, {u}, &stable) == "VID_046D&PID_C539" && stable,
+       "a USB keyboard is still matched by its ids");
+    ok(cfg::specMatches(keysIn, mediaIn),
+       "a deck saved with one input's full path, as older builds did, "
+       "reaches that keypad's media keys");
+    ok(!cfg::specMatches(keysIn, otherKeys),
+       "without reaching another keypad");
+    ok(!cfg::specMatches(usbKeys, usbMedia),
+       "a full USB path is not widened - it names one port");
+
+    // ---- two decks on one keypad -----------------------------------------
+    cfg::Config c;
+    cfg::Keyboard dialDeck;
+    dialDeck.alias = "Dial";
+    dialDeck.match = m;
+    dialDeck.isMouse = true;
+    cfg::Keyboard keyDeck;
+    keyDeck.alias = "Keys";
+    keyDeck.match = m;
+    // The mouse deck first, so the order of the list cannot be what decides.
+    c.keyboards.push_back(dialDeck);
+    c.keyboards.push_back(keyDeck);
+    const cfg::Keyboard* forKey = c.keyboardForDevice(keysIn, 'K');
+    const cfg::Keyboard* forWheel = c.keyboardForDevice(mouseIn, dev::kVkWheelUp);
+    ok(forKey && forKey->alias == "Keys",
+       "a key goes to the keypad's keyboard deck");
+    ok(forWheel && forWheel->alias == "Dial", "and the dial to its mouse deck");
+    c.keyboards.erase(c.keyboards.begin());
+    forWheel = c.keyboardForDevice(mouseIn, dev::kVkWheelUp);
+    ok(forWheel && forWheel->alias == "Keys",
+       "with one deck on the keypad, that deck hears all of it");
+
+    // ---- media keys ------------------------------------------------------
+    ok(dev::vkForConsumerUsage(0xEA) == VK_VOLUME_DOWN &&
+           dev::vkForConsumerUsage(0x224) == VK_BROWSER_BACK,
+       "a media key Windows has a key code for keeps that code");
+    ok(keys::vkName(dev::vkForConsumerUsage(0x192)) == "calculator",
+       "the calculator key has a name",
+       keys::vkName(dev::vkForConsumerUsage(0x192)));
+    ok(keys::vkName(dev::vkForConsumerUsage(0xCD)) == "mediaplay",
+       "a dial's play/pause is the same key as a keyboard's");
+    const int zoom = dev::vkForConsumerUsage(0x22D);
+    ok(zoom > 0xFF && keys::vkName(zoom) == "zoomin",
+       "one Windows has no code for is numbered out of its way",
+       keys::vkName(zoom));
+    ok(keys::toVk("zoomin") == zoom, "and its name reads back");
+    const int unnamed = dev::vkForConsumerUsage(0x21A);
+    ok(keys::vkName(unnamed) == "consumer_0x21A" &&
+           keys::toVk("consumer_0x21A") == unnamed,
+       "an unnamed one still round-trips through its name",
+       keys::vkName(unnamed));
+    ok(keys::displayName("consumer_0x21A") == "Media 21A",
+       "and reads as a media key on its tile",
+       keys::displayName("consumer_0x21A"));
+    ok(dev::vkForConsumerUsage(0) == 0, "usage 0 is nothing pressed");
+    ok(!dev::isMouseVk(zoom) && !dev::isMouseVk(VK_VOLUME_DOWN),
+       "no media key is mistaken for a mouse button");
+    std::string err;
+    ok(keys::parseCombo("zoomin", &err).empty() && !err.empty(),
+       "a macro cannot type a key that has no key code", err);
+    ok(!keys::parseCombo("volumeup", &err).empty(),
+       "but can type a media key that has one");
+    unsigned mods = 0;
+    int hotVk = 0;
+    ok(!keys::parseHotkey("ctrl+zoomin", mods, hotVk, &err),
+       "and no shortcut can be made of one", err);
+
+    // ---- blocking what a keypad sends ------------------------------------
+    ok(dev::rawInputVk(VK_LCONTROL) == VK_CONTROL &&
+           dev::rawInputVk(VK_RCONTROL) == VK_CONTROL,
+       "the hook's left and right Ctrl are Raw Input's Ctrl");
+    ok(dev::rawInputVk(VK_LSHIFT) == VK_SHIFT &&
+           dev::rawInputVk(VK_RMENU) == VK_MENU,
+       "and the same goes for Shift and Alt");
+    ok(dev::rawInputVk(VK_LWIN) == VK_LWIN && dev::rawInputVk('A') == 'A',
+       "every other key is left as it is");
+    cfg::Config blocking;
+    cfg::Keyboard selective;
+    selective.alias = "Pad";
+    selective.match = m;
+    selective.block = true;
+    selective.blockAllKeys = false;
+    for (const char* key : {"ctrl", "calculator"}) {
+        cfg::Binding b;
+        b.key = key;
+        b.steps.push_back({"sleep", js::Value::object()});
+        selective.active().bindings.push_back(b);
+    }
+    blocking.keyboards.push_back(selective);
+    const int hookCtrl = dev::rawInputVk(VK_LCONTROL);
+    ok(blocking.couldBlockVk(hookCtrl) &&
+           blocking.blockedForKey(keysIn, hookCtrl),
+       "so a macro on a keypad's Ctrl key can be blocked");
+    ok(blocking.couldBlockVk(VK_LAUNCH_APP2) &&
+           blocking.blockedForKey(mediaIn, VK_LAUNCH_APP2),
+       "and so can a macro on its calculator key");
+
+    // ---- a keypad that sends a press twice -------------------------------
+    eng::PressFilter presses;
+    auto key = [&](int vk, bool down, double t) {
+        dev::KeyEvent e;
+        e.vk = vk;
+        e.down = down;
+        e.t = t;
+        e.devicePath = keysIn;
+        return e;
+    };
+    ok(!presses.ignore(key(VK_SPACE, true, 10.00)), "a press runs");
+    presses.ignore(key(VK_SPACE, false, 10.02));
+    ok(presses.ignore(key(VK_SPACE, true, 10.03)),
+       "a second press 10ms after its release is the same press");
+    presses.ignore(key(VK_SPACE, false, 10.04));
+    ok(!presses.ignore(key(VK_SPACE, true, 10.20)),
+       "a press 160ms after the release is a new one");
+    ok(presses.ignore(key(VK_SPACE, true, 10.25)),
+       "a key still held down is repeating, not pressed again");
+    presses.ignore(key(VK_SPACE, false, 10.30));
+    ok(!presses.ignore(key('K', true, 10.31)),
+       "a different key straight after is a press of its own");
+    bool everyNotch = true;
+    for (int i = 0; i < 5; ++i) {
+        const double t = 20.0 + i * 0.008;
+        if (presses.ignore(key(dev::kVkWheelUp, true, t))) everyNotch = false;
+        presses.ignore(key(dev::kVkWheelUp, false, t));
+    }
+    ok(everyNotch, "five wheel notches 8ms apart are five notches");
+}
+
 int main(int argc, char** argv) {
     setvbuf(stdout, nullptr, _IONBF, 0);
     std::printf("MacroDeck self-test\n");
@@ -1903,6 +2092,7 @@ int main(int argc, char** argv) {
     testSoftwareDeck();
     testPages();
     testMouse();
+    testBluetoothKeypads();
     testHookCost();
     if (!yaml.empty()) testYamlImport(yaml);
     testWindows();

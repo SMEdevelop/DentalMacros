@@ -47,8 +47,10 @@ public:
 
     void build() override {
         makeLabel(hwnd_, prompt, 20, 18, 420, 44, -1, false, true);
-        status_ = makeLabel(hwnd_, "Waiting for a keypress...", 20, 66, 420, 22,
-                            -1, true);
+        status_ = makeLabel(hwnd_,
+                            comboMode ? "Waiting for a keypress..."
+                                      : "Waiting for a key or button...",
+                            20, 66, 420, 22, -1, true);
 
         if (allowPickByName) {
             makeLabel(hwnd_, "...or choose a key by name:", 20, 104, 200, 20, -1,
@@ -65,14 +67,27 @@ public:
         EnableWindow(GetDlgItem(hwnd_, ID_OK), FALSE);
 
         try {
-            listener_.start([this](const dev::KeyEvent& ev) {
-                if (!ev.down) return;
-                {
-                    std::lock_guard<std::mutex> lk(mu_);
-                    pending_.push_back(ev);
-                }
-                PostMessageW(hwnd_, WM_KEY_ARRIVED, 0, 0);
-            });
+            // Pointer input as well as keys. Without it this dialog is deaf to
+            // the very buttons a mouse deck exists for: a side button would be
+            // pressed, nothing would happen, and there would be no way to bind
+            // it at all. A modal that is open for a few seconds is also the one
+            // place the cost of hearing pointer movement does not matter -
+            // movement is discarded before it becomes an event.
+            //
+            // Except when recording a combo. That answer goes to
+            // RegisterHotKey, or into a combo this program will type, and
+            // neither can be a mouse button - so hearing the mouse there could
+            // only produce a shortcut that silently fails to register.
+            listener_.start(
+                [this](const dev::KeyEvent& ev) {
+                    if (!ev.down) return;
+                    {
+                        std::lock_guard<std::mutex> lk(mu_);
+                        pending_.push_back(ev);
+                    }
+                    PostMessageW(hwnd_, WM_KEY_ARRIVED, 0, 0);
+                },
+                !comboMode);
         } catch (const std::exception& e) {
             setText(status_,
                     std::string("Keyboard capture is unavailable: ") + e.what());
@@ -103,11 +118,23 @@ public:
             std::string name = keys::vkName(ev.vk);
             if (comboMode && keys::isModifier(ev.vk)) continue;
 
+            // Left click is how the person in front of this dialog presses
+            // Done, so it can never be the answer. Now that the dialog hears
+            // the mouse, that has to be said here rather than left to the
+            // caller - which would take the click, close, and only then
+            // explain itself.
+            if (!cfg::keyBindable(name)) {
+                setText(status_,
+                        "Left click has to keep working - it is how you press "
+                        "Done. Any other button is fine.");
+                continue;
+            }
+
             if (!restrictMatch.empty() &&
                 !cfg::specMatches(restrictMatch, ev.devicePath)) {
                 setText(status_,
-                        "That key came from a different keyboard - press a key "
-                        "on the macro keyboard.");
+                        "That came from a different device - press a key or "
+                        "button on the one this deck is for.");
                 continue;
             }
             result.ok = true;
@@ -364,6 +391,10 @@ public:
         const dev::InputDevice& d = devices_[(size_t)sel];
 
         for (const auto& kb : config->keyboards) {
+            // A keypad's dial gets added as a mouse after its keys were added
+            // as a keyboard, and both decks match the same keypad. Only the
+            // same kind of deck twice is a duplicate.
+            if (kb.isMouse != wantMouse) continue;
             if (cfg::specMatches(kb.match, d.path)) {
                 if (!askYesNo(hwnd_, "Already added",
                               std::string("This ") + noun() +
@@ -426,17 +457,28 @@ public:
             // While adding a mouse, a stray keystroke must not pick an entry
             // out of a list of mice - and vice versa.
             if (dev::isMouseVk(ev.vk) != wantMouse) continue;
-            for (size_t i = 0; i < devices_.size(); ++i) {
-                if (devices_[i].path == ev.devicePath) {
-                    SendMessageW(list_, LB_SETCURSEL, (WPARAM)i, 0);
-                    setText(status_,
-                            std::string(wantMouse ? "That button came from: "
-                                                  : "That key came from: ") +
-                                devices_[i].display());
-                    stopIdentify();
-                    out = 0;
-                    return true;
-                }
+            // The input the key came in on - or, failing that, another input
+            // of the same keypad. A Bluetooth keypad's media keys arrive on an
+            // input of their own that is not in this list, and on some keypads
+            // that is every button there is.
+            size_t hit = devices_.size();
+            for (size_t i = 0; i < devices_.size(); ++i)
+                if (devices_[i].path == ev.devicePath) { hit = i; break; }
+            if (hit == devices_.size())
+                for (size_t i = 0; i < devices_.size(); ++i)
+                    if (dev::sameDevice(devices_[i].path, ev.devicePath)) {
+                        hit = i;
+                        break;
+                    }
+            if (hit < devices_.size()) {
+                SendMessageW(list_, LB_SETCURSEL, (WPARAM)hit, 0);
+                setText(status_,
+                        std::string(wantMouse ? "That button came from: "
+                                              : "That key came from: ") +
+                            devices_[hit].display());
+                stopIdentify();
+                out = 0;
+                return true;
             }
         }
         out = 0;
