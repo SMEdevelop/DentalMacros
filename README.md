@@ -1,11 +1,16 @@
-# MacroDeck
+# Dental Macros
+
+> **Formerly MacroDeck.** Upgrading keeps your macros. The installer updates
+> the existing install in place; for the portable copy, put the new files in
+> your old folder and delete `MacroDeck.exe`. Either way, "run at sign-in"
+> carries over to the new name.
 
 A **Stream Deck–style macro app for Windows**, written in C++ with no runtime
 dependencies. It turns a spare keyboard or numpad into a grid of macro keys
 you configure by pointing and clicking.
 
 The trick that makes it work: Windows' Raw Input API reports *which physical
-keyboard* every keystroke came from. So MacroDeck can swallow every key on
+keyboard* every keystroke came from. So Dental Macros can swallow every key on
 your macro pad — firing macros instead of typing — while your main keyboard
 keeps behaving completely normally.
 
@@ -19,13 +24,13 @@ it drops the Python and OpenCV dependencies entirely.
 
 ## Before you start: Smart App Control
 
-Smart App Control **may** refuse to run MacroDeck. Where it does, you'll see:
+Smart App Control **may** refuse to run Dental Macros. Where it does, you'll see:
 
 > This command cannot be run due to the error: An Application Control policy
 > has blocked this file.
 
 **The way to find out is to run it.** Build the app, launch
-`build\MacroDeck.exe`, and see what happens. If the window opens, nothing here
+`build\DentalMacros.exe`, and see what happens. If the window opens, nothing here
 applies to you and you can skip to the next section.
 
 Don't use the registry to predict it:
@@ -36,14 +41,14 @@ powershell -c "(Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\CI\Poli
 
 `0` = off, `1` = on and enforcing, `2` = evaluation mode. A `1` does **not**
 mean you're blocked. This has been verified on a PC reporting `1` where
-MacroDeck launches, runs and exits perfectly normally — and where a build
+Dental Macros launches, runs and exits perfectly normally — and where a build
 copied from a machine that *was* blocked runs equally well. The same
 unmodified executable can be refused on one PC and fine on the next, so treat
 this value as a clue about why a block happened, not as a forecast that one
 will.
 
 **The verdict is per-file, and it is a fresh roll of the dice for every
-build.** On one PC reporting `1`, one build of MacroDeck was refused while
+build.** On one PC reporting `1`, one build of Dental Macros was refused while
 another build of the same source, minutes apart, ran perfectly. Copying the
 refused file elsewhere did not help; rebuilding it did. So if a build is
 blocked:
@@ -63,7 +68,9 @@ options, least drastic first:
 
 - **Try it on another PC.** Since the block travels with the machine and not
   the file, this costs nothing and often just works.
-- **Sign the executable** with a code-signing certificate you own.
+- **Use an official release** from the
+  [Releases page](https://github.com/SMEdevelop/DentalMacros/releases). Those are
+  signed — see [Code signing policy](#code-signing-policy).
 - **Keep using the Python `macrokb`** in the `Macros` folder instead. Scripts
   aren't subject to this check because `python.exe` is already signed and
   trusted, so the Python version runs on a machine where this one won't.
@@ -94,9 +101,9 @@ Prompt first:
 build.bat
 ```
 
-The result is `build\MacroDeck.exe`.
+The result is `build\DentalMacros.exe`.
 
-**It is not a single file any more.** As of beta 0.7 MacroDeck is built with
+**It is not a single file any more.** As of beta 0.7 Dental Macros is built with
 MSVC and links the C++ runtime dynamically (`/MD`), so the executable needs
 three DLLs beside it:
 
@@ -106,7 +113,7 @@ three DLLs beside it:
 | `vcruntime140.dll` | compiler runtime |
 | `vcruntime140_1.dll` | exception handling |
 
-Running `build\MacroDeck.exe` straight out of `build\` works on the machine
+Running `build\DentalMacros.exe` straight out of `build\` works on the machine
 that built it, because Visual Studio put those DLLs in `System32`. **That is
 exactly why a broken package looks fine here and fails on someone else's PC.**
 Do not hand anyone the bare .exe — use `package.bat`, which copies the three
@@ -137,12 +144,12 @@ launched, and the window tests drive a throwaway window of their own.
 ## Quick start
 
 1. Plug in the keyboard or numpad you want to dedicate to macros.
-2. Run `build\MacroDeck.exe` and click **Scan for keyboards**.
+2. Run `build\DentalMacros.exe` and click **Scan for keyboards**.
 3. Pick your macro keyboard from the list and give it a name.
    - Not sure which entry is which? Click **Identify by pressing a key** and
      press a key on the pad — the matching entry highlights itself.
    - By default, whichever keyboard you choose stops typing into your apps
-     while MacroDeck is listening — so pick the *spare* one. If you'd rather
+     while Dental Macros is listening — so pick the *spare* one. If you'd rather
      put macros on F13–F24 or extra keys of the keyboard you actually type on,
      see [Keeping the rest of the keyboard](#keeping-the-rest-of-the-keyboard)
      below; you can give up only the macro keys instead.
@@ -152,7 +159,7 @@ launched, and the window tests drive a throwaway window of their own.
    from the left-hand list onto a key.
 6. Click **Start Listening**.
 
-"Listening" is the state where MacroDeck is watching your macro keyboard: its
+"Listening" is the state where Dental Macros is watching your macro keyboard: its
 keys fire macros, and — for any keyboard with *Block these keys from apps*
 ticked — they stop typing into your apps. Everything else in the app works
 whether or not it is listening; you can build and test macros with it off. The
@@ -195,8 +202,8 @@ Worth understanding before you put macros on your **main** keyboard.
 
 Blocking is done with a Windows low-level keyboard hook, and that hook is
 **global and synchronous**: every keystroke from every keyboard in the machine
-goes through MacroDeck before the program you are typing into sees it. To
-decide whether a key belongs to a macro pad, MacroDeck has to work out which
+goes through Dental Macros before the program you are typing into sees it. To
+decide whether a key belongs to a macro pad, Dental Macros has to work out which
 physical keyboard it came from, and that means waiting briefly for the
 matching raw-input event. Measured here, a keystroke that cannot be matched
 stalls for about **40ms** before being let through.
@@ -206,7 +213,7 @@ you type on all day it is a different story, and if enough keystrokes queue up
 Windows eventually decides the hook is too slow and stops calling it — which
 looks exactly like dropped keystrokes.
 
-So MacroDeck asks a cheaper question first: *could any keyboard here possibly
+So Dental Macros asks a cheaper question first: *could any keyboard here possibly
 block this key at all?* If the answer is no — and with a handful of macros on
 a keyboard set to take only the macro keys, that is very nearly every key you
 type — the keystroke goes straight through with no waiting and no lookup. The
@@ -240,7 +247,7 @@ keyboard to dedicate to the job.
 
 They need no **Start Listening**: a click is not a keystroke, so there is
 nothing to intercept. If software buttons are all you have configured,
-MacroDeck does not register for raw keyboard input at all, and says so in the
+Dental Macros does not register for raw keyboard input at all, and says so in the
 activity log rather than claiming to be listening to something.
 
 Everything else about them is an ordinary binding — label, icon, colour,
@@ -252,7 +259,7 @@ A Bluetooth keypad is added with **＋ Add a keyboard** like any other. A
 Bluetooth LE keypad is listed under the name it was paired with.
 
 Windows splits a keypad into several inputs: its keys, its media keys, often a
-mouse, sometimes a dial. MacroDeck matches a Bluetooth LE keypad by its
+mouse, sometimes a dial. Dental Macros matches a Bluetooth LE keypad by its
 address, which all of those inputs share, so one deck hears every button the
 keypad has. Many of those extra buttons are not keys at all but **media keys**,
 and those can carry a macro too:
@@ -274,7 +281,7 @@ Some keypads send one press as two, a few milliseconds apart. A press that
 arrives within 40 ms of the same key's release is treated as that same press,
 so its macro runs once.
 
-What MacroDeck cannot do is tell apart two buttons that send exactly the same
+What Dental Macros cannot do is tell apart two buttons that send exactly the same
 thing. When two keys both send Alt, or a programmable key sends Win+4 (which
 Windows acts on before anything else sees the 4), reassign them in the
 keypad's own software — most keep the assignment in the keypad itself — to
@@ -291,7 +298,7 @@ It works because a mouse button already *has* a virtual key of its own that no
 keyboard ever sends — `VK_LBUTTON` and friends — so above the device layer a
 button is a key like any other. The wheel has no such code and is given four
 out of the range Microsoft documents as unassigned. That is the whole trick:
-nothing else in MacroDeck had to learn what a mouse is.
+nothing else in Dental Macros had to learn what a mouse is.
 
 | Name | |
 |---|---|
@@ -340,7 +347,7 @@ macro mouse should never pay for one.
 #### Buttons past the fifth
 
 **Windows' mouse packet only ever reports five buttons.** That is a limit of
-Raw Input, not of MacroDeck, and it is why a twelve-button mouse does not
+Raw Input, not of Dental Macros, and it is why a twelve-button mouse does not
 simply appear as twelve buttons.
 
 What those extra buttons actually do varies by manufacturer, and there are
@@ -351,7 +358,7 @@ three cases:
   key combinations. Add that endpoint with **＋ Add a keyboard**; it appears
   in the list under the mouse's own name. This works today and needs nothing
   special.
-- **They arrive as HID buttons on a second collection.** MacroDeck registers
+- **They arrive as HID buttons on a second collection.** Dental Macros registers
   for these and reads the Button usage page out of the report, so buttons 6
   to 20 come through as `mouse6` … `mouse20`. Buttons 1–5 are ignored there,
   since the ordinary mouse packet already reported them and firing every
@@ -560,7 +567,7 @@ Three things make it liveable rather than infuriating:
   and open means the deck follows what you are doing; grey and shut means it
   stays exactly where you left it. It is remembered in `macros.json` as
   `switchPageWithApp`.
-- **Coming here does not count.** MacroDeck's own window taking focus is
+- **Coming here does not count.** Dental Macros's own window taking focus is
   never treated as an application change, so a page cannot slide out from
   under you while you are editing it.
 
@@ -614,7 +621,7 @@ search takes a few tens of milliseconds.
 Tips:
 
 - Snip something **distinctive** — the button itself, not the whole dialog. If
-  you snip a blank area, MacroDeck refuses it and tells you why, rather than
+  you snip a blank area, Dental Macros refuses it and tells you why, rather than
   silently matching the wrong thing.
 - Include detail in **both directions**. Matching ignores brightness and
   contrast, so a plain horizontal band — a toolbar edge, a divider line —
@@ -633,7 +640,7 @@ the window you were clicking is exactly where it was when you recorded — move
 it, resize it, maximise it, and every click lands somewhere else. This is the
 single reason click macros usually rot.
 
-So when you record clicks, MacroDeck notes the **window** the first click
+So when you record clicks, Dental Macros notes the **window** the first click
 landed in — its class, its program, and its exact position and size — and
 wraps the sequence in two extra steps:
 
@@ -655,7 +662,7 @@ raw screen positions, or add them by hand to a sequence you built yourself.
 **Blocking input.** The *Lock* step can also block your keyboard and mouse for
 the duration, so a stray nudge cannot derail the sequence. Windows only allows
 a program to do that when it is **running as administrator** — otherwise the
-request is refused. MacroDeck says so in the activity log rather than
+request is refused. Dental Macros says so in the activity log rather than
 pretending you are protected. Whatever happens, the block is always lifted
 when the macro ends, including when a step fails part way through.
 
@@ -676,7 +683,7 @@ and the original `macros.yaml` is not modified.
 
 What changed in the fork:
 
-| | macrokb (Python) | MacroDeck (C++) |
+| | macrokb (Python) | Dental Macros (C++) |
 |---|---|---|
 | Needs installed | Python + 4 packages | nothing |
 | Editor | Forms and lists | Deck of tiles you click and drag |
@@ -787,15 +794,15 @@ complaint.
 
 `matchConfidence` must be between 0.5 and 1.0; anything else is reported and
 reset to 0.85. "Run at sign-in" is deliberately *not* here — it lives in the
-Windows registry, so a copy of MacroDeck you move or delete can't leave a
+Windows registry, so a copy of Dental Macros you move or delete can't leave a
 stale setting behind.
 
 Hand-editing is fine — comments and trailing commas are tolerated. Nothing you
-put in this file can make MacroDeck misbehave: unknown key names, duplicate
+put in this file can make Dental Macros misbehave: unknown key names, duplicate
 keys and out-of-range numbers are each reported in the activity log and
 skipped.
 
-**Your file is never quietly destroyed.** If MacroDeck can't read
+**Your file is never quietly destroyed.** If Dental Macros can't read
 `macros.json` — damaged JSON, or the file locked by sync or backup software —
 it says so, opens empty, and refuses to save until it has copied the original
 to `macros.json.bak` first. If even that copy fails, the save is refused
@@ -807,7 +814,7 @@ copy** writes one wherever you like.
 
 `match` is a substring of the device path. Prefer the `VID_xxxx&PID_xxxx`
 form: it comes from the keyboard's own firmware and survives reboots, driver
-updates and USB port changes. MacroDeck only falls back to the longer
+updates and USB port changes. Dental Macros only falls back to the longer
 port-specific path when you have two identical keyboards attached, and tells
 you when it does.
 
@@ -821,13 +828,13 @@ treated as matching the whole keypad.
 
 ## Troubleshooting
 
-**Nothing happens when I press a key on the macro pad.** Is MacroDeck
+**Nothing happens when I press a key on the macro pad.** Is Dental Macros
 listening? The status under the title says. With it listening, press a key — if
-the tile flashes green, MacroDeck sees it. If it doesn't, the wrong keyboard
+the tile flashes green, Dental Macros sees it. If it doesn't, the wrong keyboard
 is registered: right-click it in the sidebar → *Re-detect this keyboard*.
 
 **Macros don't fire when an admin window is focused.** Windows won't deliver
-hook events to a normal program from an elevated one. Run MacroDeck as
+hook events to a normal program from an elevated one. Run Dental Macros as
 administrator if you need that.
 
 **My macro keyboard still types into apps.** Blocking is per keyboard —
@@ -850,16 +857,16 @@ Raw Input inside a 30 ms window. In the rare case that correlation fails the
 key is deliberately passed through — a key that types when it shouldn't is
 much less annoying than one that silently vanishes.
 
-**Macros can't trigger themselves.** Keys sent by MacroDeck are marked as
+**Macros can't trigger themselves.** Keys sent by Dental Macros are marked as
 injected and are never blocked or re-matched.
 
 **The start/stop shortcut does nothing.** Another program has claimed it —
 the activity log says so at startup. Pick a different one in Settings.
 
-**I closed the window and it vanished.** By default closing keeps MacroDeck
+**I closed the window and it vanished.** By default closing keeps Dental Macros
 running in the notification area; click the tray icon to bring it back, or
 turn that off in Settings. If Windows refuses to give it a tray icon,
-MacroDeck exits instead of hiding with no way back.
+Dental Macros exits instead of hiding with no way back.
 
 ---
 
@@ -893,7 +900,6 @@ tools/
   make_icon.cpp       exports src\app.ico from theme.cpp's drawAppIcon()
 docs/
   ui-preview.png      generated by the tests; shown at the top of this file
-  MultiClicker*.ahk   the AutoHotkey script click recording is modelled on
 ```
 
 `src\app.ico` is committed, so an ordinary build never regenerates it. Run
@@ -919,8 +925,8 @@ Builds the app, then writes two things to `dist\`:
 
 | | For |
 |---|---|
-| `MacroDeck-<version>.zip` | Anyone who'd rather keep it portable. Contains the exe, the README, the licence and an `INSTALL.txt` written for a non-technical reader. |
-| `MacroDeck-Setup-<version>.exe` | Everyone else. Per-user install to `%LOCALAPPDATA%\Programs\MacroDeck`, Start Menu shortcut, uninstaller, and a "Run MacroDeck when I sign in" tick box. |
+| `DentalMacros-<version>.zip` | Anyone who'd rather keep it portable. Contains the exe, the README, the licence and an `INSTALL.txt` written for a non-technical reader. |
+| `DentalMacros-Setup-<version>.exe` | Everyone else. Per-user install to `%LOCALAPPDATA%\Programs\Dental Macros`, Start Menu shortcut, uninstaller, and a "Run Dental Macros when I sign in" tick box. |
 
 The installer needs [Inno Setup](https://jrsoftware.org/isinfo.php)
 (`winget install JRSoftware.InnoSetup`); without it `package.bat` still
@@ -929,7 +935,7 @@ produces the zip and says so.
 The version comes from `FileVersion` in `src\app.rc` — that is the only place
 to change it.
 
-**Why a per-user install and not Program Files:** MacroDeck keeps
+**Why a per-user install and not Program Files:** Dental Macros keeps
 `macros.json`, `backups\`, `layouts\` and snipped images next to its own
 executable, so it has to live somewhere the signed-in user can write.
 Installing under `%LOCALAPPDATA%` also means no admin prompt. Uninstalling
@@ -938,58 +944,100 @@ them.
 
 ### Signing
 
-`package.bat` signs nothing unless you point it at a certificate, and warns
-you when it hasn't. Set one of:
+**Official releases are signed by CI, never on a developer's PC.** Pushing a
+`v*` tag runs [`.github/workflows/release.yml`](.github/workflows/release.yml)
+on a GitHub-hosted runner. It runs the tests, builds `DentalMacros.exe`, has it
+and the installer's setup engine signed through SignPath, packages the zip and
+the installer around them, has the installer signed as well, and attaches all
+of it to a **draft** release for you to check and publish. Each of the two
+signing requests waits for an approver to accept it in SignPath, so a release
+cannot be signed without someone saying yes. Until the SignPath settings the
+workflow describes exist, it runs the same way unsigned, which is a useful
+check of the build itself.
+
+`package.bat` on your own machine signs nothing unless you point it at a
+certificate, and warns you when it hasn't. That is only for copies you build
+and run yourself — on a PC with Smart App Control on, an unsigned local build
+may not start at all. Set one of:
 
 ```bash
-set MACRODECK_SIGN_PFX=C:\path\to\cert.pfx
-set MACRODECK_SIGN_PASS=...
+set DENTALMACROS_SIGN_PFX=C:\path\to\cert.pfx
+set DENTALMACROS_SIGN_PASS=...
 
 rem or, for a hardware token or a cloud signing service, a command that
 rem takes the file to sign as its only argument:
-set MACRODECK_SIGN_CMD=powershell -File packaging\sign.ps1
+set DENTALMACROS_SIGN_CMD=powershell -File packaging\sign.ps1
 ```
 
-Both the exe and the installer get signed, and both are timestamped so the
-signature outlives the certificate. A signing command that fails stops
-packaging outright rather than quietly producing an unsigned release.
+`packaging\sign.ps1` drives
+[Azure Artifact Signing](https://azure.microsoft.com/en-us/products/artifact-signing);
+its header has the setup. A signing command that fails stops packaging
+outright rather than quietly producing an unsigned build.
 
-This matters more than the packaging does. Unsigned, everyone you send this to
-meets SmartScreen's *"Windows protected your PC"* box and has to click
-**More info → Run anyway**, and Smart App Control may refuse the file outright.
-A macro tool that installs a low-level keyboard hook is also exactly the shape
-antivirus heuristics flag.
+`package.bat --prebuilt` skips the build and packages whatever
+`build\DentalMacros.exe` already is. CI uses it to package the exe that has just
+come back signed; there is little reason to use it by hand.
 
-**Getting a certificate.** Since 2023 code-signing keys have to live on
-FIPS-validated hardware, so a traditional certificate means a physical USB
-token in the post. [Azure Artifact Signing](https://azure.microsoft.com/en-us/products/artifact-signing)
-(formerly Trusted Signing) avoids that — roughly $10/month, no token, and
-there is an individual-developer path if you aren't signing as a registered
-company. `packaging\sign.ps1` is ready to drive it: set
-`TRUSTED_SIGNING_ENDPOINT`, `TRUSTED_SIGNING_ACCOUNT` and
-`TRUSTED_SIGNING_PROFILE`, give it Azure credentials, and point
-`MACRODECK_SIGN_CMD` at it. The script's own header has the full setup.
+**The setup engine is signed separately.** An Inno Setup installer unpacks a
+second program into `%TEMP%` and runs that — the setup engine, which is also
+the uninstaller. Signing the finished installer does not sign it, and Smart App
+Control blocks an unsigned engine whenever Microsoft's cloud has no verdict on
+that exact file, which for a new build is often: the signed installers up to
+MacroDeck 0.9.2 can be refused for exactly this reason. So any signed build
+turns on Inno Setup's `SignedUninstaller`. The first compile for each new
+version writes the engine to `build\signed-engine\` and stops; once that
+file is signed, every compile embeds the signature. Locally `package.bat`
+does both compiles and signs the engine in between; in CI the engine goes
+to SignPath in the same request as the exe (`package.bat --engine-only`, then
+`--signed-engine`), so it costs no extra approval.
 
-**Don't buy EV expecting instant trust.** Microsoft's
+Signing does **not** silence SmartScreen on day one — reputation accrues with
+download volume, and Microsoft's
 [SmartScreen documentation](https://learn.microsoft.com/en-us/windows/apps/package-and-deploy/smartscreen-reputation)
-is explicit that EV certificates no longer grant reputation by default, and
-that "paying a premium for EV solely to avoid SmartScreen warnings is no
-longer justified." Signing of any kind does **not** silence SmartScreen on day
-one; reputation accrues with download volume. What signing buys is a named
-publisher, and reputation that carries from one release to the next instead of
-resetting on every rebuild.
+is explicit that EV certificates no longer grant it by default. What signing
+buys is a named publisher, and reputation that carries from one release to the
+next instead of resetting on every rebuild.
 
 ---
 
-## Disclaimer and release of liability
+## Code signing policy
 
-**MacroDeck is provided "as is", with no warranty of any kind, and you use it
-entirely at your own risk.** The governing text is in [LICENSE](LICENSE) —
-sections 4 to 6 are the warranty disclaimer, the assumption of risk and
-release of liability, and the limitation of liability. Those control; the
-summary below is only a plain-language guide to them.
+Free code signing provided by [SignPath.io](https://about.signpath.io),
+certificate by [SignPath Foundation](https://signpath.org).
 
-- **It types and clicks for you.** MacroDeck sends synthetic keystrokes and
+Windows shows the publisher of a signed release as **SignPath Foundation**.
+Only the files attached to a
+[GitHub release](https://github.com/SMEdevelop/DentalMacros/releases) are signed,
+and only after they have been built from the tagged commit by the release
+workflow on a GitHub-hosted runner. Anything you build yourself with
+`build.bat` or `package.bat` is outside this policy.
+
+**Team roles**
+
+- Committers and reviewers: [SMEdevelop](https://github.com/SMEdevelop)
+- Approvers: [SMEdevelop](https://github.com/SMEdevelop)
+
+Changes from anyone else arrive as pull requests and are reviewed by a
+committer before they are merged.
+
+**Privacy policy**
+
+This program will not transfer any information to other networked systems
+unless specifically requested by the user or the person installing or
+operating it. Dental Macros contains no network code: no telemetry, no update
+checks, no accounts. The only traffic it can cause is from programs and
+commands you set your own macros to launch.
+
+---
+
+## Disclaimer
+
+**Dental Macros is provided "as is", with no warranty of any kind, and you use it
+entirely at your own risk.** The governing text is the MIT License in
+[LICENSE](LICENSE); the summary below is only a plain-language guide to what
+that means for a program like this one.
+
+- **It types and clicks for you.** Dental Macros sends synthetic keystrokes and
   mouse input into whatever window happens to have focus, and runs whatever
   programs and commands you tell it to. A macro pointed at the wrong window,
   or fired by accident, can overwrite work, send messages, or delete things.
@@ -1003,24 +1051,17 @@ summary below is only a plain-language guide to them.
   games, exam and interview platforms, and workplace systems prohibit input
   automation, and some treat it as grounds for a ban or disciplinary action.
   Check before you point this at anything that isn't yours.
-- **The Author is not liable** for any claim, damages, data loss, or other
+- **The authors are not liable** for any claim, damages, data loss, or other
   liability arising from the software or its use — including anything that
   follows from a third party suspending or closing your accounts.
-
-By installing or using MacroDeck you accept [LICENSE](LICENSE) in full.
-Nothing here is legal advice; if you intend to sell or commercially
-distribute this, have a lawyer review the terms first.
 
 ---
 
 ## Licence
 
-**Proprietary. Copyright © 2026 SMEdevelop. All rights reserved.**
+Dental Macros is open source under the [MIT License](LICENSE).
+Copyright © 2026 SMEdevelop.
 
-This is *not* open-source software. [LICENSE](LICENSE) grants you a personal,
-revocable licence to install and run MacroDeck on devices you own or control,
-and nothing further. Redistributing it, selling it, modifying it, or reverse
-engineering it needs written permission.
-
-The source being readable does not make it reusable — no part of this
-repository may be copied into another project without permission.
+You may use, copy, modify, merge, publish, distribute, sublicense and sell it,
+in other projects and commercially, provided the copyright notice and the
+licence text travel with it.

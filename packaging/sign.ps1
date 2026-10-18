@@ -4,17 +4,17 @@
 #
 # Wired into package.bat by setting, before you run it:
 #
-#     set MACRODECK_SIGN_CMD=powershell -File packaging\sign.ps1
+#     set DENTALMACROS_SIGN_CMD=powershell -File packaging\sign.ps1
 #
 # package.bat then calls this once per file it produces (the exe, then the
 # installer), passing the file as the one argument. Anything non-zero coming
 # back stops packaging, so a failed signature can never end up in a release.
 #
 # A plain .pfx does NOT need this script - package.bat signs those itself via
-# MACRODECK_SIGN_PFX. This exists for the cloud service, where the private key
+# DENTALMACROS_SIGN_PFX. This exists for the cloud service, where the private key
 # never comes near this machine.
 #
-# NOTE: a near-identical copy lives in the Dental Flow project. Nothing links
+# NOTE: a near-identical copy lives in the Dental Comms project. Nothing links
 # them, so a fix here needs applying there too.
 #
 # ---------------------------------------------------------------------------

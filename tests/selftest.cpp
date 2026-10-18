@@ -1,4 +1,4 @@
-// MacroDeck self-test.
+// Dental Macros self-test.
 //
 // Exercises every non-UI subsystem against the real machine: JSON, the config
 // model, the macrokb YAML importer, key tables, deck presets, window
@@ -1033,7 +1033,7 @@ static void testEngine() {
 // actually goes back.
 namespace {
 
-const wchar_t* kTestWndClass = L"MacroDeckSelfTestWindow";
+const wchar_t* kTestWndClass = L"DentalMacrosSelfTestWindow";
 
 void pump(int ms) {
     const DWORD until = GetTickCount() + (DWORD)ms;
@@ -1060,7 +1060,7 @@ HWND makeTestWindow() {
         if (!RegisterClassExW(&wc)) return nullptr;
         registered = true;
     }
-    HWND h = CreateWindowExW(0, kTestWndClass, L"MacroDeck self-test window",
+    HWND h = CreateWindowExW(0, kTestWndClass, L"Dental Macros self-test window",
                              WS_OVERLAPPEDWINDOW, 100, 100, 400, 300, nullptr,
                              nullptr, GetModuleHandleW(nullptr), nullptr);
     if (h) {
@@ -2074,7 +2074,7 @@ static void testBluetoothKeypads() {
 
 int main(int argc, char** argv) {
     setvbuf(stdout, nullptr, _IONBF, 0);
-    std::printf("MacroDeck self-test\n");
+    std::printf("Dental Macros self-test\n");
     std::printf("exe folder: %s\n", exeDir().c_str());
 
     std::string yaml = argc > 1 ? argv[1] : "";

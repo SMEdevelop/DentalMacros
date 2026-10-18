@@ -1,0 +1,243 @@
+# Builds Dental Macros on a GitHub-hosted runner, has it signed through SignPath
+# Foundation, and attaches the result to a DRAFT GitHub release.
+#
+#   git tag v0.9.3-beta && git push origin v0.9.3-beta
+#
+# The tag has to match the version package.bat derives from src\app.rc (plus
+# its PRERELEASE marker), or the run stops before anything is signed.
+#
+# Run it by hand from the Actions tab to check the build without releasing:
+# that run is never signed, and its files are on the run's summary page.
+#
+# Signing is switched off until these exist under Settings -> Secrets and
+# variables -> Actions:
+#
+#   variable  SIGNPATH_ORGANIZATION_ID   the organization id SignPath shows
+#   secret    SIGNPATH_API_TOKEN         API token of a SignPath CI user with
+#                                        the Submitter role on the project
+#
+# and SignPath has a project with the slug "DentalMacros", linked to the
+# predefined "GitHub.com" trusted build system, with a "release-signing"
+# signing policy and the two artifact configurations in packaging\signpath\.
+#
+# Every signing request waits for an approver in SignPath, so a tagged run
+# sits at each "Sign" step until someone approves it there (up to an hour
+# each). There are two:
+#
+#   1. DentalMacros.exe together with the installer's setup engine - the
+#      program an Inno Setup installer unpacks to %TEMP% and runs, which
+#      Smart App Control blocks unless it carries its own signature (see
+#      "the setup engine" in package.bat)
+#   2. the installer, built around both of those
+
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write   # create the draft release
+  actions: read     # lets SignPath fetch the uploaded artifacts
+
+jobs:
+  release:
+    runs-on: windows-2025
+    timeout-minutes: 150
+    env:
+      SIGN: ${{ vars.SIGNPATH_ORGANIZATION_ID != '' && github.ref_type == 'tag' }}
+
+    steps:
+      - uses: actions/checkout@v5
+
+      # Read the version the same way package.bat will, and check the tag
+      # against it now - before anything is sent off to be signed.
+      - name: Version
+        id: version
+        shell: pwsh
+        run: |
+          $rc = Get-Content src/app.rc -Raw
+          if ($rc -notmatch 'VALUE "FileVersion",\s*"(\d+)\.(\d+)\.(\d+)') {
+            throw 'Could not read FileVersion out of src\app.rc'
+          }
+          $version = "$($Matches[1]).$($Matches[2]).$($Matches[3])"
+          $pkg = Get-Content package.bat -Raw
+          if ($pkg -match '(?m)^set "PRERELEASE=([^"]*)"' -and $Matches[1]) {
+            $version += "-$($Matches[1])"
+          }
+          if ($env:GITHUB_REF_TYPE -eq 'tag' -and $env:GITHUB_REF_NAME -ne "v$version") {
+            throw "Tag $env:GITHUB_REF_NAME does not match the source, which is version $version. Tag it v$version."
+          }
+          "version=$version" >> $env:GITHUB_OUTPUT
+          "Version $version, signing: $env:SIGN"
+
+      - name: Test
+        shell: cmd
+        run: run_tests.bat
+
+      - name: Build
+        shell: cmd
+        run: build.bat
+
+      # Not every runner image carries Inno Setup, and package.bat quietly
+      # skips the installer without it - fine on a PC, wrong for a release.
+      - name: Inno Setup
+        shell: pwsh
+        run: |
+          $find = {
+            Get-ChildItem "${env:ProgramFiles(x86)}\Inno Setup*\ISCC.exe", "$env:ProgramFiles\Inno Setup*\ISCC.exe" -ErrorAction SilentlyContinue |
+              Select-Object -First 1
+          }
+          $iscc = & $find
+          if (-not $iscc) {
+            choco install innosetup --no-progress -y
+            if ($LASTEXITCODE) { exit $LASTEXITCODE }
+            $iscc = & $find
+          }
+          if (-not $iscc) { throw 'Inno Setup is not installed and could not be installed' }
+          "Inno Setup: $($iscc.FullName)"
+          $iscc.DirectoryName | Out-File $env:GITHUB_PATH -Append -Encoding utf8
+
+      - name: Write out the setup engine for signing
+        if: env.SIGN == 'true'
+        shell: cmd
+        run: package.bat --engine-only
+
+      # One artifact for both, so they cost one approval. The engine travels
+      # as setup-engine.exe: Inno Setup names it uninst-<version>-<hash>.e32,
+      # and .e32 is not an extension SignPath lists for PE files.
+      - name: Stage the exe and setup engine
+        id: stage
+        if: env.SIGN == 'true'
+        shell: pwsh
+        run: |
+          $engine = @(Get-ChildItem build/signed-engine/*.e32)
+          if ($engine.Count -ne 1) { throw "Expected one setup engine in build\signed-engine, found $($engine.Count)" }
+          New-Item -ItemType Directory tosign -Force | Out-Null
+          Copy-Item build/DentalMacros.exe tosign/DentalMacros.exe
+          Copy-Item $engine[0].FullName tosign/setup-engine.exe
+          "engine=$($engine[0].Name)" >> $env:GITHUB_OUTPUT
+
+      - name: Upload the exe and setup engine for signing
+        id: upload-exe
+        if: env.SIGN == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: unsigned-exe
+          path: tosign/
+          if-no-files-found: error
+
+      - name: Sign the exe and setup engine
+        if: env.SIGN == 'true'
+        uses: signpath/github-action-submit-signing-request@v3
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: DentalMacros
+          signing-policy-slug: release-signing
+          artifact-configuration-slug: exe
+          github-artifact-id: ${{ steps.upload-exe.outputs.artifact-id }}
+          wait-for-completion: true
+          wait-for-completion-timeout-in-seconds: 3600
+          output-artifact-directory: signed/exe
+
+      - name: Put the signed exe and setup engine in place
+        if: env.SIGN == 'true'
+        shell: pwsh
+        env:
+          ENGINE: ${{ steps.stage.outputs.engine }}
+        run: |
+          Copy-Item signed/exe/DentalMacros.exe build/DentalMacros.exe -Force
+          Copy-Item signed/exe/setup-engine.exe "build/signed-engine/$env:ENGINE" -Force
+
+      # --signed-engine builds the installer around the engine signed above,
+      # and fails rather than shipping one whose engine is unsigned.
+      - name: Package
+        shell: cmd
+        env:
+          ENGINE: ${{ env.SIGN == 'true' && '--signed-engine' || '' }}
+        run: package.bat --prebuilt %ENGINE%
+
+      - name: Check the package
+        shell: pwsh
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          foreach ($f in "dist/DentalMacros-$env:VERSION.zip",
+                         "dist/DentalMacros-$env:VERSION-source.zip",
+                         "dist/DentalMacros-Setup-$env:VERSION.exe") {
+            if (-not (Test-Path $f)) { throw "package.bat did not produce $f" }
+          }
+
+      - name: Upload the installer for signing
+        id: upload-installer
+        if: env.SIGN == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: unsigned-installer
+          path: dist/DentalMacros-Setup-${{ steps.version.outputs.version }}.exe
+          if-no-files-found: error
+
+      - name: Sign the installer
+        if: env.SIGN == 'true'
+        uses: signpath/github-action-submit-signing-request@v3
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: DentalMacros
+          signing-policy-slug: release-signing
+          artifact-configuration-slug: installer
+          github-artifact-id: ${{ steps.upload-installer.outputs.artifact-id }}
+          wait-for-completion: true
+          wait-for-completion-timeout-in-seconds: 3600
+          output-artifact-directory: signed/installer
+
+      - name: Put the signed installer in place, and check every signature
+        if: env.SIGN == 'true'
+        shell: pwsh
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          $setup = "DentalMacros-Setup-$env:VERSION.exe"
+          Copy-Item "signed/installer/$setup" "dist/$setup" -Force
+          $engines = (Get-ChildItem build/signed-engine/*.e32).FullName
+          foreach ($f in @('build/DentalMacros.exe', "dist/$setup") + $engines) {
+            $sig = Get-AuthenticodeSignature $f
+            if ($sig.Status -ne 'Valid') { throw "$f is not validly signed: $($sig.Status) $($sig.StatusMessage)" }
+            "$f - signed by $($sig.SignerCertificate.Subject)"
+          }
+
+      - name: Keep the files with this run
+        uses: actions/upload-artifact@v7
+        with:
+          name: DentalMacros-${{ steps.version.outputs.version }}
+          path: |
+            dist/*.zip
+            dist/*.exe
+          if-no-files-found: error
+
+      - name: Draft the release
+        if: github.ref_type == 'tag'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          $tag = $env:GITHUB_REF_NAME
+          $files = (Get-ChildItem dist/*.zip, dist/*.exe).FullName
+          if ($env:SIGN -eq 'true') {
+            $signing = 'Free code signing provided by [SignPath.io](https://about.signpath.io), certificate by [SignPath Foundation](https://signpath.org). See the [code signing policy](https://github.com/SMEdevelop/DentalMacros#code-signing-policy).'
+          } else {
+            $signing = '**These files are not signed.** See the [code signing policy](https://github.com/SMEdevelop/DentalMacros#code-signing-policy).'
+          }
+          Set-Content notes.md "_Release notes go here._`n`n---`n`n$signing"
+          gh release view $tag *> $null
+          if ($LASTEXITCODE -eq 0) {
+            gh release upload $tag @files --clobber
+          } else {
+            $extra = @()
+            if ($env:VERSION -like '*-*') { $extra += '--prerelease' }
+            gh release create $tag @files --draft @extra --title "Dental Macros $env:VERSION" --notes-file notes.md
+          }
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }

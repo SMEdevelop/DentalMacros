@@ -7,7 +7,7 @@
 //
 // Every key event on every device prints one line. A press that matches a
 // deck says so, and a press that has a macro says that too, which is exactly
-// the difference between "MacroDeck never saw it" and "MacroDeck saw it and
+// the difference between "Dental Macros never saw it" and "Dental Macros saw it and
 // had nothing bound to it".
 #include <windows.h>
 

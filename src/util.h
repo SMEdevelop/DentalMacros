@@ -16,7 +16,7 @@ std::string replaceAll(std::string s, const std::string& from, const std::string
 
 // Paths are all resolved relative to the folder holding the .exe so the app
 // behaves the same however it was launched (shortcut, Explorer, console).
-std::string exePath();            // full path to MacroDeck.exe
+std::string exePath();            // full path to DentalMacros.exe
 std::string exeDir();
 std::string appPath(const std::string& relative);
 std::string joinPath(const std::string& a, const std::string& b);
@@ -40,10 +40,15 @@ bool deleteFile(const std::string& path);
 std::string freeBackupPath(const std::string& path);
 std::vector<std::string> listFiles(const std::string& dir, const std::string& ext);
 
-// Launch MacroDeck at sign-in (HKCU ...\Run). Reading never throws; writing
+// Launch Dental Macros at sign-in (HKCU ...\Run). Reading never throws; writing
 // reports why it failed.
 bool runAtLoginEnabled();
 bool setRunAtLogin(bool on, std::string* error = nullptr);
+// Before the rename to Dental Macros, the Run entry was called "MacroDeck"
+// and started MacroDeck.exe. Moves such an entry for this folder's copy over
+// to the current name and exe. Called once at startup; does nothing at all
+// when there is no old entry.
+void migrateRunAtLogin();
 
 std::string timeStamp();          // "14:03:22"
 std::string dateStamp();          // "2026-08-09"

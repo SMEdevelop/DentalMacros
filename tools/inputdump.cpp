@@ -9,7 +9,7 @@
 // arrives on a collection of its own, sometimes on a vendor page that nothing
 // would guess.
 //
-// Nothing here is part of MacroDeck. It exists to answer "what does this
+// Nothing here is part of Dental Macros. It exists to answer "what does this
 // device actually send", which has to be settled before deciding where
 // support for it belongs.
 #include <windows.h>

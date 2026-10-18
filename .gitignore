@@ -10,7 +10,7 @@
 *.obj
 *.res
 
-# Settings and data MacroDeck writes next to its own executable at runtime.
+# Settings and data Dental Macros writes next to its own executable at runtime.
 # These belong to whoever is running it, not to the repository.
 macros.json
 macros.json.bak

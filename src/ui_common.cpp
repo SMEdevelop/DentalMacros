@@ -17,22 +17,22 @@
 namespace ui {
 namespace {
 
-const wchar_t* kModalClass = L"MacroDeckModal";
+const wchar_t* kModalClass = L"DentalMacrosModal";
 std::map<std::pair<int, bool>, HFONT> g_fonts;
 HBRUSH g_panelBrush = nullptr;
 HBRUSH g_inputBrush = nullptr;
 
 // Owner-drawn buttons remember whether they're the primary (accent) action.
-const wchar_t* kPropPrimary = L"MacroDeckPrimary";
-const wchar_t* kPropDim = L"MacroDeckDim";
+const wchar_t* kPropPrimary = L"DentalMacrosPrimary";
+const wchar_t* kPropDim = L"DentalMacrosDim";
 
 // Every control records the *design* size of its font (and, for lists and
 // combos, of its rows) so all of it can be rebuilt when the window moves to a
 // monitor with different scaling. Without this the fonts would be frozen at
 // whatever DPI the window happened to be created on.
-const wchar_t* kPropFontPx = L"MacroDeckFontPx";
-const wchar_t* kPropFontBold = L"MacroDeckFontBold";
-const wchar_t* kPropItemH = L"MacroDeckItemH";
+const wchar_t* kPropFontPx = L"DentalMacrosFontPx";
+const wchar_t* kPropFontBold = L"DentalMacrosFontBold";
+const wchar_t* kPropItemH = L"DentalMacrosItemH";
 
 void tagFont(HWND ctl, int sizePx, bool bold) {
     SetPropW(ctl, kPropFontPx, (HANDLE)(INT_PTR)sizePx);
@@ -126,8 +126,8 @@ HWND makeCheck(HWND parent, const std::string& text, int x, int y, int w, int h,
                              (HMENU)(INT_PTR)id, GetModuleHandleW(nullptr),
                              nullptr);
     tagFont(c, 14, false);
-    SetPropW(c, L"MacroDeckCheck", (HANDLE)1);
-    SetPropW(c, L"MacroDeckChecked", (HANDLE)(INT_PTR)(checked ? 1 : 0));
+    SetPropW(c, L"DentalMacrosCheck", (HANDLE)1);
+    SetPropW(c, L"DentalMacrosChecked", (HANDLE)(INT_PTR)(checked ? 1 : 0));
     return c;
 }
 
@@ -201,9 +201,9 @@ void rescaleControlFonts(HWND root) {
 // ----------------------------------------------------------- scrolling pane
 namespace {
 
-const wchar_t* kPaneClass = L"MacroDeckPane";
-const wchar_t* kPropContentH = L"MacroDeckContentH";   // device px
-const wchar_t* kPropScrollY = L"MacroDeckScrollY";     // device px, +1 encoded
+const wchar_t* kPaneClass = L"DentalMacrosPane";
+const wchar_t* kPropContentH = L"DentalMacrosContentH";   // device px
+const wchar_t* kPropScrollY = L"DentalMacrosScrollY";     // device px, +1 encoded
 
 int paneScrollY(HWND pane) {
     return (int)(INT_PTR)GetPropW(pane, kPropScrollY);
@@ -339,11 +339,11 @@ void setText(HWND ctl, const std::string& text) {
 }
 
 bool isChecked(HWND ctl) {
-    return GetPropW(ctl, L"MacroDeckChecked") != nullptr;
+    return GetPropW(ctl, L"DentalMacrosChecked") != nullptr;
 }
 
 void setChecked(HWND ctl, bool on) {
-    SetPropW(ctl, L"MacroDeckChecked", (HANDLE)(INT_PTR)(on ? 1 : 0));
+    SetPropW(ctl, L"DentalMacrosChecked", (HANDLE)(INT_PTR)(on ? 1 : 0));
     InvalidateRect(ctl, nullptr, TRUE);
 }
 
@@ -352,7 +352,7 @@ void setPrimary(HWND button, bool primary) {
 }
 
 void setTone(HWND button, Tone t) {
-    SetPropW(button, L"MacroDeckTone", (HANDLE)(INT_PTR)((int)t + 1));
+    SetPropW(button, L"DentalMacrosTone", (HANDLE)(INT_PTR)((int)t + 1));
     if (t == Tone::Primary) SetPropW(button, kPropPrimary, (HANDLE)1);
     else RemovePropW(button, kPropPrimary);
     InvalidateRect(button, nullptr, TRUE);
@@ -382,7 +382,7 @@ void drawRoundRectGdi(HDC hdc, RECT r, int radius, COLORREF fill,
 
 void drawOwnerButton(DRAWITEMSTRUCT* dis) {
     const Theme& t = theme();
-    bool isCheck = GetPropW(dis->hwndItem, L"MacroDeckCheck") != nullptr;
+    bool isCheck = GetPropW(dis->hwndItem, L"DentalMacrosCheck") != nullptr;
     bool primary = GetPropW(dis->hwndItem, kPropPrimary) != nullptr;
     bool disabled = (dis->itemState & ODS_DISABLED) != 0;
     bool pressed = (dis->itemState & ODS_SELECTED) != 0;
@@ -398,7 +398,7 @@ void drawOwnerButton(DRAWITEMSTRUCT* dis) {
 
     if (isCheck) {
         FillRect(dis->hDC, &r, panelBrush());
-        bool on = GetPropW(dis->hwndItem, L"MacroDeckChecked") != nullptr;
+        bool on = GetPropW(dis->hwndItem, L"DentalMacrosChecked") != nullptr;
         int boxSize = S(16);
         RECT box{r.left, r.top + (r.bottom - r.top - boxSize) / 2,
                  r.left + boxSize, r.top + (r.bottom - r.top + boxSize) / 2};
@@ -430,7 +430,7 @@ void drawOwnerButton(DRAWITEMSTRUCT* dis) {
         return;
     }
 
-    int toneRaw = (int)(INT_PTR)GetPropW(dis->hwndItem, L"MacroDeckTone");
+    int toneRaw = (int)(INT_PTR)GetPropW(dis->hwndItem, L"DentalMacrosTone");
     Tone tone = toneRaw > 0 ? (Tone)(toneRaw - 1)
                             : (primary ? Tone::Primary : Tone::Normal);
 
@@ -623,7 +623,7 @@ LRESULT CALLBACK Modal::wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             // owner-drawn checkboxes toggle themselves
             HWND ctl = (HWND)lp;
             if (ctl && notify == BN_CLICKED &&
-                GetPropW(ctl, L"MacroDeckCheck") != nullptr)
+                GetPropW(ctl, L"DentalMacrosCheck") != nullptr)
                 setChecked(ctl, !isChecked(ctl));
             if (id == ID_OK && notify == BN_CLICKED) {
                 if (self->onOk()) self->close(true);

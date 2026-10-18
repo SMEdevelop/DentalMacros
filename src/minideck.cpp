@@ -15,7 +15,7 @@ using namespace Gdiplus;
 namespace ui {
 namespace {
 
-constexpr wchar_t kClassName[] = L"MacroDeckMini";
+constexpr wchar_t kClassName[] = L"DentalMacrosMini";
 
 // Design-pixel metrics. Deliberately tight - the whole point is a window that
 // takes up less room than the icons already on the desktop.
@@ -144,7 +144,7 @@ bool MiniDeck::ensureWindow(HINSTANCE inst) {
     // 200-pixel launcher has no business turning up.
     hwnd_ = CreateWindowExW(
         WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, kClassName,
-        L"MacroDeck buttons", WS_POPUP, 0, 0, 10, 10, nullptr, nullptr, inst,
+        L"Dental Macros buttons", WS_POPUP, 0, 0, 10, 10, nullptr, nullptr, inst,
         this);
     if (!hwnd_) return false;
 
@@ -497,7 +497,7 @@ void MiniDeck::contextMenu(POINT screenPt) {
     }
     AppendMenuW(m, MF_POPUP, (UINT_PTR)cols, L"Buttons per row");
     AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
-    AppendMenuW(m, MF_STRING, IDM_MINI_OPEN, L"Open MacroDeck");
+    AppendMenuW(m, MF_STRING, IDM_MINI_OPEN, L"Open Dental Macros");
     AppendMenuW(m, MF_STRING, IDM_MINI_HIDE, L"Hide these buttons");
 
     // A menu put up by a window that never takes focus needs the foreground

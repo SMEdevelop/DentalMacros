@@ -459,7 +459,7 @@ bool MainWindow::create(HINSTANCE inst, int showCmd) {
     wc.cbSize = sizeof(wc);
     wc.lpfnWndProc = &MainWindow::wndProc;
     wc.hInstance = inst;
-    wc.lpszClassName = L"MacroDeckMain";
+    wc.lpszClassName = L"DentalMacrosMain";
     wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
     wc.hIcon = icon_;
     wc.hIconSm = iconSm_;
@@ -476,7 +476,7 @@ bool MainWindow::create(HINSTANCE inst, int showCmd) {
 
     // WS_EX_CONTROLPARENT so IsDialogMessage in the main loop will walk into
     // the child controls when the user presses Tab.
-    hwnd_ = CreateWindowExW(WS_EX_CONTROLPARENT, L"MacroDeckMain", L"MacroDeck",
+    hwnd_ = CreateWindowExW(WS_EX_CONTROLPARENT, L"DentalMacrosMain", L"Dental Macros",
                             WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN, sx, sy, w, h,
                             nullptr, nullptr, inst, this);
     if (!hwnd_) return false;
@@ -488,7 +488,7 @@ bool MainWindow::create(HINSTANCE inst, int showCmd) {
     if (startHidden && !addTray()) {
         startHidden = false;
         pushLog("Windows would not provide a notification-area icon, so "
-                "MacroDeck opened its window instead of starting minimised.");
+                "Dental Macros opened its window instead of starting minimised.");
     }
     ShowWindow(hwnd_, startHidden ? SW_HIDE : showCmd);
     UpdateWindow(hwnd_);
@@ -614,7 +614,7 @@ void MainWindow::reportLoadProblems() {
         pushLog("macros.json: " + w);
 
     if (config_.loadError.empty()) {
-        pushLog(config_.keyboards.empty() ? "MacroDeck ready."
+        pushLog(config_.keyboards.empty() ? "Dental Macros ready."
                                           : "Loaded macros.json.");
         return;
     }
@@ -622,7 +622,7 @@ void MainWindow::reportLoadProblems() {
     pushLog("Could not read macros.json: " + config_.loadError);
     showMessage(hwnd_, "Configuration problem",
                 "macros.json could not be read:\n\n" + config_.loadError +
-                    "\n\nMacroDeck opened with an empty setup and has not "
+                    "\n\nDental Macros opened with an empty setup and has not "
                     "touched your file. Fix or move it and choose "
                     "More > Reload macros.json.\n\nIf you save anything before "
                     "then, the file you have now is copied to macros.json.bak "
@@ -1006,7 +1006,7 @@ void MainWindow::paintToolbar(Graphics& g) {
     }
 
     RectF title((REAL)S(kPad + 44), (REAL)S(12), (REAL)S(260), (REAL)S(20));
-    drawText(g, L"MacroDeck", title, 16, theme().text, Align::Left, true);
+    drawText(g, L"Dental Macros", title, 16, theme().text, Align::Left, true);
 
     // Stop the status line before the buttons rather than at a fixed width -
     // the listen button changes size with its label.
@@ -1207,7 +1207,7 @@ void MainWindow::paintWelcome(Graphics& g) {
                    (REAL)S(26)),
              17, theme().text, Align::Center, true);
     drawText(g,
-             L"MacroDeck can tell your keyboards apart, so a spare keyboard or "
+             L"Dental Macros can tell your keyboards apart, so a spare keyboard or "
              L"numpad can run macros while you keep typing normally on your "
              L"main one.",
              RectF((REAL)(cx - S(200)), (REAL)(cy - S(4)), (REAL)S(400),
@@ -1612,7 +1612,7 @@ void MainWindow::addMouse() {
     if (config_.pointerCount <= 1)
         pushLog(
             "  It is the only pointer attached, so left click stays yours - "
-            "MacroDeck will not take it however this deck is configured.");
+            "Dental Macros will not take it however this deck is configured.");
     layout();
 }
 
@@ -2043,7 +2043,7 @@ void MainWindow::importYaml() {
     if (!askYesNo(hwnd_, "Import",
                   "Found " + std::to_string(imported.keyboards.size()) +
                       " keyboard(s) and " + std::to_string(keys) +
-                      " macro(s).\n\nAdd them to MacroDeck?"))
+                      " macro(s).\n\nAdd them to Dental Macros?"))
         return;
 
     for (auto& kb : imported.keyboards) {
@@ -2112,14 +2112,14 @@ void MainWindow::reloadConfig() {
 }
 
 void MainWindow::exportConfig() {
-    std::wstring initial = W("macrodeck-" + dateStamp() + ".json");
+    std::wstring initial = W("dentalmacros-" + dateStamp() + ".json");
     std::vector<wchar_t> file(MAX_PATH * 2, L'\0');
     wcsncpy(file.data(), initial.c_str(), file.size() - 1);
 
     OPENFILENAMEW ofn{};
     ofn.lStructSize = sizeof(ofn);
     ofn.hwndOwner = hwnd_;
-    ofn.lpstrFilter = L"MacroDeck settings\0*.json\0All files\0*.*\0";
+    ofn.lpstrFilter = L"Dental Macros settings\0*.json\0All files\0*.*\0";
     ofn.lpstrFile = file.data();
     ofn.nMaxFile = (DWORD)file.size();
     ofn.lpstrDefExt = L"json";
@@ -2146,7 +2146,7 @@ void MainWindow::backupNow() {
     } else {
         showMessage(hwnd_, "Already backed up",
                     "Today's backup already exists in the backups folder next "
-                    "to MacroDeck. Use \"Export a copy\" for a second one.");
+                    "to Dental Macros. Use \"Export a copy\" for a second one.");
     }
 }
 
@@ -2461,7 +2461,7 @@ void MainWindow::drainPageRequests() {
 void MainWindow::onForegroundChanged(HWND fg) {
     if (!config_.settings.switchPageWithApp || !fg) return;
 
-    // MacroDeck's own windows are not an application change. Editing a deck
+    // Dental Macros's own windows are not an application change. Editing a deck
     // would otherwise count as leaving whatever you were working in, and the
     // page would move the moment you came here to look at it.
     DWORD pid = 0;
@@ -2555,9 +2555,9 @@ void MainWindow::showMenu() {
     AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(m, MF_STRING, IDM_BACKUP, L"Back up settings now");
     AppendMenuW(m, MF_STRING, IDM_EXPORT, L"Export a copy...");
-    AppendMenuW(m, MF_STRING, IDM_OPEN_FOLDER, L"Open the MacroDeck folder");
+    AppendMenuW(m, MF_STRING, IDM_OPEN_FOLDER, L"Open the Dental Macros folder");
     AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
-    AppendMenuW(m, MF_STRING, IDM_ABOUT, L"About MacroDeck");
+    AppendMenuW(m, MF_STRING, IDM_ABOUT, L"About Dental Macros");
     AppendMenuW(m, MF_STRING, IDM_EXIT, L"Exit");
 
     RECT r;
@@ -2844,7 +2844,7 @@ void MainWindow::refreshMiniDeck() {
         }
     }
     mini_.setPage(page);
-    mini_.setButtons(kb ? kb->alias : std::string("MacroDeck"), std::move(out));
+    mini_.setButtons(kb ? kb->alias : std::string("Dental Macros"), std::move(out));
 }
 
 void MainWindow::runBindingByKey(const std::string& key) {
@@ -2898,7 +2898,7 @@ bool MainWindow::addTray() {
     nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
     nid.uCallbackMessage = WM_APP_TRAY;
     nid.hIcon = iconSm_ ? iconSm_ : icon_;
-    wcsncpy(nid.szTip, L"MacroDeck", 127);
+    wcsncpy(nid.szTip, L"Dental Macros", 127);
     trayAdded_ = Shell_NotifyIconW(NIM_ADD, &nid) != FALSE;
     return trayAdded_;
 }
@@ -2922,7 +2922,7 @@ void MainWindow::showWindowAgain() {
 
 void MainWindow::trayMenu() {
     HMENU m = CreatePopupMenu();
-    AppendMenuW(m, MF_STRING, IDM_TRAY_SHOW, L"Open MacroDeck");
+    AppendMenuW(m, MF_STRING, IDM_TRAY_SHOW, L"Open Dental Macros");
     AppendMenuW(m, MF_STRING, IDM_TRAY_TOGGLE,
                 engine_.running() ? L"Stop listening" : L"Start listening");
     AppendMenuW(m, MF_STRING | (mini_.visible() ? MF_CHECKED : 0), IDM_TRAY_MINI,
@@ -2948,7 +2948,7 @@ bool MainWindow::confirmExit() {
         // solely through Task Manager.
         if (!addTray()) {
             showMessage(hwnd_, "No notification-area icon",
-                        "Windows would not give MacroDeck an icon in the "
+                        "Windows would not give Dental Macros an icon in the "
                         "notification area, so closing the window would leave "
                         "it running with no way back.\n\nExiting instead.",
                         true);
@@ -3383,8 +3383,8 @@ LRESULT CALLBACK MainWindow::wndProc(HWND hwnd, UINT msg, WPARAM wp,
                     return 0;
                 case IDM_ABOUT:
                     showMessage(
-                        hwnd, "About MacroDeck",
-                        "MacroDeck - a per-keyboard macro deck for Windows.\n\n"
+                        hwnd, "About Dental Macros",
+                        "Dental Macros - a per-keyboard macro deck for Windows.\n\n"
                         "Because Windows Raw Input reports which physical "
                         "keyboard each keystroke came from, a spare keyboard "
                         "or numpad can be dedicated entirely to macros while "
@@ -3423,8 +3423,8 @@ int runApp(HINSTANCE inst, int showCmd) {
 
     MainWindow win;
     if (!win.create(inst, showCmd)) {
-        MessageBoxW(nullptr, L"MacroDeck could not create its window.",
-                    L"MacroDeck", MB_ICONERROR);
+        MessageBoxW(nullptr, L"Dental Macros could not create its window.",
+                    L"Dental Macros", MB_ICONERROR);
         return 1;
     }
 

@@ -86,7 +86,7 @@ bool isMouseVk(int vk);
 int vkForHidButton(int n);
 // True for the button Windows treats as "primary" - the one that is usually
 // left-click, and the one that must stay clickable on a machine with a single
-// pointer or there is no way left to turn MacroDeck off.
+// pointer or there is no way left to turn Dental Macros off.
 bool isPrimaryButtonVk(int vk);
 
 // The virtual key Raw Input reports for a key the low-level hook reports as

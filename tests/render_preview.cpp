@@ -1,4 +1,4 @@
-// Renders MacroDeck's custom-drawn UI pieces to a PNG.
+// Renders Dental Macros's custom-drawn UI pieces to a PNG.
 //
 // The app itself imports the low-level keyboard hook, which Windows Smart App
 // Control blocks for unsigned binaries - so this tool exists to exercise and
@@ -93,7 +93,7 @@ int main() {
         SolidBrush bg(theme().bg);
         g.FillRectangle(&bg, 0, 0, W, H);
 
-        drawText(g, L"MacroDeck - drawing preview", RectF(24, 18, 600, 30), 20,
+        drawText(g, L"Dental Macros - drawing preview", RectF(24, 18, 600, 30), 20,
                  theme().text, Align::Left, true);
         drawText(g,
                  L"Every icon below is drawn with vector primitives - no icon "

@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  SignPath artifact configuration "installer": signs DentalMacros-Setup-*.exe.
+
+  Paste into the SignPath project as slug "installer" - see exe.xml. The exe
+  inside the installer was signed by the "exe" request before Inno Setup
+  packed it; SignPath cannot open an Inno Setup installer, so the installer
+  is a second, separate request.
+-->
+<artifact-configuration xmlns="http://signpath.io/artifact-configuration/v1">
+  <zip-file>
+    <pe-file path="DentalMacros-Setup-*.exe" product-name="Dental Macros">
+      <authenticode-sign/>
+    </pe-file>
+  </zip-file>
+</artifact-configuration>

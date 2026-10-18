@@ -142,7 +142,7 @@ const std::vector<ActionDef>& actionDefs() {
           {"block_input", "Block my keyboard and mouse while it runs",
            FieldKind::Bool, "true", false, "",
            "Stops a stray movement derailing the sequence. Windows only "
-           "permits this when MacroDeck runs as administrator."}}},
+           "permits this when Dental Macros runs as administrator."}}},
 
         {"window_release", "Release the locked window", "Windows",
          "Puts the window back where it was before \"Lock a window in place\" "

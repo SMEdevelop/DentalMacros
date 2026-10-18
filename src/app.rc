@@ -29,12 +29,12 @@ BEGIN
         BLOCK "040904b0"
         BEGIN
             VALUE "CompanyName",     "SMEdevelop"
-            VALUE "FileDescription", "MacroDeck - per-keyboard macro deck"
+            VALUE "FileDescription", "Dental Macros - per-keyboard macro pad"
             VALUE "FileVersion",     "0.9.2.0"
-            VALUE "InternalName",    "MacroDeck"
-            VALUE "LegalCopyright",  "Copyright (c) 2026 SMEdevelop. All rights reserved."
-            VALUE "OriginalFilename","MacroDeck.exe"
-            VALUE "ProductName",     "MacroDeck"
+            VALUE "InternalName",    "DentalMacros"
+            VALUE "LegalCopyright",  "Copyright (c) 2026 SMEdevelop. MIT License."
+            VALUE "OriginalFilename","DentalMacros.exe"
+            VALUE "ProductName",     "Dental Macros"
             VALUE "ProductVersion",  "0.9.2.0 beta"
         END
     END

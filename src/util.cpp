@@ -244,7 +244,12 @@ std::vector<std::string> listFiles(const std::string& dir,
 namespace {
 const wchar_t* kRunKey =
     L"Software\\Microsoft\\Windows\\CurrentVersion\\Run";
-const wchar_t* kRunValue = L"MacroDeck";
+const wchar_t* kRunValue = L"DentalMacros";
+// What the entry was called before the rename to Dental Macros.
+const wchar_t* kOldRunValue = L"MacroDeck";
+
+// Quoted so a path containing spaces still launches.
+std::wstring runCommand() { return L"\"" + widen(exePath()) + L"\""; }
 }  // namespace
 
 bool runAtLoginEnabled() {
@@ -278,8 +283,7 @@ bool setRunAtLogin(bool on, std::string* error) {
         return false;
     }
     if (on) {
-        // Quoted so a path containing spaces still launches.
-        std::wstring cmd = L"\"" + widen(exePath()) + L"\"";
+        std::wstring cmd = runCommand();
         rc = RegSetValueExW(key, kRunValue, 0, REG_SZ, (const BYTE*)cmd.c_str(),
                             (DWORD)((cmd.size() + 1) * sizeof(wchar_t)));
     } else {
@@ -292,6 +296,32 @@ bool setRunAtLogin(bool on, std::string* error) {
         return false;
     }
     return true;
+}
+
+void migrateRunAtLogin() {
+    HKEY key = nullptr;
+    if (RegOpenKeyExW(HKEY_CURRENT_USER, kRunKey, 0, KEY_QUERY_VALUE | KEY_SET_VALUE,
+                      &key) != ERROR_SUCCESS)
+        return;
+    wchar_t val[MAX_PATH * 2];
+    DWORD sz = sizeof(val) - sizeof(wchar_t), type = 0;
+    if (RegQueryValueExW(key, kOldRunValue, nullptr, &type, (LPBYTE)val, &sz) ==
+            ERROR_SUCCESS &&
+        (type == REG_SZ || type == REG_EXPAND_SZ)) {
+        val[sz / sizeof(wchar_t)] = L'\0';
+        // Only an entry that started the copy in this folder is ours to move:
+        // the person upgraded this install and had run-at-sign-in on. One
+        // for a copy kept somewhere else is left alone. The trailing slash
+        // stops "...\MacroDeck" matching "...\MacroDeck2".
+        if (icontains(narrow(val), exeDir() + "\\")) {
+            std::wstring cmd = runCommand();
+            if (RegSetValueExW(key, kRunValue, 0, REG_SZ, (const BYTE*)cmd.c_str(),
+                               (DWORD)((cmd.size() + 1) * sizeof(wchar_t))) ==
+                ERROR_SUCCESS)
+                RegDeleteValueW(key, kOldRunValue);
+        }
+    }
+    RegCloseKey(key);
 }
 
 std::string timeStamp() {
