@@ -1,6 +1,6 @@
 # Feature roadmap: pages, per-app decks, and what the hardware pads do
 
-MacroDeck already has the hard part — a deck of tiles, a step engine, and
+Dental Macros already has the hard part — a deck of tiles, a step engine, and
 software buttons that cost no keystroke. What it does not have is the thing
 every physical macro pad sells itself on: **the buttons mean something
 different depending on what you are doing.**
@@ -27,7 +27,7 @@ mapped *per layer*.
 Profiles** (that layout switches itself when the app takes focus), **pages**
 within a profile, and **folders** — a key that opens a second layer of keys
 with a back button, like an app folder on a phone. Multi-Actions are what
-MacroDeck already calls steps. Worth noting: keys can have **two states** with
+Dental Macros already calls steps. Worth noting: keys can have **two states** with
 their own icon and label, so one key is mute *and* unmute, and shows you
 which.
 
@@ -116,7 +116,7 @@ Three details decide whether this is pleasant or infuriating:
   alternative yanks the page out from under you the moment you touch it.
 - **A pin.** A padlock in the page strip suspends app switching entirely until
   you click it again.
-- **MacroDeck's own window is never an app change.** Coming here to look at a
+- **Dental Macros's own window is never an app change.** Coming here to look at a
   page must not be what moves it. The rule is a process-id check, deliberately
   narrower than Stream Deck's (which switches smart profiles off entirely
   while its window is open) — that would make the feature impossible to try

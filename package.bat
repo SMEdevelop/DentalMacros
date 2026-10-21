@@ -2,15 +2,15 @@
 setlocal EnableDelayedExpansion
 cd /d "%~dp0"
 
-rem  Builds MacroDeck and produces everything needed to hand it to someone
+rem  Builds Dental Macros and produces everything needed to hand it to someone
 rem  else, in dist\:
 rem
-rem      MacroDeck-<version>.zip          portable copy
-rem      MacroDeck-Setup-<version>.exe    installer (needs Inno Setup)
+rem      DentalMacros-<version>.zip          portable copy
+rem      DentalMacros-Setup-<version>.exe    installer (needs Inno Setup)
 rem
 rem  Since the move to MSVC the build links the C++ runtime dynamically (/MD),
 rem  so both of those carry msvcp140.dll, vcruntime140.dll and
-rem  vcruntime140_1.dll beside MacroDeck.exe. Without them the app dies on
+rem  vcruntime140_1.dll beside DentalMacros.exe. Without them the app dies on
 rem  startup on any machine without Visual Studio installed, with a dialog
 rem  naming the missing DLL. They are copied out of the Visual Studio
 rem  redistributable folder, which is the supported way to ship them ("local
@@ -19,17 +19,45 @@ rem
 rem  Signing is optional and off unless you point it at a certificate. Set
 rem  ONE of these before running:
 rem
-rem      set MACRODECK_SIGN_PFX=C:\path\to\cert.pfx
-rem      set MACRODECK_SIGN_PASS=...            (optional)
+rem      set DENTALMACROS_SIGN_PFX=C:\path\to\cert.pfx
+rem      set DENTALMACROS_SIGN_PASS=...            (optional)
 rem
 rem  or, for anything that is not a plain .pfx - a hardware token, or a cloud
 rem  service such as Azure Trusted Signing - give a command that takes the
 rem  file to sign as its one argument:
 rem
-rem      set MACRODECK_SIGN_CMD=powershell -File C:\path\to\sign.ps1
+rem      set DENTALMACROS_SIGN_CMD=powershell -File C:\path\to\sign.ps1
+rem
+rem  That is for copies you build yourself. Official releases are built and
+rem  signed by .github\workflows\release.yml, which calls this script as
+rem
+rem      package.bat --prebuilt
+rem
+rem  to package a build\DentalMacros.exe that has already come back signed,
+rem  instead of building a fresh, unsigned one over the top of it.
+rem
+rem  The installer's setup engine needs a signature of its own - see "the
+rem  setup engine" further down - so CI also runs
+rem
+rem      package.bat --engine-only
+rem
+rem  to write the engine out to be signed and stop there, and then
+rem
+rem      package.bat --prebuilt --signed-engine
+rem
+rem  to build the installer around the engine once it has come back signed.
+
+set "PREBUILT="
+set "ENGINEONLY="
+set "SIGNEDENGINE="
+for %%A in (%*) do (
+  if /i "%%~A"=="--prebuilt"      set "PREBUILT=1"
+  if /i "%%~A"=="--engine-only"   set "ENGINEONLY=1"
+  if /i "%%~A"=="--signed-engine" set "SIGNEDENGINE=1"
+)
 
 echo.
-echo  Packaging MacroDeck...
+echo  Packaging Dental Macros...
 echo.
 
 rem ---- MSVC environment ------------------------------------------------
@@ -82,19 +110,30 @@ set "PRERELEASE=beta"
 if defined PRERELEASE (set "FULLVER=%SHORTVER%-%PRERELEASE%") else (set "FULLVER=%SHORTVER%")
 echo  Version:  %FULLVER%   (from src\app.rc)
 
+rem  --engine-only builds nothing and packages nothing.
+if defined ENGINEONLY goto :installer
+
 rem ---- build ----------------------------------------------------------
 rem  Full path, not "build.bat": when NoDefaultCurrentDirectoryInExePath is
 rem  set, or the script is launched from another shell, the current directory
 rem  is not searched.
-call "%~dp0build.bat"
-if errorlevel 1 (
-  echo  Packaging stopped: the build failed.
-  exit /b 1
+if defined PREBUILT (
+  if not exist "build\DentalMacros.exe" (
+    echo  ERROR: --prebuilt, but there is no build\DentalMacros.exe to package.
+    exit /b 1
+  )
+  echo  Using the existing build\DentalMacros.exe  ^(--prebuilt^)
+) else (
+  call "%~dp0build.bat"
+  if errorlevel 1 (
+    echo  Packaging stopped: the build failed.
+    exit /b 1
+  )
 )
 
 rem ---- locate signtool, if we might need it ---------------------------
 set "SIGNTOOL="
-if defined MACRODECK_SIGN_PFX (
+if defined DENTALMACROS_SIGN_PFX (
   for /f "delims=" %%S in ('where signtool.exe 2^>nul') do set "SIGNTOOL=%%S"
   if "!SIGNTOOL!"=="" (
     for /f "delims=" %%S in ('dir /b /s /o-n "%ProgramFiles(x86)%\Windows Kits\10\bin\*\x64\signtool.exe" 2^>nul') do (
@@ -106,7 +145,7 @@ if defined MACRODECK_SIGN_PFX (
 if not exist dist mkdir dist
 
 rem ---- sign the executable -------------------------------------------
-call :sign "build\MacroDeck.exe"
+call :sign "build\DentalMacros.exe"
 if errorlevel 1 exit /b 1
 
 rem ---- portable zip ---------------------------------------------------
@@ -114,11 +153,11 @@ echo.
 echo  Building the portable zip...
 set "STAGE=dist\stage"
 if exist "%STAGE%" rmdir /s /q "%STAGE%"
-mkdir "%STAGE%\MacroDeck"
-copy /y "build\MacroDeck.exe"     "%STAGE%\MacroDeck\" >nul
-copy /y "packaging\INSTALL.txt"   "%STAGE%\MacroDeck\" >nul
-copy /y "README.md"               "%STAGE%\MacroDeck\" >nul
-copy /y "LICENSE"                 "%STAGE%\MacroDeck\" >nul
+mkdir "%STAGE%\DentalMacros"
+copy /y "build\DentalMacros.exe"     "%STAGE%\DentalMacros\" >nul
+copy /y "packaging\INSTALL.txt"   "%STAGE%\DentalMacros\" >nul
+copy /y "README.md"               "%STAGE%\DentalMacros\" >nul
+copy /y "LICENSE"                 "%STAGE%\DentalMacros\" >nul
 
 rem  The runtime. Copied one by one and checked, because a zip that is missing
 rem  one of these looks perfectly fine here - this machine has them in
@@ -128,7 +167,7 @@ for %%L in (msvcp140.dll vcruntime140.dll vcruntime140_1.dll) do (
     echo  ERROR: %%L is not in %CRTDIR%
     exit /b 1
   )
-  copy /y "%CRTDIR%\%%L" "%STAGE%\MacroDeck\" >nul
+  copy /y "%CRTDIR%\%%L" "%STAGE%\DentalMacros\" >nul
   if errorlevel 1 (
     echo  ERROR: could not copy %%L into the package.
     exit /b 1
@@ -136,10 +175,10 @@ for %%L in (msvcp140.dll vcruntime140.dll vcruntime140_1.dll) do (
   echo    + %%L
 )
 
-set "ZIP=dist\MacroDeck-%FULLVER%.zip"
+set "ZIP=dist\DentalMacros-%FULLVER%.zip"
 if exist "%ZIP%" del /q "%ZIP%"
 powershell -NoProfile -ExecutionPolicy Bypass -Command ^
-  "Compress-Archive -Path '%STAGE%\MacroDeck' -DestinationPath '%ZIP%' -Force"
+  "Compress-Archive -Path '%STAGE%\DentalMacros' -DestinationPath '%ZIP%' -Force"
 if errorlevel 1 (
   echo  ERROR: could not create the zip.
   exit /b 1
@@ -153,7 +192,7 @@ rem  generated or belongs to whoever ran the app. Suitable for attaching to
 rem  a GitHub release.
 echo.
 echo  Building the source zip...
-set "SRCSTAGE=dist\srcstage\MacroDeck-%FULLVER%"
+set "SRCSTAGE=dist\srcstage\DentalMacros-%FULLVER%"
 if exist "dist\srcstage" rmdir /s /q "dist\srcstage"
 mkdir "%SRCSTAGE%"
 xcopy /e /i /q /y "src"       "%SRCSTAGE%\src"       >nul
@@ -166,7 +205,7 @@ for %%F in (README.md LICENSE .gitignore build.bat run_tests.bat package.bat) do
   copy /y "%%F" "%SRCSTAGE%\" >nul
 )
 
-set "SRCZIP=dist\MacroDeck-%FULLVER%-source.zip"
+set "SRCZIP=dist\DentalMacros-%FULLVER%-source.zip"
 if exist "%SRCZIP%" del /q "%SRCZIP%"
 powershell -NoProfile -ExecutionPolicy Bypass -Command ^
   "Compress-Archive -Path '%SRCSTAGE%' -DestinationPath '%SRCZIP%' -Force"
@@ -178,6 +217,7 @@ rmdir /s /q "dist\srcstage"
 echo  Built:  %SRCZIP%
 
 rem ---- installer ------------------------------------------------------
+:installer
 echo.
 rem  winget installs Inno per-user by default, so %LOCALAPPDATA% has to be
 rem  checked as well as the two Program Files locations.
@@ -191,6 +231,10 @@ for %%D in (
 )
 if "!ISCC!"=="" for /f "delims=" %%S in ('where iscc.exe 2^>nul') do set "ISCC=%%S"
 
+if "!ISCC!"=="" if defined ENGINEONLY (
+  echo  ERROR: --engine-only needs Inno Setup, and it is not installed.
+  exit /b 1
+)
 if "!ISCC!"=="" (
   echo  Skipping the installer: Inno Setup is not installed.
   echo.
@@ -200,24 +244,85 @@ if "!ISCC!"=="" (
   goto :summary
 )
 
-echo  Building the installer...
+rem ---- the setup engine -----------------------------------------------
+rem  An Inno Setup installer unpacks a second program into %TEMP% and runs
+rem  that: the setup engine, which is also the uninstaller. Signing the
+rem  finished installer does not sign it, and Smart App Control refuses an
+rem  unsigned engine whenever Microsoft's cloud has no verdict on that exact
+rem  file - which, for a fresh build, is often. So every signed build gives
+rem  the engine a signature of its own.
+rem
+rem  /DSignEngine turns on SignedUninstaller in installer.iss. The first
+rem  compile for a given Inno Setup version, icon and app version then writes
+rem  the engine to build\signed-engine\ and stops on purpose; once that file
+rem  is signed, every compile after it embeds the signature.
+set "SIGNENGINE="
+if defined ENGINEONLY          set "SIGNENGINE=1"
+if defined SIGNEDENGINE        set "SIGNENGINE=1"
+if defined DENTALMACROS_SIGN_CMD set "SIGNENGINE=1"
+if defined DENTALMACROS_SIGN_PFX set "SIGNENGINE=1"
+
 rem  CrtDir is passed in so installer.iss can pick up the same three DLLs
 rem  without repeating the lookup.
-"!ISCC!" /Q "/DAppVersion=%SHORTVER%" "/DAppVersionFull=%FULLVER%" "/DCrtDir=%CRTDIR%" "packaging\installer.iss"
-if errorlevel 1 (
+set ISCCARGS=/Q "/DAppVersion=%SHORTVER%" "/DAppVersionFull=%FULLVER%" "/DCrtDir=%CRTDIR%"
+if defined SIGNENGINE (
+  set ISCCARGS=!ISCCARGS! /DSignEngine
+  if not exist "build\signed-engine" mkdir "build\signed-engine"
+)
+set "ISCCLOG=%TEMP%\dentalmacros-iscc-%RANDOM%.log"
+
+if defined ENGINEONLY (echo  Writing out the setup engine...) else (echo  Building the installer...)
+"!ISCC!" !ISCCARGS! "packaging\installer.iss" >"%ISCCLOG%" 2>&1
+if not errorlevel 1 goto :installerbuilt
+
+rem  A failed compile is either a real error or the deliberate stop above,
+rem  which names the engine file on a line of its own.
+set "ENGINE="
+if defined SIGNENGINE (
+  for /f "tokens=*" %%E in ('findstr /r /c:"signed-engine\\uninst-.*\.e32" "%ISCCLOG%"') do set "ENGINE=%%E"
+)
+if not defined ENGINE (
+  type "%ISCCLOG%"
+  del "%ISCCLOG%" 2>nul
   echo  ERROR: the installer failed to compile.
   exit /b 1
 )
-call :sign "dist\MacroDeck-Setup-%FULLVER%.exe"
+del "%ISCCLOG%" 2>nul
+if defined ENGINEONLY (
+  echo  Written, for signing:  !ENGINE!
+  exit /b 0
+)
+if defined SIGNEDENGINE (
+  echo  ERROR: --signed-engine, but this setup engine has not been signed:
+  echo         !ENGINE!
+  exit /b 1
+)
+call :sign "!ENGINE!"
 if errorlevel 1 exit /b 1
-echo  Built:  dist\MacroDeck-Setup-%FULLVER%.exe
+"!ISCC!" !ISCCARGS! "packaging\installer.iss" >"%ISCCLOG%" 2>&1
+if errorlevel 1 (
+  type "%ISCCLOG%"
+  del "%ISCCLOG%" 2>nul
+  echo  ERROR: the installer failed to compile with the signed setup engine.
+  exit /b 1
+)
+
+:installerbuilt
+del "%ISCCLOG%" 2>nul
+if defined ENGINEONLY (
+  echo  This setup engine is already signed - nothing to write out.
+  exit /b 0
+)
+call :sign "dist\DentalMacros-Setup-%FULLVER%.exe"
+if errorlevel 1 exit /b 1
+echo  Built:  dist\DentalMacros-Setup-%FULLVER%.exe
 
 :summary
 echo.
 echo  ---------------------------------------------------------------
 dir /b dist\*.zip dist\*.exe 2>nul
 echo  ---------------------------------------------------------------
-if not defined MACRODECK_SIGN_PFX if not defined MACRODECK_SIGN_CMD (
+if not defined DENTALMACROS_SIGN_PFX if not defined DENTALMACROS_SIGN_CMD (
   echo.
   echo  NOT SIGNED. Anyone you send this to will meet SmartScreen's
   echo  "Windows protected your PC" box and have to click through it,
@@ -235,28 +340,28 @@ rem ---------------------------------------------------------------------
 rem  :sign <file>   - signs in place, or does nothing if no cert is set up
 rem ---------------------------------------------------------------------
 :sign
-if defined MACRODECK_SIGN_CMD (
+if defined DENTALMACROS_SIGN_CMD (
   echo  Signing %~nx1 ...
-  call %MACRODECK_SIGN_CMD% "%~1"
+  call %DENTALMACROS_SIGN_CMD% "%~1"
   if errorlevel 1 (
     echo  ERROR: signing %~nx1 failed.
     exit /b 1
   )
   exit /b 0
 )
-if not defined MACRODECK_SIGN_PFX exit /b 0
+if not defined DENTALMACROS_SIGN_PFX exit /b 0
 if "!SIGNTOOL!"=="" (
-  echo  ERROR: MACRODECK_SIGN_PFX is set but signtool.exe was not found.
-  echo         Install the Windows SDK, or use MACRODECK_SIGN_CMD instead.
+  echo  ERROR: DENTALMACROS_SIGN_PFX is set but signtool.exe was not found.
+  echo         Install the Windows SDK, or use DENTALMACROS_SIGN_CMD instead.
   exit /b 1
 )
 echo  Signing %~nx1 ...
 set "PFXPASS="
-if defined MACRODECK_SIGN_PASS set "PFXPASS=/p "%MACRODECK_SIGN_PASS%""
+if defined DENTALMACROS_SIGN_PASS set "PFXPASS=/p "%DENTALMACROS_SIGN_PASS%""
 rem  /tr + /td timestamp the signature, so it stays valid after the
 rem  certificate itself expires.
 "!SIGNTOOL!" sign /fd SHA256 /td SHA256 /tr http://timestamp.digicert.com ^
-  /f "%MACRODECK_SIGN_PFX%" !PFXPASS! "%~1"
+  /f "%DENTALMACROS_SIGN_PFX%" !PFXPASS! "%~1"
 if errorlevel 1 (
   echo  ERROR: signing %~nx1 failed.
   exit /b 1

@@ -318,7 +318,7 @@ std::vector<InputDevice> listMice() { return listDevices(DeviceKind::Mouse); }
 
 // --------------------------------------------------------------- listener
 namespace {
-const wchar_t* kRawWndClass = L"MacroDeckRawInput";
+const wchar_t* kRawWndClass = L"DentalMacrosRawInput";
 }
 
 RawInputListener::~RawInputListener() { stop(); }
@@ -616,7 +616,7 @@ void RawInputListener::threadMain() {
 
     // A message-only window (HWND_MESSAGE) does NOT receive WM_INPUT, so this
     // is a real - but never shown - top-level window.
-    hwnd_ = CreateWindowExW(0, kRawWndClass, L"MacroDeck", 0, 0, 0, 0, 0,
+    hwnd_ = CreateWindowExW(0, kRawWndClass, L"Dental Macros", 0, 0, 0, 0, 0,
                             nullptr, nullptr, GetModuleHandleW(nullptr), this);
     if (!hwnd_) {
         startError_ = "CreateWindow failed: " + lastErrorMessage();
@@ -632,7 +632,7 @@ void RawInputListener::threadMain() {
     // Media, volume and launcher keys. Windows never reports these as
     // keystrokes from the device they came from - at most it adds an
     // anonymous copy of a few - and a keypad's extra buttons very often live
-    // here, so without this they are buttons MacroDeck cannot see at all.
+    // here, so without this they are buttons Dental Macros cannot see at all.
     rid[1].usUsagePage = 0x0C;           // consumer
     rid[1].usUsage = 0x01;               // consumer control
     rid[1].dwFlags = RIDEV_INPUTSINK;

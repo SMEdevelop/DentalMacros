@@ -3,7 +3,7 @@ setlocal EnableDelayedExpansion
 cd /d "%~dp0"
 
 echo.
-echo  Building MacroDeck...
+echo  Building Dental Macros...
 echo.
 
 rem ---- locate the Microsoft C++ compiler -------------------------------
@@ -38,7 +38,7 @@ for /f "delims=" %%V in ('cl 2^>^&1 ^| findstr /c:"Version"') do (
 
 if not exist build\obj mkdir build\obj
 
-rem  /MD links the C++ runtime dynamically, so MacroDeck.exe needs
+rem  /MD links the C++ runtime dynamically, so DentalMacros.exe needs
 rem  msvcp140.dll, vcruntime140.dll and vcruntime140_1.dll beside it. package.bat
 rem  copies those three out of the Visual Studio redistributable into the zip.
 rem  /W3 is MSVC's practical equivalent of -Wall; /Wall here means "every
@@ -65,16 +65,16 @@ rc /nologo /fo build\app.res src\app.rc
 if errorlevel 1 goto :failed
 
 echo  Compiling and linking (this takes a minute)...
-cl %CXXFLAGS% %SOURCES% build\app.res /Febuild\MacroDeck.exe %LDFLAGS% %LIBS%
+cl %CXXFLAGS% %SOURCES% build\app.res /Febuild\DentalMacros.exe %LDFLAGS% %LIBS%
 if errorlevel 1 goto :failed
 
 if not exist build\images mkdir build\images
 if not exist build\layouts mkdir build\layouts
 
 echo.
-echo  Built:  build\MacroDeck.exe
+echo  Built:  build\DentalMacros.exe
 echo.
-echo  Start it with:   build\MacroDeck.exe
+echo  Start it with:   build\DentalMacros.exe
 echo.
 echo  Note: this is a /MD build. Running it straight out of build\ works on
 echo  this machine because Visual Studio is installed. The copy you hand to

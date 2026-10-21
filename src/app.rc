@@ -15,8 +15,8 @@
 1 RT_MANIFEST "app.manifest"
 
 VS_VERSION_INFO VERSIONINFO
-FILEVERSION 0,9,2,0
-PRODUCTVERSION 0,9,2,0
+FILEVERSION 0,9,3,0
+PRODUCTVERSION 0,9,3,0
 FILEFLAGSMASK 0x3fL
 // VS_FF_PRERELEASE: this is beta 0.9, and Explorer's Details tab says so.
 FILEFLAGS VS_FF_PRERELEASE
@@ -29,13 +29,13 @@ BEGIN
         BLOCK "040904b0"
         BEGIN
             VALUE "CompanyName",     "SMEdevelop"
-            VALUE "FileDescription", "MacroDeck - per-keyboard macro deck"
-            VALUE "FileVersion",     "0.9.2.0"
-            VALUE "InternalName",    "MacroDeck"
-            VALUE "LegalCopyright",  "Copyright (c) 2026 SMEdevelop. All rights reserved."
-            VALUE "OriginalFilename","MacroDeck.exe"
-            VALUE "ProductName",     "MacroDeck"
-            VALUE "ProductVersion",  "0.9.2.0 beta"
+            VALUE "FileDescription", "Dental Macros - per-keyboard macro pad"
+            VALUE "FileVersion",     "0.9.3.0"
+            VALUE "InternalName",    "DentalMacros"
+            VALUE "LegalCopyright",  "Copyright (c) 2026 SMEdevelop. MIT License."
+            VALUE "OriginalFilename","DentalMacros.exe"
+            VALUE "ProductName",     "Dental Macros"
+            VALUE "ProductVersion",  "0.9.3.0 beta"
         END
     END
     BLOCK "VarFileInfo"

@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
-  <assemblyIdentity type="win32" name="MacroDeck.App" version="1.0.0.0"
+  <assemblyIdentity type="win32" name="DentalMacros.App" version="1.0.0.0"
                     processorArchitecture="*"/>
   <description>Per-keyboard macro deck</description>
 
@@ -15,7 +15,7 @@
   <trustInfo xmlns="urn:schemas-microsoft-com:asm.v3">
     <security>
       <requestedPrivileges>
-        <!-- asInvoker: MacroDeck never needs admin. Running it elevated is
+        <!-- asInvoker: Dental Macros never needs admin. Running it elevated is
              only useful if you want macros to work while an elevated window
              has focus, and that is the user's choice to make. -->
         <requestedExecutionLevel level="asInvoker" uiAccess="false"/>

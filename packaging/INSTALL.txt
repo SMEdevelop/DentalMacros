@@ -1,35 +1,39 @@
-MacroDeck - installing the portable copy
-=======================================
+Dental Macros - installing the portable copy
+===========================================
+
+Upgrading from MacroDeck (this program's old name)? Copy these files into
+your existing MacroDeck folder, then delete MacroDeck.exe from it. Your
+macros, layouts and backups stay where they are.
 
 This is the zip version. There is nothing to install and nothing to download
-first - everything MacroDeck needs is in this folder.
+first - everything Dental Macros needs is in this folder.
 
-Keep the folder together. Beside MacroDeck.exe are three files:
+Keep the folder together. Beside DentalMacros.exe are three files:
 
     msvcp140.dll
     vcruntime140.dll
     vcruntime140_1.dll
 
-Those are the Microsoft C++ runtime. MacroDeck will not start without them,
-so copy the whole folder rather than picking MacroDeck.exe out of it. (If you
+Those are the Microsoft C++ runtime. Dental Macros will not start without them,
+so copy the whole folder rather than picking DentalMacros.exe out of it. (If you
 ever see "The code execution cannot proceed because VCRUNTIME140.dll was not
 found", that is what happened - copy the folder again, complete.)
 
 
 1. Put the folder somewhere you can write to
 --------------------------------------------
-MacroDeck keeps its settings in the same folder as MacroDeck.exe, so it has
+Dental Macros keeps its settings in the same folder as DentalMacros.exe, so it has
 to live somewhere your account can write. Good choices:
 
-    C:\Users\<you>\Programs\MacroDeck
-    C:\Users\<you>\Documents\MacroDeck
+    C:\Users\<you>\Programs\Dental Macros
+    C:\Users\<you>\Documents\Dental Macros
     a USB stick
 
 Do NOT put it in C:\Program Files - Windows will not let it save your macros
 there unless you run it as administrator.
 
 
-2. Run MacroDeck.exe
+2. Run DentalMacros.exe
 --------------------
 The first time, Windows may show a blue box saying "Windows protected your
 PC". That appears for any program it has not seen before, not because
@@ -42,10 +46,10 @@ for what your options are.
 
 3. Start it automatically when you sign in
 ------------------------------------------
-Open Settings inside MacroDeck and tick:
+Open Settings inside Dental Macros and tick:
 
-    [x] Run MacroDeck when I sign in to Windows
-    [x] Start listening as soon as MacroDeck opens
+    [x] Run Dental Macros when I sign in to Windows
+    [x] Start listening as soon as Dental Macros opens
     [x] Start minimised to the notification area
 
 All three together mean it is running and watching your macro pad from the
@@ -61,7 +65,7 @@ Plug in the spare keyboard or numpad you want to dedicate to macros, click
 "Scan for keyboards", and pick it from the list.
 
 Careful: by default, whichever keyboard you pick will stop typing into your
-programs while MacroDeck is listening. Pick the spare one, not the one you
+programs while Dental Macros is listening. Pick the spare one, not the one you
 type on.
 
 If you would rather put macros on F13-F24 or the extra keys of the keyboard
@@ -74,30 +78,30 @@ With that unticked, only the keys you bound to a macro stop typing - every
 other key on that keyboard carries on as normal.
 
 If you ever get stuck with a keyboard that has gone silent, press
-Ctrl+Alt+Shift+M - that stops MacroDeck listening from anywhere in Windows
+Ctrl+Alt+Shift+M - that stops Dental Macros listening from anywhere in Windows
 and hands the keyboard straight back.
 
 
 Uninstalling
 ------------
-Delete the folder. MacroDeck does not touch anything else, apart from one
-registry value if you ticked "Run MacroDeck when I sign in to Windows" -
-untick that first, or delete the "MacroDeck" value from:
+Delete the folder. Dental Macros does not touch anything else, apart from one
+registry value if you ticked "Run Dental Macros when I sign in to Windows" -
+untick that first, or delete the "Dental Macros" value from:
 
     HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Run
 
 
 Licence
 -------
-MacroDeck is copyright (c) 2026 SMEdevelop. All rights reserved. It is NOT
-open source. You may install and run it on devices you own or control; you
-may not redistribute, sell, modify or reverse engineer it without written
-permission.
+Dental Macros is copyright (c) 2026 SMEdevelop and is open source under the
+MIT License: you may use, copy, change and share it freely, as long as the
+LICENSE file goes with it. The source is at
+https://github.com/SMEdevelop/DentalMacros
 
 It comes with no warranty of any kind and you use it at your own risk. It
 types, clicks and runs programs on your behalf, and it stops the keyboard you
-choose from typing into your other programs while it is listening. Read
-LICENSE - installing or using MacroDeck means you accept it in full.
+choose from typing into your other programs while it is listening. The
+full terms are in LICENSE.
 
 
 Everything runs locally. There is no network code in this program.

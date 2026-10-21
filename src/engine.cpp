@@ -459,7 +459,7 @@ void Engine::runStep(const cfg::Step& s) {
                 inputBlocked_ = true;
             } else {
                 log("  could not block input (Windows only allows that when "
-                    "MacroDeck runs as administrator) - keep your hands off "
+                    "Dental Macros runs as administrator) - keep your hands off "
                     "the mouse while this runs");
             }
         }

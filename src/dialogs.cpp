@@ -302,7 +302,7 @@ bool captureClick(HWND parent, const std::string& prompt, ClickCapture& out) {
     HWND top = d.wnd ? GetAncestor(d.wnd, GA_ROOT) : nullptr;
     win::WindowInfo info;
     if (top && win::describeWindow(top, info) && !info.cls.empty()) {
-        // MacroDeck's own windows are hidden while recording, but never
+        // Dental Macros's own windows are hidden while recording, but never
         // record ourselves as the target even so.
         DWORD pid = 0;
         GetWindowThreadProcessId(top, &pid);
@@ -356,12 +356,12 @@ public:
             hwnd_,
             wantMouse
                 ? "Heads up: buttons on the mouse you pick will stop working "
-                  "normally in your apps while MacroDeck is listening. Pick a "
+                  "normally in your apps while Dental Macros is listening. Pick a "
                   "spare mouse, not the one you point with. Left click is "
                   "never taken while it is the only pointer you have, so you "
                   "can always click your way back here."
                 : "Heads up: keys on the keyboard you pick will stop typing "
-                  "into your apps while MacroDeck is listening - they only "
+                  "into your apps while Dental Macros is listening - they only "
                   "fire macros. Pick a spare keyboard or numpad, not the one "
                   "you type on.",
             20, 266, 480, 56, -1, true);
@@ -437,7 +437,7 @@ public:
             showMessage(hwnd_, wantMouse ? "Mouse added" : "Keyboard added",
                         std::string("Two identical ") +
                             (wantMouse ? "mice are" : "keyboards are") +
-                            " attached, so MacroDeck had to identify this one "
+                            " attached, so Dental Macros had to identify this one "
                             "by which USB port it is plugged into.\n\nKeep it "
                             "in the same port, or it will stop being "
                             "recognised.");
@@ -918,13 +918,13 @@ public:
             wc.cbSize = sizeof(wc);
             wc.lpfnWndProc = &SnipOverlay::proc;
             wc.hInstance = GetModuleHandleW(nullptr);
-            wc.lpszClassName = L"MacroDeckSnip";
+            wc.lpszClassName = L"DentalMacrosSnip";
             wc.hCursor = LoadCursorW(nullptr, IDC_CROSS);
             RegisterClassExW(&wc);
             registered = true;
         }
 
-        hwnd_ = CreateWindowExW(WS_EX_TOPMOST, L"MacroDeckSnip", L"Snip",
+        hwnd_ = CreateWindowExW(WS_EX_TOPMOST, L"DentalMacrosSnip", L"Snip",
                                 WS_POPUP, cap_.originX, cap_.originY,
                                 cap_.width, cap_.height, parent, nullptr,
                                 GetModuleHandleW(nullptr), this);
@@ -1158,7 +1158,7 @@ public:
         int y = 16;
         makeLabel(pane_, "Startup", 20, y, 300, 20, -1, false, true);
         y += 26;
-        startEngine_ = makeCheck(pane_, "Start listening as soon as MacroDeck opens",
+        startEngine_ = makeCheck(pane_, "Start listening as soon as Dental Macros opens",
                                  20, y, 420, 24, ID_FIRST_USER,
                                  settings.startEngineOnLaunch);
         y += 28;
@@ -1166,11 +1166,11 @@ public:
                               20, y, 420, 24, ID_FIRST_USER + 1,
                               settings.startMinimized);
         y += 28;
-        toTray_ = makeCheck(pane_, "Closing the window keeps MacroDeck running in the tray",
+        toTray_ = makeCheck(pane_, "Closing the window keeps Dental Macros running in the tray",
                             20, y, 420, 24, ID_FIRST_USER + 2,
                             settings.minimizeToTray);
         y += 28;
-        runAtLogin_ = makeCheck(pane_, "Run MacroDeck when I sign in to Windows",
+        runAtLogin_ = makeCheck(pane_, "Run Dental Macros when I sign in to Windows",
                                 20, y, 420, 24, ID_FIRST_USER + 5,
                                 runAtLoginEnabled());
         y += 40;
@@ -1276,7 +1276,7 @@ public:
             std::string err;
             if (!setRunAtLogin(wantLogin, &err))
                 showMessage(hwnd_, "Could not change startup",
-                            "MacroDeck could not update the Windows startup "
+                            "Dental Macros could not update the Windows startup "
                             "entry:\n\n" + err,
                             true);
         }
@@ -1295,7 +1295,7 @@ private:
 bool settingsDialog(HWND parent, cfg::Settings& settings) {
     SettingsDialog d;
     d.settings = settings;
-    if (!d.run(parent, "MacroDeck settings", kSettingsW, kSettingsH))
+    if (!d.run(parent, "Dental Macros settings", kSettingsW, kSettingsH))
         return false;
     settings = d.settings;
     return true;

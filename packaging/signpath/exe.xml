@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  SignPath artifact configuration "exe": signs DentalMacros.exe and the
+  installer's setup engine, in one request so they cost one approval.
+
+  Not read by anything in this repository. It is the text to paste into the
+  SignPath project (Artifact configurations -> slug "exe"), kept here so it is
+  reviewed and versioned like the rest of the build. The workflow uploads the
+  two files as one artifact, and actions/upload-artifact wraps them in a zip,
+  which is why the root element is <zip-file>.
+
+  setup-engine.exe is the installer's setup engine: the program an Inno Setup
+  installer unpacks to %TEMP% and runs (it is also the uninstaller). Signing
+  the finished installer does not sign it, and Smart App Control blocks it
+  unsigned - see "the setup engine" in package.bat. Inno Setup writes it out
+  as build\signed-engine\uninst-<version>-<hash>.e32 and stamps it with this
+  app's name, which is why it carries the same product name as the exe; the
+  workflow renames it for the trip because .e32 is not an extension SignPath
+  lists for PE files, and puts it back under its own name afterwards.
+-->
+<artifact-configuration xmlns="http://signpath.io/artifact-configuration/v1">
+  <zip-file>
+    <pe-file path="DentalMacros.exe" product-name="Dental Macros">
+      <authenticode-sign/>
+    </pe-file>
+    <pe-file path="setup-engine.exe" product-name="Dental Macros">
+      <authenticode-sign/>
+    </pe-file>
+  </zip-file>
+</artifact-configuration>

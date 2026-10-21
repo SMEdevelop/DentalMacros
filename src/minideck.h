@@ -86,7 +86,7 @@ public:
     // Tell the palette which page it is showing. Call it before setButtons,
     // which is what triggers the relayout.
     void setPage(const MiniPage& page);
-    // "Open MacroDeck" in the context menu.
+    // "Open Dental Macros" in the context menu.
     void setOpener(VoidFn fn) { open_ = std::move(fn); }
     // Told whenever the user moves or resizes it, so the config can be marked
     // dirty without this window knowing what a config is.
