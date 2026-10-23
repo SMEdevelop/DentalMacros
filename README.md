@@ -68,9 +68,6 @@ options, least drastic first:
 
 - **Try it on another PC.** Since the block travels with the machine and not
   the file, this costs nothing and often just works.
-- **Use an official release** from the
-  [Releases page](https://github.com/SMEdevelop/DentalMacros/releases). Those are
-  signed — see [Code signing policy](#code-signing-policy).
 - **Keep using the Python `macrokb`** in the `Macros` folder instead. Scripts
   aren't subject to this check because `python.exe` is already signed and
   trusted, so the Python version runs on a machine where this one won't.
@@ -78,7 +75,12 @@ options, least drastic first:
   Smart App Control settings → Off. **This is a one-way door:** Windows will
   not let you switch it back on without a full reset of the PC. Weigh that
   before doing it; it is a real reduction in your machine's protection, and
-  the three options above cost you nothing.
+  the two options above cost you nothing.
+
+The official releases on the
+[Releases page](https://github.com/SMEdevelop/DentalMacros/releases) are not
+signed yet either (see [Code signing policy](#code-signing-policy)), so Smart
+App Control can refuse them the same way.
 
 Everything except launching the app works regardless — the build and the full
 test suite run fine.
@@ -944,16 +946,24 @@ them.
 
 ### Signing
 
-**Official releases are signed by CI, never on a developer's PC.** Pushing a
-`v*` tag runs [`.github/workflows/release.yml`](.github/workflows/release.yml)
-on a GitHub-hosted runner. It runs the tests, builds `DentalMacros.exe`, has it
-and the installer's setup engine signed through SignPath, packages the zip and
-the installer around them, has the installer signed as well, and attaches all
-of it to a **draft** release for you to check and publish. Each of the two
-signing requests waits for an approver to accept it in SignPath, so a release
-cannot be signed without someone saying yes. Until the SignPath settings the
-workflow describes exist, it runs the same way unsigned, which is a useful
-check of the build itself.
+**Official releases are built by CI, never on a developer's PC, and are not
+signed yet.** Pushing a `v*` tag runs
+[`.github/workflows/release.yml`](.github/workflows/release.yml) on a
+GitHub-hosted runner. It runs the tests, builds `DentalMacros.exe`, packages
+the zip and the installer, and attaches them to a **draft** release for you
+to check and publish.
+
+The workflow is ready to sign through SignPath Foundation, which has not
+accepted the project yet. Once it does and the SignPath settings the workflow
+describes exist, the same run has the exe and the installer's setup engine
+signed, packages around them, and has the installer signed as well. Each of
+the two signing requests waits for an approver to accept it in SignPath, so a
+release cannot be signed without someone saying yes.
+
+**Pushing a tag that already has a release replaces that release's files**
+with a fresh build (`gh release upload --clobber`), which changes their
+checksums and breaks any winget manifest that points at them. Don't move or
+re-push a published tag.
 
 `package.bat` on your own machine signs nothing unless you point it at a
 certificate, and warns you when it hasn't. That is only for copies you build
@@ -1002,14 +1012,21 @@ next instead of resetting on every rebuild.
 
 ## Code signing policy
 
-Free code signing provided by [SignPath.io](https://about.signpath.io),
+**Releases are not signed yet.** Dental Macros has applied for free code
+signing from [SignPath Foundation](https://signpath.org), which asks for an
+established project first. Until it is approved, Windows shows release files
+as coming from an unknown publisher: SmartScreen warns before running them
+(**More info → Run anyway**), and Smart App Control may refuse them. What
+follows is how signing will work once it is in place.
+
+Free code signing will be provided by [SignPath.io](https://about.signpath.io),
 certificate by [SignPath Foundation](https://signpath.org).
 
-Windows shows the publisher of a signed release as **SignPath Foundation**.
+Windows will show the publisher of a signed release as **SignPath Foundation**.
 Only the files attached to a
-[GitHub release](https://github.com/SMEdevelop/DentalMacros/releases) are signed,
-and only after they have been built from the tagged commit by the release
-workflow on a GitHub-hosted runner. Anything you build yourself with
+[GitHub release](https://github.com/SMEdevelop/DentalMacros/releases) will be
+signed, and only after they have been built from the tagged commit by the
+release workflow on a GitHub-hosted runner. Anything you build yourself with
 `build.bat` or `package.bat` is outside this policy.
 
 **Team roles**
