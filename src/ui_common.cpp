@@ -630,8 +630,10 @@ LRESULT CALLBACK Modal::wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 return 0;
             }
             if (id == ID_CANCEL && notify == BN_CLICKED) {
-                self->onCancel();
-                self->close(false);
+                if (self->canCancel()) {
+                    self->onCancel();
+                    self->close(false);
+                }
                 return 0;
             }
             self->onCommand(id, notify);
@@ -643,8 +645,10 @@ LRESULT CALLBACK Modal::wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             self->onSized(self->clientW_, self->clientH_);
             return 0;
         case WM_CLOSE:
-            self->onCancel();
-            self->close(false);
+            if (self->canCancel()) {
+                self->onCancel();
+                self->close(false);
+            }
             return 0;
     }
     return DefWindowProcW(hwnd, msg, wp, lp);
@@ -741,8 +745,10 @@ bool Modal::run(HWND parent, const std::string& title, int w, int h) {
         if (msg.message == WM_KEYDOWN &&
             (msg.hwnd == hwnd || IsChild(hwnd, msg.hwnd))) {
             if (msg.wParam == VK_ESCAPE) {
-                onCancel();
-                close(false);
+                if (canCancel()) {
+                    onCancel();
+                    close(false);
+                }
                 continue;
             }
             if (msg.wParam == VK_RETURN) {

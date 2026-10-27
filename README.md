@@ -126,7 +126,9 @@ need nothing preinstalled on the target machine beyond Windows 10/11 itself.
 self-contained file. The trade is deliberate: MSVC matches the platform it
 targets, and the packaged download is self-contained either way.)
 
-Settings live next to the .exe.
+Settings live next to the .exe - unless that folder can't be written, in
+which case they go to `%LOCALAPPDATA%\DentalMacros` instead (see
+[Settings file](#settings-file)).
 
 To check everything works on your machine:
 
@@ -134,7 +136,7 @@ To check everything works on your machine:
 run_tests.bat
 ```
 
-This runs 382 checks covering JSON, the config model, pages and their
+This runs 510 checks covering JSON, the config model, pages and their
 application rules, mice and the wheel, the step engine, key tables, deck
 presets, window management, the image matcher, config recovery, the
 recorded-click workflow, and importing a macrokb `macros.yaml`. The engine
@@ -145,8 +147,27 @@ launched, and the window tests drive a throwaway window of their own.
 
 ## Quick start
 
+The first time Dental Macros opens, a short setup makes your first button:
+
+1. **Welcome** - two questions: buttons on your screen or on a keypad, and
+   whether the first one types something or clicks through screens.
+2. **Checking** - plain checks with a tick each: your settings can be saved,
+   your keypad can be read, the emergency off switch works, and any dental
+   programs it finds (with a warning for one running as administrator, which
+   would ignore typing and clicks). For a keypad: press any key on it, and
+   that key becomes your first button.
+3. **Your first button** - type what it should type, or record the clicks;
+   give it a name; choose whether Dental Macros starts with Windows.
+
+You land in Simple mode with the button selected and ready to press. Setup is
+offered once; **Skip setup** leaves you to it, and **Settings → Run setup
+again** brings it back. A keypad set up this way gives up only the keys that
+carry a button; its other keys keep typing until you give them buttons too.
+
+To set things up by hand instead (in Advanced mode):
+
 1. Plug in the keyboard or numpad you want to dedicate to macros.
-2. Run `build\DentalMacros.exe` and click **Scan for keyboards**.
+2. Run `build\DentalMacros.exe`, skip setup, and click **Add a keyboard**.
 3. Pick your macro keyboard from the list and give it a name.
    - Not sure which entry is which? Click **Identify by pressing a key** and
      press a key on the pad — the matching entry highlights itself.
@@ -185,9 +206,12 @@ half-built binding never silently swallows a key.
 
 The sidebar shows a small badge for anything other than the default: `pass`
 when the keyboard gives up nothing, `some` when it gives up only its macro
-keys, `click` for software buttons with no keyboard behind them. New keyboards
-take their starting values from **Settings → Macro
-keyboards**, and this option applies the moment you change it — unlike the
+keys, `click` for software buttons with no keyboard behind them. A keypad's
+dot is green while Windows can see it and grey while it is switched off,
+asleep or unplugged; the status line says when one goes or comes back, and
+its keys work again on their own as soon as it does. New keyboards
+take their starting values from **Settings → Keypads → New keypads**, and
+this option applies the moment you change it — unlike the
 first one, it needs no stop-and-start.
 
 Settings save themselves as you work, and the previous day's file is kept in
@@ -196,7 +220,7 @@ Settings save themselves as you work, and the previous day's file is kept in
 **Ctrl+Alt+Shift+M starts and stops listening from anywhere in Windows**, so a
 pad that has stopped typing can always be handed back without finding the
 window. The Stop button spells the shortcut out while it is listening. Change
-or clear it under **Settings → Start / stop listening shortcut**.
+or clear it under **Settings → Keypads → Emergency off switch**.
 
 ### What blocking costs the keyboard you type on
 
@@ -403,6 +427,28 @@ tile is not also spent on the list behind it.
 
 ## The interface
 
+### Simple and Advanced
+
+The **Simple | Advanced** switch at the top changes what the window shows,
+never what is saved. A new setup starts in **Simple**; a settings file from an
+earlier version opens in **Advanced**, so upgrading changes nothing.
+
+Simple mode is for making buttons that do four things: **type text**, **press
+keys** (a shortcut such as Ctrl+S), **record clicks**, and **wait**. A
+button's steps are listed in plain words - *Type "Thank you for visiting…"*,
+*Press Ctrl+S*, *Click in Opendental (3 clicks)*, *Wait 1 second* - and a
+whole recorded click sequence is one row: double-click it to record it again,
+or remove it in one go. Double-click any other row to change it. There are no
+icons, pages to make, mice, dials, drag-and-drop palette or activity log; the
+status line at the bottom stays.
+
+Steps that Simple mode doesn't make are never hidden or lost. They show as
+**+ 2 advanced steps** - double-click that row to switch to Advanced with them
+selected. A deck that already has several pages still shows its page tabs in
+Simple mode, so a page changing by itself is never a mystery.
+
+Everything below describes Advanced mode.
+
 **Left sidebar** — your macro keyboards, and the palette of actions. Drag any
 action onto a key to add it as a step.
 
@@ -424,10 +470,19 @@ plus its list of steps with add / edit / remove / reorder and **Test run**.
 Click a step to select it; **double-click** it to open the editor. A selected
 step stays selected while you edit, delete or move it, so a run of changes
 does not need a re-click between each one.
-**Record clicks...** builds a click sequence for you: say how many clicks,
-then for each one **right-click** the spot on screen you mean (the small
-status window stays out of the way) and say how long to wait afterwards. It
-adds a `click` step per click and a `sleep` step for each delay above 0ms.
+**Record clicks...** builds a click sequence for you. Dental Macros steps out
+of the way and a small recorder window stays on top in the corner of the
+screen. **Right-click** each spot you want clicked, in order; each one is
+listed in the recorder and marked on screen with its number. Right-click
+twice quickly on the same spot to record a **double-click**.
+
+Made a mistake? **Undo last** takes back the newest click, **Remove** drops
+the one selected in the list, and **Redo this spot** makes your next
+right-click replace the selected one. **Fast / Normal / Slow** sets the pause
+between clicks (0.2, 0.5 or 1.5 seconds). Nothing is added to the key until
+you press **Done**; **Cancel** asks before throwing clicks away. Each click
+becomes a `click` step, with a `sleep` step between clicks; edit any of them
+afterwards like any other step.
 
 Right-click, not left, so that **left click keeps working normally while you
 record**. You can open the tab, menu or dialog the recorded click needs to
@@ -441,7 +496,11 @@ It also **locks the sequence to the window you clicked first**. See
 is what makes a recorded sequence still work tomorrow.
 
 **Bottom — activity log.** Every macro that fires, and the exact reason for
-anything that fails.
+anything that fails. Beside the **Activity** heading, one line says the latest
+news in plain words: a button that ran, or which button stopped, at which
+step and why — "OpenDental isn't open", "the picture it looks for isn't on
+screen". When the window is closed to the notification area, a button that
+stops shows a notification instead.
 
 ### Icons
 
@@ -463,8 +522,8 @@ existed keep working exactly as they did.
 The deck above is an editor. The other half is a launcher: a small window of
 just the buttons that stays on top of whatever you are working in, so a macro
 can be fired with the mouse when the pad is out of reach — or not plugged in
-at all. Open it from **More → Buttons on top of everything**, or from the
-notification-area icon when the main window is closed.
+at all. Open it with **Show floating buttons** at the top of the main window,
+or from the notification-area icon when the main window is closed.
 
 Each button is 38 pixels by default, smaller than a desktop icon, and the
 whole thing is about the size of a large tooltip. **Drag the strip along the
@@ -611,9 +670,10 @@ repeat.
 
 ### Image matching
 
-**More → Snip a template image** dims the screen and lets you drag a box
-around a button or icon. That PNG becomes a template that "Find an image and
-click it" searches for.
+**Snip...**, next to **Browse** on the picture field of "Find an image and
+click it" or "Wait for an image", hides Dental Macros, dims the screen and
+lets you drag a box around a button or icon. That PNG becomes the template the
+step searches for.
 
 Matching runs entirely on your machine using normalised cross-correlation over
 an image pyramid — the same metric OpenCV's `TM_CCOEFF_NORMED` uses, but
@@ -678,7 +738,7 @@ similarity, so it still works after the apps have been restarted.
 
 ## Coming from the Python macrokb
 
-**More → Import from macrokb (macros.yaml)** reads your existing config:
+**Settings → Import from macrokb...** reads your existing config:
 keyboards, key bindings, every step, and your settings. Nothing is
 overwritten — imported keyboards are added alongside anything already set up,
 and the original `macros.yaml` is not modified.
@@ -700,7 +760,15 @@ Both read keyboards the same way, so device ids carry over unchanged.
 
 ## Settings file
 
-`macros.json`, next to the executable:
+`macros.json`, next to the executable - or, when Dental Macros can't write in
+its own folder (a copy run from Program Files, a locked-down share or a
+write-protected stick), in `%LOCALAPPDATA%\DentalMacros`. The first time
+that happens, the settings, `images\` and `layouts\` are copied across;
+nothing is ever copied over settings already there. The same move happens
+mid-run if Windows starts refusing saves in the program's folder. Settings →
+**Show my settings file** and the About box both say which folder is in use.
+Pictures stored by relative path are looked for in that folder first, then
+beside the program.
 
 ```json
 {
@@ -808,11 +876,21 @@ skipped.
 `macros.json` — damaged JSON, or the file locked by sync or backup software —
 it says so, opens empty, and refuses to save until it has copied the original
 to `macros.json.bak` first. If even that copy fails, the save is refused
-outright. Fix or move the file and use **More → Reload macros.json**.
+outright. A damaged file comes with an offer to **Restore** the newest daily
+backup that still loads (the damaged file is kept as `macros.json.bak`); a
+locked one comes with **Try again**. Or fix or move the file and use
+**Settings → Reload from file**.
+
+A save that fails because sync or antivirus software is holding the file for a
+moment is retried quietly. One that keeps failing is explained once - folder
+not writable, disk full, file held open - and after that only the status line
+says your changes haven't been saved, until they are again.
 
 Separately, the first save of each run copies the previous settings to
-`backups\macros-<date>.json`, keeping the ten most recent. **More → Export a
-copy** writes one wherever you like.
+`backups\macros-<date>.json`, keeping the ten most recent. Under **Settings →
+Backup and restore**, **Save a copy...** writes one wherever you like, and
+**Load a copy...** puts a saved copy or daily backup back in place - after
+keeping the settings you have now in `backups\` first.
 
 `match` is a substring of the device path. Prefer the `VID_xxxx&PID_xxxx`
 form: it comes from the keyboard's own firmware and survives reboots, driver
@@ -862,8 +940,17 @@ much less annoying than one that silently vanishes.
 **Macros can't trigger themselves.** Keys sent by Dental Macros are marked as
 injected and are never blocked or re-matched.
 
-**The start/stop shortcut does nothing.** Another program has claimed it —
-the activity log says so at startup. Pick a different one in Settings.
+**The start/stop shortcut does nothing.** Another program has claimed it.
+Dental Macros then borrows a stand-in for that session (Ctrl+Alt+Shift+M, K,
+F12 or Pause, whichever is free); the status line and the Stop button say
+which. Pick a different one in Settings to make the change stick.
+
+**A button works everywhere except in one program.** That program is running
+as administrator, and Windows silently drops typing and clicks sent to it from
+an ordinary program. Dental Macros checks for this before typing or clicking
+and stops the button with "... runs as administrator" instead of carrying on
+as if it had worked. Run that program normally, or run Dental Macros as
+administrator too.
 
 **I closed the window and it vanished.** By default closing keeps Dental Macros
 running in the notification area; click the tray icon to bring it back, or
@@ -890,13 +977,17 @@ src/
   vision.cpp      screen capture + template matching
   winman.cpp      window find/move + layout save/restore
   config.cpp      document model and the action schema
+  recorder.cpp    what a click recording turns into
+  friendly.cpp    every problem, explained in plain words
+  simple.cpp      Simple mode's rows: steps grouped into what it can make
+  discover.cpp    finding the dental programs on this computer
   import_yaml.cpp macrokb macros.yaml importer
   keys.cpp        key name <-> virtual-key tables
   json.cpp        JSON parser/writer
   util.cpp        strings, paths, files
   app.ico         generated - see tools/make_icon.cpp
 tests/
-  selftest.cpp        382 checks over every non-UI subsystem
+  selftest.cpp        510 checks over every non-UI subsystem
   render_preview.cpp  renders the icons and tiles to a PNG
 tools/
   make_icon.cpp       exports src\app.ico from theme.cpp's drawAppIcon()
@@ -942,7 +1033,8 @@ to change it.
 executable, so it has to live somewhere the signed-in user can write.
 Installing under `%LOCALAPPDATA%` also means no admin prompt. Uninstalling
 removes the program and offers to remove your macros, defaulting to keeping
-them.
+them. (A copy that ever fell back to `%LOCALAPPDATA%\DentalMacros` keeps its
+settings there, and the uninstaller leaves that folder alone.)
 
 ### Signing
 

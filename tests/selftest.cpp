@@ -9,10 +9,15 @@
 
 #include "config.h"
 #include "device.h"
+#include "actions.h"
 #include "engine.h"
+#include "friendly.h"
 #include "iconlib.h"
 #include "json.h"
 #include "keys.h"
+#include "recorder.h"
+#include "simple.h"
+#include "discover.h"
 #include "util.h"
 #include "vision.h"
 #include "winman.h"
@@ -40,6 +45,628 @@ static void ok(bool cond, const std::string& what,
 
 static void section(const char* name) {
     std::printf("\n%s\n", name);
+}
+
+// ------------------------------------------------- plain-English problems
+// Every failure the app knows how to explain: the wording, the kind of
+// problem each failure is labelled with where it happens, and the step number
+// that travels with it to the status line.
+static void testFriendlyProblems() {
+    section("Plain-English problems");
+
+    // --- every problem has words, and only fixable ones offer a fix
+    const fe::Problem all[] = {
+        fe::Problem::ConfigDamaged, fe::Problem::ConfigLocked,
+        fe::Problem::SaveDenied,    fe::Problem::SaveDiskFull,
+        fe::Problem::SaveLocked,    fe::Problem::SaveFailed,
+        fe::Problem::InputBlocked,  fe::Problem::TargetElevated,
+        fe::Problem::InputRefused,  fe::Problem::WindowMissing,
+        fe::Problem::ProgramMissing, fe::Problem::ImageNotFound,
+        fe::Problem::ImageFileMissing, fe::Problem::Unexpected};
+    bool worded = true, plain = true;
+    for (fe::Problem p : all) {
+        const fe::Friendly f = fe::explain(p, "OpenDental", "raw detail 0x5");
+        if (f.title.empty() || f.body.empty()) worded = false;
+        // The technical text goes to "Copy details", never into the sentence.
+        if (f.body.find("0x5") != std::string::npos ||
+            f.technical != "raw detail 0x5")
+            plain = false;
+    }
+    ok(worded, "every problem has a title and a sentence");
+    ok(plain, "and keeps the technical text out of the sentence");
+
+    {
+        const fe::Friendly withCopy =
+            fe::explain(fe::Problem::ConfigDamaged, "25 October 2026");
+        const fe::Friendly without = fe::explain(fe::Problem::ConfigDamaged);
+        ok(!withCopy.action.empty() &&
+               withCopy.body.find("25 October 2026") != std::string::npos,
+           "a damaged file offers the backup by its date");
+        ok(without.action.empty(), "and offers nothing when there is no backup");
+        ok(fe::explain(fe::Problem::ConfigLocked).action == "Try again",
+           "a locked file offers to try again");
+    }
+    {
+        const fe::Friendly unknown =
+            fe::explain(fe::Problem::None, "", "could not frob the widget");
+        ok(unknown.body == "could not frob the widget" && unknown.technical.empty(),
+           "an unforeseen failure shows its own text, once");
+    }
+
+    // --- save errors
+    ok(fe::saveProblem(5) == fe::Problem::SaveDenied &&
+           fe::saveProblem(112) == fe::Problem::SaveDiskFull &&
+           fe::saveProblem(32) == fe::Problem::SaveLocked &&
+           fe::saveProblem(1234) == fe::Problem::SaveFailed,
+       "Windows save errors map to denied, full, locked and other");
+
+    // --- the status line
+    ok(fe::stoppedLine("Insurance note", 3, fe::Problem::WindowMissing,
+                       "OpenDental", "") ==
+           "\"Insurance note\" stopped at step 3: OpenDental isn't open.",
+       "says which button, which step and why",
+       fe::stoppedLine("Insurance note", 3, fe::Problem::WindowMissing,
+                       "OpenDental", ""));
+    ok(fe::stoppedLine("X", 0, fe::Problem::None, "", "no command given") ==
+           "\"X\" stopped: no command given",
+       "falls back to the step's own words");
+
+    ok(fe::programName("C:\\Program Files\\Open Dental\\opendental.exe") ==
+           "Opendental",
+       "names a program from its path");
+    ok(fe::friendlyDate("2026-10-05") == "5 October 2026" &&
+           fe::friendlyDate("not a date") == "not a date",
+       "writes dates out in words");
+
+    // --- failures are labelled where they happen, and keep their step
+    eng::Engine e;
+    {
+        cfg::Step wait;
+        wait.action = "sleep";
+        wait.params["seconds"] = 0.0;
+        cfg::Step focus;
+        focus.action = "window_focus";
+        focus.params["exe"] = "no-such-program-dm.exe";
+        fe::Problem got = fe::Problem::None;
+        int step = 0;
+        std::string subject, what;
+        try { e.runSequence({wait, focus}); }
+        catch (const fe::Error& ex) {
+            got = ex.problem; step = ex.step; subject = ex.subject; what = ex.what();
+        }
+        ok(got == fe::Problem::WindowMissing && step == 2,
+           "a program that isn't open is labelled, at its step");
+        ok(subject == "No-such-program-dm", "names the program", subject);
+        ok(what.find("step 2") != std::string::npos,
+           "and the log text reads as before", what);
+    }
+    {
+        cfg::Step find;
+        find.action = "click_image";
+        find.params["image"] = "images\\no-such-picture-dm.png";
+        fe::Problem got = fe::Problem::None;
+        try { e.runSequence({find}); }
+        catch (const fe::Error& ex) { got = ex.problem; }
+        ok(got == fe::Problem::ImageFileMissing,
+           "a missing picture file is told apart from one not on screen");
+    }
+    {
+        cfg::Step bad;
+        bad.action = "no_such_action";
+        fe::Problem got = fe::Problem::Unexpected;
+        int step = 0;
+        try { e.runSequence({bad}); }
+        catch (const fe::Error& ex) { got = ex.problem; step = ex.step; }
+        ok(got == fe::Problem::None && step == 1,
+           "an unlabelled failure still says which step");
+    }
+
+    // --- runs report how they ended
+    {
+        std::mutex mu;
+        std::vector<eng::Outcome> seen;
+        e.setOutcome([&](const eng::Outcome& o) {
+            std::lock_guard<std::mutex> lk(mu);
+            seen.push_back(o);
+        });
+        cfg::Step wait;
+        wait.action = "sleep";
+        wait.params["seconds"] = 0.0;
+        cfg::Step focus;
+        focus.action = "window_focus";
+        focus.params["exe"] = "no-such-program-dm.exe";
+        e.runSequenceAsync({wait}, "Test", "", "Thank you");
+        e.runSequenceAsync({wait, focus}, "Test", "", "Insurance note");
+        for (int i = 0; i < 200; ++i) {
+            {
+                std::lock_guard<std::mutex> lk(mu);
+                if (seen.size() >= 2) break;
+            }
+            Sleep(10);
+        }
+        std::lock_guard<std::mutex> lk(mu);
+        ok(seen.size() == 2, "each run reports once",
+           std::to_string(seen.size()));
+        if (seen.size() == 2) {
+            ok(seen[0].ok && seen[0].button == "Thank you",
+               "a run that worked says so, by the button's name");
+            ok(!seen[1].ok && seen[1].step == 2 &&
+                   seen[1].problem == fe::Problem::WindowMissing,
+               "a run that stopped says where and why");
+        }
+    }
+    e.setOutcome(nullptr);
+
+    // --- input that Windows would drop
+    ok(act::blockedProgram(nullptr).empty() &&
+           act::blockedProgram(GetDesktopWindow()).empty(),
+       "nothing in the way of input to an ordinary window");
+
+    // --- saving: the Windows error comes back, after the quiet retries
+    {
+        const std::string p = appPath("selftest-readonly.json");
+        cfg::Config c;
+        c.path = p;
+        std::string err;
+        ok(c.save(&err), "saves normally", err);
+        SetFileAttributesW(widen(p).c_str(), FILE_ATTRIBUTE_READONLY);
+        const DWORD t0 = GetTickCount();
+        const bool saved = c.save(&err);
+        const DWORD took = GetTickCount() - t0;
+        ok(!saved && fe::saveProblem(c.lastSaveError) == fe::Problem::SaveDenied,
+           "a file that refuses writes is reported as denied",
+           std::to_string(c.lastSaveError) + " " + err);
+        ok(took >= 300, "after a few quiet retries", std::to_string(took) + " ms");
+        SetFileAttributesW(widen(p).c_str(), FILE_ATTRIBUTE_NORMAL);
+        ok(c.save(&err) && c.lastSaveError == 0, "and saves again once it can");
+        deleteFile(p);
+    }
+
+    // --- loading: a file held open is told apart from a damaged one
+    {
+        const std::string p = appPath("selftest-locked.json");
+        writeFileAtomic(p, "{}");
+        HANDLE h = CreateFileW(widen(p).c_str(), GENERIC_READ, 0, nullptr,
+                               OPEN_EXISTING, 0, nullptr);
+        cfg::Config c;
+        c.load(p);
+        ok(c.loadLocked && !c.loadError.empty(), "a file held open is locked");
+        if (h != INVALID_HANDLE_VALUE) CloseHandle(h);
+        writeFileAtomic(p, "{ not json");
+        c.load(p);
+        ok(!c.loadLocked && !c.loadError.empty(),
+           "a damaged file is not mistaken for a locked one");
+        deleteFile(p);
+    }
+}
+
+// ------------------------------------------------- where settings live
+// Beside the program when that folder takes changes, in the Windows profile
+// when it doesn't. The decision is tested against a pretend file system; the
+// copying and the checks it relies on against the real one.
+namespace dataprobe {
+bool exeWritable = true;
+bool profileWritable = true;
+bool exeHasSettings = false;
+bool settingsReadOnly = false;
+bool canCreate(const std::string& dir) {
+    return iequals(dir, "C:\\exe") ? exeWritable : profileWritable;
+}
+bool exists(const std::string& f) {
+    return exeHasSettings && iequals(f, "C:\\exe\\macros.json");
+}
+bool denies(const std::string&) { return settingsReadOnly; }
+}  // namespace dataprobe
+
+static void testDataFolder() {
+    section("Where settings live");
+
+    {
+        using namespace dataprobe;
+        const DataDirProbe probe{&canCreate, &exists, &denies};
+        const std::string exe = "C:\\exe";
+        const std::string prof = "C:\\profile\\DentalMacros";
+
+        exeWritable = true; profileWritable = true;
+        exeHasSettings = false; settingsReadOnly = false;
+        ok(chooseDataDir(exe, prof, probe) == exe,
+           "beside the program when that folder takes changes");
+        exeWritable = false;
+        ok(chooseDataDir(exe, prof, probe) == prof,
+           "in the Windows profile when it doesn't");
+        exeWritable = true; exeHasSettings = true; settingsReadOnly = true;
+        ok(chooseDataDir(exe, prof, probe) == prof,
+           "or when the settings file itself refuses changes");
+        settingsReadOnly = false;
+        ok(chooseDataDir(exe, prof, probe) == exe,
+           "a settings file that takes changes stays where it is");
+        exeWritable = false; profileWritable = false;
+        ok(chooseDataDir(exe, prof, probe) == exe,
+           "stays put when the profile can't be written either");
+        ok(chooseDataDir(exe, "", probe) == exe,
+           "and when there is no profile folder at all");
+    }
+
+    // --- moving copies, and never overwrites
+    const std::string root = appPath("selftest-datadir");
+    const std::string from = joinPath(root, "from");
+    const std::string to = joinPath(root, "to");
+    ensureDir(joinPath(from, "images"));
+    ensureDir(joinPath(from, "layouts"));
+    writeFileAtomic(joinPath(from, "macros.json"), "{}");
+    writeFileAtomic(joinPath(from, "images\\stamp.png"), "png");
+    writeFileAtomic(joinPath(from, "layouts\\main.json"), "{}");
+
+    ok(migrateData(from, to) && fileExists(joinPath(to, "macros.json")) &&
+           fileExists(joinPath(to, "images\\stamp.png")) &&
+           fileExists(joinPath(to, "layouts\\main.json")),
+       "moving copies the settings, pictures and layouts");
+    writeFileAtomic(joinPath(from, "macros.json"), "{\"newer\": 1}");
+    std::string kept;
+    readFile(joinPath(to, "macros.json"), kept);
+    ok(!migrateData(from, to) && kept == "{}",
+       "and never copies over settings already there");
+    ok(fileExists(joinPath(from, "macros.json")),
+       "the originals stay where they were");
+
+    // --- the checks the decision relies on
+    ok(canCreateIn(to), "a normal folder takes new files");
+    ok(!fileDeniesWrites(joinPath(to, "macros.json")),
+       "a normal file takes changes");
+    const std::wstring ro = widen(joinPath(to, "macros.json"));
+    SetFileAttributesW(ro.c_str(), FILE_ATTRIBUTE_READONLY);
+    ok(fileDeniesWrites(joinPath(to, "macros.json")),
+       "a read-only file refuses them");
+    SetFileAttributesW(ro.c_str(), FILE_ATTRIBUTE_NORMAL);
+    {
+        // Held open by someone else is not a refusal - sync software does it
+        // for a moment all the time.
+        HANDLE h = CreateFileW(ro.c_str(), GENERIC_READ, FILE_SHARE_READ,
+                               nullptr, OPEN_EXISTING, 0, nullptr);
+        ok(!fileDeniesWrites(joinPath(to, "macros.json")),
+           "a file held open by another program is not refusing");
+        if (h != INVALID_HANDLE_VALUE) CloseHandle(h);
+    }
+    ok(!fileDeniesWrites(joinPath(root, "nothing-here.json")),
+       "a file that isn't there refuses nothing");
+
+    // --- finding stored pictures
+    ok(!dataDirIsFallback() && iequals(dataDir(), exeDir()),
+       "the test's own folder takes changes, so it is the data folder");
+    ok(resolveDataPath("C:\\elsewhere\\x.png") == "C:\\elsewhere\\x.png",
+       "an absolute path is left alone");
+    writeFileAtomic(appPath("selftest-resolve.png"), "x");
+    ok(iequals(resolveDataPath("selftest-resolve.png"),
+               appPath("selftest-resolve.png")),
+       "a stored relative path is found");
+    ok(relativeToApp(dataPath("images\\stamp.png")) == "images\\stamp.png",
+       "and stored relative to the data folder");
+
+    deleteFile(appPath("selftest-resolve.png"));
+    for (const std::string& dir : {from, to}) {
+        deleteFile(joinPath(dir, "macros.json"));
+        deleteFile(joinPath(dir, "images\\stamp.png"));
+        deleteFile(joinPath(dir, "layouts\\main.json"));
+        RemoveDirectoryW(widen(joinPath(dir, "images")).c_str());
+        RemoveDirectoryW(widen(joinPath(dir, "layouts")).c_str());
+        RemoveDirectoryW(widen(dir).c_str());
+    }
+    RemoveDirectoryW(widen(root).c_str());
+}
+
+// ------------------------------------------------------------ simple mode
+// Simple mode's rows: every step in exactly one row, recorded clicks as one
+// row, anything Simple mode doesn't make gathered up and kept.
+static cfg::Step simpleStep(const std::string& action) {
+    cfg::Step s;
+    s.action = action;
+    s.params = js::Value::object();
+    return s;
+}
+
+static void testSimpleMode() {
+    section("Simple mode");
+
+    cfg::Step type = simpleStep("type");
+    type.params["text"] = "Thank you for visiting!\nSee you soon.";
+    cfg::Step keys = simpleStep("keys");
+    keys.params["combo"] = "ctrl+s";
+    cfg::Step wait = simpleStep("sleep");
+    wait.params["seconds"] = 0.5;
+    cfg::Step prep = simpleStep("window_prepare");
+    prep.params["class"] = "WindowsForms10";
+    prep.params["exe"] = "opendental.exe";
+    cfg::Step click = simpleStep("click");
+    click.params["x"] = 10;
+    click.params["y"] = 20;
+    cfg::Step pause = simpleStep("sleep");
+    pause.params["seconds"] = 0.2;
+    cfg::Step release = simpleStep("window_release");
+    cfg::Step image = simpleStep("click_image");
+    cfg::Step page = simpleStep("page_goto");
+
+    {
+        const std::vector<cfg::Step> steps = {type, keys, wait};
+        const auto rows = smp::rowsFor(steps);
+        ok(rows.size() == 3 && rows[0].kind == smp::Kind::Type &&
+               rows[1].kind == smp::Kind::Keys &&
+               rows[2].kind == smp::Kind::Wait,
+           "type, keys and wait are a row each");
+        if (rows.size() == 3) {
+            ok(rows[0].text == "Type \"Thank you for visiting! See you\xE2\x80\xA6\"",
+               "typed text is shown on one line, shortened", rows[0].text);
+            ok(rows[1].text == "Press " + keys::prettyCombo("ctrl+s"),
+               "keys read as they are pressed", rows[1].text);
+            ok(rows[2].text == "Wait half a second", "waits read in words",
+               rows[2].text);
+        }
+    }
+    {
+        // lock, click, pause, click, release, then a wait of its own
+        const std::vector<cfg::Step> steps = {prep, click, pause, click,
+                                              release, wait};
+        const auto rows = smp::rowsFor(steps);
+        ok(rows.size() == 2 && rows[0].kind == smp::Kind::Clicks &&
+               rows[0].first == 0 && rows[0].count == 5,
+           "a recorded sequence is one row, lock to release");
+        if (!rows.empty())
+            ok(rows[0].text == "Click in Opendental (2 clicks)",
+               "named by the program it clicks in", rows[0].text);
+        ok(rows.size() == 2 && rows[1].kind == smp::Kind::Wait,
+           "and a wait after it stays a wait");
+    }
+    {
+        // clicks with no lock: the pause between them is theirs, the one
+        // after the last is not
+        const std::vector<cfg::Step> steps = {click, pause, click, wait};
+        const auto rows = smp::rowsFor(steps);
+        ok(rows.size() == 2 && rows[0].kind == smp::Kind::Clicks &&
+               rows[0].count == 3 && rows[1].kind == smp::Kind::Wait,
+           "clicks without a lock group with the pauses between them");
+        if (!rows.empty())
+            ok(rows[0].text == "Click on the screen (2 clicks)",
+               "and say where they go", rows[0].text);
+    }
+    {
+        const std::vector<cfg::Step> steps = {type, image, page, wait, image};
+        const auto rows = smp::rowsFor(steps);
+        ok(rows.size() == 4 && rows[1].kind == smp::Kind::Advanced &&
+               rows[1].first == 1 && rows[1].count == 2 &&
+               rows[3].kind == smp::Kind::Advanced && rows[3].count == 1,
+           "steps Simple mode doesn't make are gathered, run by run");
+        if (rows.size() == 4)
+            ok(rows[1].text.find("+ 2 advanced steps") == 0,
+               "and counted", rows[1].text);
+    }
+    {
+        // a lock with no release is not a recording
+        const std::vector<cfg::Step> steps = {prep, click};
+        const auto rows = smp::rowsFor(steps);
+        ok(rows.size() == 2 && rows[0].kind == smp::Kind::Advanced &&
+               rows[1].kind == smp::Kind::Clicks,
+           "a lock without its release is left as an advanced step");
+    }
+    {
+        const std::vector<cfg::Step> steps = {type, prep, click, release, image,
+                                              keys, click, wait};
+        const auto rows = smp::rowsFor(steps);
+        size_t covered = 0, next = 0;
+        bool inOrder = true;
+        for (const auto& r : rows) {
+            if (r.first != next) inOrder = false;
+            next = r.first + r.count;
+            covered += r.count;
+        }
+        ok(inOrder && covered == steps.size(),
+           "every step is in exactly one row, in order");
+        ok(smp::rowOfStep(rows, 2) == 1 && smp::rowOfStep(rows, 99) == -1,
+           "finds the row that holds a step");
+    }
+    ok(smp::rowsFor({}).empty(), "no steps, no rows");
+
+    ok(smp::waitText(1.0) == "Wait 1 second" &&
+           smp::waitText(2.0) == "Wait 2 seconds" &&
+           smp::waitText(1.5) == "Wait 1.5 seconds",
+       "waits of any length read naturally");
+
+    // --- the setting
+    ok(cfg::Settings().simpleMode, "a brand-new setup starts in Simple mode");
+    {
+        const std::string p = appPath("selftest-uimode.json");
+        writeFileAtomic(p, "{ \"settings\": { \"matchConfidence\": 0.9 }, "
+                           "\"keyboards\": [] }");
+        cfg::Config c;
+        c.load(p);
+        ok(!c.settings.simpleMode,
+           "a settings file from before the option opens in Advanced");
+        c.settings.simpleMode = true;
+        std::string err;
+        ok(c.save(&err), "saves the choice", err);
+        cfg::Config back;
+        back.load(p);
+        ok(back.settings.simpleMode, "and reads it back");
+        writeFileAtomic(p, "{ broken");
+        back.load(p);
+        ok(!back.settings.simpleMode,
+           "a damaged file means an existing user, so Advanced");
+        deleteFile(p);
+    }
+}
+
+// ------------------------------------------------------- first-run setup
+// When setup is offered, and which dental programs it recognises.
+static void testFirstRun() {
+    section("First-run setup");
+
+    ok(!cfg::Settings().setupDone, "a brand-new setup hasn't been set up");
+    {
+        const std::string p = appPath("selftest-setupdone.json");
+        writeFileAtomic(p, "{ \"settings\": {}, \"keyboards\": [] }");
+        cfg::Config c;
+        c.load(p);
+        ok(c.settings.setupDone,
+           "a settings file from before the option was set up long ago");
+        c.settings.setupDone = false;
+        std::string err;
+        ok(c.save(&err), "saves the flag", err);
+        cfg::Config back;
+        back.load(p);
+        ok(!back.settings.setupDone, "and reads it back");
+        writeFileAtomic(p, "{ broken");
+        back.load(p);
+        ok(back.settings.setupDone,
+           "a damaged file never brings setup back over someone's buttons");
+        deleteFile(p);
+    }
+
+    ok(discover::matchProduct("Open Dental Software 24.1") == "Open Dental",
+       "recognises a product from its uninstall entry");
+    ok(discover::matchProduct("OpenDental.exe") == "Open Dental",
+       "and from its program file, spaces or not");
+    ok(discover::matchProduct("Dentrix Office Manager - Front Desk") == "Dentrix",
+       "and from a window title");
+    ok(discover::matchProduct("PRACTICE-WEB 21") == "Practice-Web",
+       "whatever the case and punctuation");
+    ok(discover::matchProduct("Notepad").empty() &&
+           discover::matchProduct("").empty(),
+       "and nothing that isn't one");
+    {
+        // Runs against this machine; only checks that it answers sanely.
+        const auto found = discover::findDentalPrograms();
+        bool named = true, openFirst = true, seenClosed = false;
+        for (const auto& p : found) {
+            if (p.name.empty()) named = false;
+            if (!p.running) seenClosed = true;
+            else if (seenClosed) openFirst = false;
+        }
+        ok(named && openFirst, "lists what it finds, open programs first",
+           std::to_string(found.size()) + " found");
+    }
+}
+
+// ------------------------------------------------- click recorder steps
+// What a recording turns into. The recorder window itself is not tested here
+// (it needs a person to right-click), but every step it writes comes from
+// rec::buildSteps, and every double-click from rec::makesDouble.
+static void testClickRecorder() {
+    section("Click recorder");
+
+    rec::Target win;
+    win.has = true;
+    win.cls = "WindowsForms10.Window.8.app.0.1";
+    win.exe = "opendental.exe";
+    win.x = 10; win.y = 20; win.w = 1200; win.h = 800;
+
+    auto click = [&](int x, int y, bool dbl = false, bool inWin = true) {
+        rec::Click c;
+        c.x = x;
+        c.y = y;
+        c.isDouble = dbl;
+        if (inWin) c.window = win;
+        return c;
+    };
+
+    ok(rec::buildSteps({}, rec::Speed::Normal).empty(),
+       "nothing recorded writes nothing");
+
+    {
+        auto steps = rec::buildSteps({click(100, 200)}, rec::Speed::Normal);
+        ok(steps.size() == 3, "one click: lock, click, release",
+           std::to_string(steps.size()));
+        if (steps.size() == 3) {
+            ok(steps[0].action == "window_prepare" &&
+                   steps[0].params.str("class") == win.cls &&
+                   steps[0].params.str("exe") == win.exe,
+               "locks the window the first click landed in");
+            ok(steps[0].params.integer("x") == 10 &&
+                   steps[0].params.integer("w") == 1200 &&
+                   steps[0].params.integer("h") == 800,
+               "at the size and position it had while recording");
+            ok(steps[1].action == "click" && steps[1].params.integer("x") == 100 &&
+                   steps[1].params.integer("y") == 200,
+               "keeps the click position");
+            ok(!steps[1].params.boolean("double", false),
+               "a single click is not a double-click");
+            ok(steps[2].action == "window_release", "ends by releasing the window");
+        }
+    }
+
+    {
+        auto steps = rec::buildSteps(
+            {click(1, 1), click(2, 2, true), click(3, 3)}, rec::Speed::Slow);
+        // prepare, click, wait, click, wait, click, release
+        ok(steps.size() == 7, "three clicks: a pause between each, none after",
+           std::to_string(steps.size()));
+        if (steps.size() == 7) {
+            ok(steps[2].action == "sleep" && steps[4].action == "sleep" &&
+                   steps[5].action == "click",
+               "pauses sit between clicks only");
+            ok(std::fabs(steps[2].params.num("seconds", 0) - 1.5) < 1e-9,
+               "Slow pauses 1.5 seconds");
+            ok(steps[3].params.boolean("double", false),
+               "a double-click is written as one");
+        }
+    }
+
+    ok(rec::pauseSeconds(rec::Speed::Fast) == 0.2 &&
+           rec::pauseSeconds(rec::Speed::Normal) == 0.5,
+       "Fast and Normal pause 0.2 and 0.5 seconds");
+
+    {
+        auto steps = rec::buildSteps({click(5, 6, false, false)}, rec::Speed::Normal);
+        ok(steps.size() == 1 && steps[0].action == "click",
+           "no window under the click: no lock and no release");
+    }
+
+    // The recorded shape still loads back after a save.
+    {
+        const std::string p = appPath("selftest-recorder.json");
+        cfg::Config c;
+        c.path = p;
+        cfg::Keyboard kb;
+        kb.alias = "Pad";
+        kb.match = "VID_1&PID_2";
+        cfg::Binding b;
+        b.key = "num1";
+        b.steps = rec::buildSteps({click(7, 8), click(9, 10, true)},
+                                  rec::Speed::Normal);
+        kb.active().bindings.push_back(b);
+        c.keyboards.push_back(kb);
+        std::string err;
+        ok(c.save(&err), "saves a recording", err);
+        cfg::Config back;
+        back.load(p);
+        const cfg::Binding* lb =
+            back.keyboards.empty() ? nullptr : back.keyboards[0].findKey("num1");
+        ok(lb && lb->steps.size() == 5 &&
+               lb->steps[3].params.boolean("double", false),
+           "and it loads back with the double-click intact");
+        deleteFile(p);
+    }
+
+    // --- double-click detection
+    ok(rec::makesDouble(100, 100, 1000, 102, 99, 1300, 500, 4, 4),
+       "a second right-click close by and soon after makes a double-click");
+    ok(!rec::makesDouble(100, 100, 1000, 100, 100, 1600, 500, 4, 4),
+       "too slow is two separate clicks");
+    ok(!rec::makesDouble(100, 100, 1000, 140, 100, 1100, 500, 4, 4),
+       "too far apart is two separate clicks");
+    ok(rec::makesDouble(5, 5, 0xFFFFFF00ul, 5, 5, 0x00000010ul, 500, 4, 4),
+       "copes with the tick count wrapping round");
+
+    // --- what the user reads
+    ok(rec::describe(click(1, 1)) == "Click in Opendental",
+       "names the program from its executable", rec::describe(click(1, 1)));
+    ok(rec::describe(click(1, 1, true)) == "Double-click in Opendental",
+       "says when it is a double-click");
+    ok(rec::describe(click(1, 1, false, false)).find("not inside a program") !=
+           std::string::npos,
+       "says when a click is not inside a program");
+    rec::Target other = win;
+    other.exe = "notepad.exe";
+    other.cls = "Notepad";
+    ok(win.sameWindowAs(win) && !win.sameWindowAs(other),
+       "tells one program's window from another's");
 }
 
 // ---------------------------------------------------------------- json
@@ -2088,6 +2715,11 @@ int main(int argc, char** argv) {
     testConfigRescue();
     testEngine();
     testClickWorkflow();
+    testClickRecorder();
+    testFriendlyProblems();
+    testDataFolder();
+    testSimpleMode();
+    testFirstRun();
     testIconLibrary();
     testSoftwareDeck();
     testPages();

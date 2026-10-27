@@ -79,7 +79,7 @@ std::string layoutPath(const std::string& name, const std::string& dir) {
     std::string safe;
     for (char c : name)
         safe += (strchr("\\/:*?\"<>|", c) ? '_' : c);
-    return joinPath(joinPath(exeDir(), dir), safe + ".json");
+    return joinPath(joinPath(dataDir(), dir), safe + ".json");
 }
 
 std::vector<std::string> words(const std::string& s) {
@@ -298,7 +298,7 @@ int restoreLayout(const std::string& name, const std::string& layoutsDir,
 std::vector<std::string> listLayouts(const std::string& layoutsDir) {
     std::vector<std::string> out;
     for (const std::string& f :
-         listFiles(joinPath(exeDir(), layoutsDir), ".json"))
+         listFiles(joinPath(dataDir(), layoutsDir), ".json"))
         out.push_back(stripExt(f));
     return out;
 }

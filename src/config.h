@@ -211,6 +211,18 @@ struct Settings {
     int miniDeckY = INT_MIN;
     int miniDeckTile = 38;        // design px per button
     int miniDeckCols = 5;
+
+    // Which main window to show: Simple (type, press keys, recorded clicks,
+    // wait) or Advanced (everything). Only what is shown changes - Simple
+    // mode keeps every step it doesn't make. A brand-new setup starts in
+    // Simple; a settings file from before this option existed loads as
+    // Advanced, so nobody upgrading finds half their editor gone.
+    bool simpleMode = true;
+
+    // First-run setup has been finished or skipped. False only for a
+    // brand-new setup; a settings file from before this option existed was
+    // set up long ago.
+    bool setupDone = false;
 };
 
 // Match confidence outside this range is refused by the settings dialog and
@@ -242,6 +254,12 @@ struct Config {
     bool needsRescue = false;
     // Where save() put the rescued copy, for reporting back to the user.
     std::string lastBackup;
+    // The Windows error behind the last failed save(), 0 after a good one.
+    unsigned long lastSaveError = 0;
+    // Set by load() when the file was there but Windows would not open it -
+    // usually sync or backup software holding it - as opposed to a file that
+    // opened but is not valid. Worth retrying; a damaged file is not.
+    bool loadLocked = false;
 
     // Loading never throws: a damaged file leaves an empty config plus a
     // populated loadError, so the app can open and explain itself.
@@ -250,7 +268,9 @@ struct Config {
     // first. Any successful save clears needsRescue.
     bool save(std::string* error = nullptr);
     std::string toJson() const;      // exactly what save() writes
-    bool saveAs(const std::string& file, std::string* error = nullptr) const;
+    // `win32Error` receives the Windows error code when writing fails.
+    bool saveAs(const std::string& file, std::string* error = nullptr,
+                unsigned long* win32Error = nullptr) const;
     // Copy the current file to backups/macros-<date>.json, keeping the newest
     // `keep` of them. Cheap enough to call once per run.
     bool writeDailyBackup(int keep = 10, std::string* outPath = nullptr) const;

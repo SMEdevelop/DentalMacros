@@ -487,13 +487,21 @@ void Config::load(const std::string& file) {
     loadError.clear();
     loadWarnings.clear();
     needsRescue = false;
+    loadLocked = false;
     lastBackup.clear();
     dirty = false;
 
     std::string text;
-    switch (readFileEx(file, text)) {
+    const ReadResult read = readFileEx(file, text);
+    if (read == ReadResult::Missing) return;   // brand new - defaults are fine
+    // A file that is really there was written by someone already using the
+    // app - even a damaged one - so Advanced unless it says otherwise. Only a
+    // missing file (a brand-new setup) keeps the Simple default.
+    settings.simpleMode = false;
+    settings.setupDone = true;
+    switch (read) {
         case ReadResult::Missing:
-            return;   // brand new install - defaults are fine
+            return;
         case ReadResult::Unreadable:
             // Emphatically not the same as "no config yet". Something is
             // there and we could not read it, so nothing may overwrite it.
@@ -501,6 +509,7 @@ void Config::load(const std::string& file) {
                 "the file is there but Windows would not open it - it may be "
                 "open in another program, or locked by sync or backup software";
             needsRescue = true;
+            loadLocked = true;
             return;
         case ReadResult::Ok:
             break;
@@ -533,6 +542,8 @@ void Config::load(const std::string& file) {
         settings.miniDeckY = (int)s->num("miniDeckY", (double)INT_MIN);
         settings.miniDeckTile = (int)s->num("miniDeckTile", 38);
         settings.miniDeckCols = (int)s->num("miniDeckCols", 5);
+        settings.simpleMode = s->str("uiMode", "") == "simple";
+        settings.setupDone = s->boolean("setupDone", true);
     }
     // Clamped rather than refused: a hand-edited file with a silly size still
     // opens, it just opens with a usable palette.
@@ -687,6 +698,8 @@ std::string Config::toJson() const {
     s["miniDeckY"] = (double)settings.miniDeckY;
     s["miniDeckTile"] = (double)settings.miniDeckTile;
     s["miniDeckCols"] = (double)settings.miniDeckCols;
+    s["uiMode"] = settings.simpleMode ? "simple" : "advanced";
+    s["setupDone"] = settings.setupDone;
     root["settings"] = std::move(s);
 
     js::Value kbs = js::Value::array();
@@ -768,9 +781,13 @@ std::string Config::toJson() const {
     return root.dump(2);
 }
 
-bool Config::saveAs(const std::string& file, std::string* error) const {
+bool Config::saveAs(const std::string& file, std::string* error,
+                    unsigned long* win32Error) const {
     if (!writeFileAtomic(file, toJson())) {
-        if (error) *error = "could not write " + file;
+        const DWORD code = GetLastError();
+        if (win32Error) *win32Error = code;
+        if (error)
+            *error = "could not write " + file + ": " + lastErrorMessage(code);
         return false;
     }
     return true;
@@ -784,6 +801,7 @@ bool Config::save(std::string* error) {
         if (fileExists(path)) {
             std::string bak = freeBackupPath(path);
             if (!copyFile(path, bak, false)) {
+                lastSaveError = GetLastError();
                 if (error)
                     *error = "refusing to overwrite " + baseName(path) +
                              ": it could not be read earlier and a backup copy "
@@ -796,14 +814,15 @@ bool Config::save(std::string* error) {
         needsRescue = false;
     }
 
-    if (!saveAs(path, error)) return false;
+    lastSaveError = 0;
+    if (!saveAs(path, error, &lastSaveError)) return false;
     dirty = false;
     return true;
 }
 
 bool Config::writeDailyBackup(int keep, std::string* outPath) const {
     if (path.empty() || !fileExists(path)) return false;
-    const std::string dir = appPath("backups");
+    const std::string dir = dataPath("backups");
     const std::string dest =
         joinPath(dir, "macros-" + dateStamp() + ".json");
     if (fileExists(dest)) return false;   // already have today's

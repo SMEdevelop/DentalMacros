@@ -3,6 +3,7 @@
 #include <cctype>
 #include <cstdio>
 #include <ctime>
+#include <mutex>
 #include <new>
 
 std::wstring widen(const std::string& s) {
@@ -103,10 +104,142 @@ std::string appPath(const std::string& relative) {
 }
 
 std::string relativeToApp(const std::string& absolute) {
-    std::string root = lower(exeDir()) + "\\";
-    std::string low = lower(absolute);
-    if (low.rfind(root, 0) == 0) return absolute.substr(root.size());
+    const std::string low = lower(absolute);
+    for (const std::string& dir : {dataDir(), exeDir()}) {
+        const std::string root = lower(dir) + "\\";
+        if (low.rfind(root, 0) == 0) return absolute.substr(root.size());
+    }
     return absolute;
+}
+
+// ------------------------------------------------------------ data folder
+bool canCreateIn(const std::string& dir) {
+    if (dir.empty()) return false;
+    ensureDir(dir);
+    const std::string probe =
+        joinPath(dir, "~dm-write-test-" + std::to_string(GetCurrentProcessId()) +
+                          ".tmp");
+    HANDLE h = CreateFileW(widen(probe).c_str(), GENERIC_WRITE, 0, nullptr,
+                           CREATE_NEW, FILE_ATTRIBUTE_TEMPORARY |
+                                           FILE_FLAG_DELETE_ON_CLOSE,
+                           nullptr);
+    if (h == INVALID_HANDLE_VALUE) return false;
+    CloseHandle(h);   // and it is gone
+    return true;
+}
+
+bool fileDeniesWrites(const std::string& file) {
+    const DWORD attrs = GetFileAttributesW(widen(file).c_str());
+    if (attrs == INVALID_FILE_ATTRIBUTES || (attrs & FILE_ATTRIBUTE_DIRECTORY))
+        return false;
+    if (attrs & FILE_ATTRIBUTE_READONLY) return true;
+    // Opened for writing and closed again at once, sharing everything so it
+    // can't disturb anyone who has it open. Only "access denied" counts: a
+    // sharing violation is a sync client passing through, not a refusal.
+    HANDLE h = CreateFileW(widen(file).c_str(), GENERIC_WRITE,
+                           FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                           nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (h != INVALID_HANDLE_VALUE) {
+        CloseHandle(h);
+        return false;
+    }
+    return GetLastError() == ERROR_ACCESS_DENIED;
+}
+
+std::string profileDataDir() {
+    wchar_t buf[MAX_PATH];
+    const DWORD n = GetEnvironmentVariableW(L"LOCALAPPDATA", buf, MAX_PATH);
+    if (n == 0 || n >= MAX_PATH) return "";
+    return joinPath(narrow(buf), "DentalMacros");
+}
+
+std::string chooseDataDir(const std::string& exe, const std::string& profile,
+                          const DataDirProbe& probe) {
+    const std::string settings = joinPath(exe, "macros.json");
+    const bool exeOk = probe.canCreateIn(exe) &&
+                       !(probe.exists(settings) && probe.deniesWrites(settings));
+    if (exeOk || profile.empty()) return exe;
+    // Nowhere better to go: stay, and let the first save explain why.
+    if (!probe.canCreateIn(profile)) return exe;
+    return profile;
+}
+
+bool migrateData(const std::string& from, const std::string& to) {
+    if (from.empty() || to.empty() || iequals(from, to)) return false;
+    if (fileExists(joinPath(to, "macros.json"))) return false;
+    ensureDir(to);
+    bool copied = false;
+    if (fileExists(joinPath(from, "macros.json")))
+        copied = copyFile(joinPath(from, "macros.json"),
+                          joinPath(to, "macros.json"), false);
+    // The pictures and layouts the settings refer to by relative path. They
+    // would still be found beside the program, but a copy makes the profile
+    // folder whole - and editable.
+    for (const char* sub : {"images", "layouts"}) {
+        const std::string src = joinPath(from, sub);
+        const std::vector<std::string> files = listFiles(src, "");
+        if (files.empty()) continue;
+        ensureDir(joinPath(to, sub));
+        for (const std::string& f : files)
+            if (copyFile(joinPath(src, f), joinPath(joinPath(to, sub), f), false))
+                copied = true;
+    }
+    return copied;
+}
+
+namespace {
+std::mutex g_dataMu;
+std::string g_dataDir;   // empty until first asked for
+
+const DataDirProbe kRealProbe{&canCreateIn, &fileExists, &fileDeniesWrites};
+}  // namespace
+
+std::string dataDir() {
+    std::lock_guard<std::mutex> lk(g_dataMu);
+    if (g_dataDir.empty()) {
+        const std::string exe = exeDir();
+        g_dataDir = chooseDataDir(exe, profileDataDir(), kRealProbe);
+        // Moving out for the first time: bring the settings along.
+        if (!iequals(g_dataDir, exe)) migrateData(exe, g_dataDir);
+    }
+    return g_dataDir;
+}
+
+std::string dataPath(const std::string& relative) {
+    return joinPath(dataDir(), relative);
+}
+
+bool dataDirIsFallback() { return !iequals(dataDir(), exeDir()); }
+
+std::string resolveDataPath(const std::string& rel) {
+    if (rel.empty()) return rel;
+    const bool absolute =
+        rel.size() > 1 && (rel[1] == ':' || rel[0] == '\\' || rel[0] == '/');
+    if (absolute) return rel;
+    const std::string inData = joinPath(dataDir(), rel);
+    if (fileExists(inData)) return inData;
+    const std::string inExe = joinPath(exeDir(), rel);
+    if (fileExists(inExe)) return inExe;
+    if (fileExists(rel)) return rel;   // the working folder, as it always was
+    return inData;
+}
+
+bool moveDataToProfile(std::string* error) {
+    const std::string profile = profileDataDir();
+    if (profile.empty()) {
+        if (error) *error = "Windows did not say where this user's profile is";
+        return false;
+    }
+    if (!canCreateIn(profile)) {
+        if (error) *error = "could not write in " + profile;
+        return false;
+    }
+    const std::string from = dataDir();
+    if (iequals(from, profile)) return true;
+    migrateData(from, profile);
+    std::lock_guard<std::mutex> lk(g_dataMu);
+    g_dataDir = profile;
+    return true;
 }
 
 std::string baseName(const std::string& path) {
@@ -211,15 +344,32 @@ bool writeFileAtomic(const std::string& path, const std::string& data) {
     BOOL ok = TRUE;
     if (!data.empty())
         ok = WriteFile(h, data.data(), (DWORD)data.size(), &wrote, nullptr);
+    DWORD err = ok ? 0 : GetLastError();
     FlushFileBuffers(h);
     CloseHandle(h);
-    if (!ok || wrote != data.size()) { DeleteFileW(widen(tmp).c_str()); return false; }
-    if (!MoveFileExW(widen(tmp).c_str(), widen(path).c_str(),
-                     MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+    if (!ok || wrote != data.size()) {
+        if (!err) err = ERROR_DISK_FULL;   // a short write is a full disk
         DeleteFileW(widen(tmp).c_str());
+        SetLastError(err);
         return false;
     }
-    return true;
+    // Sync and antivirus software open a file the moment it changes and hold
+    // it for a fraction of a second, which makes the swap fail with a sharing
+    // violation or access denied. Worth a few quiet retries before giving up.
+    for (int attempt = 0;; ++attempt) {
+        if (MoveFileExW(widen(tmp).c_str(), widen(path).c_str(),
+                        MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
+            return true;
+        err = GetLastError();
+        const bool transient =
+            err == ERROR_SHARING_VIOLATION || err == ERROR_LOCK_VIOLATION ||
+            err == ERROR_ACCESS_DENIED || err == ERROR_USER_MAPPED_FILE;
+        if (!transient || attempt >= 4) break;
+        Sleep(100);
+    }
+    DeleteFileW(widen(tmp).c_str());
+    SetLastError(err);   // for the caller, who has to explain it
+    return false;
 }
 
 std::vector<std::string> listFiles(const std::string& dir,

@@ -58,7 +58,7 @@ rem  a duplicate resource.
 set LDFLAGS=/link /SUBSYSTEM:WINDOWS /MANIFEST:NO /OPT:REF /OPT:ICF /INCREMENTAL:NO
 set LIBS=gdiplus.lib comctl32.lib comdlg32.lib shlwapi.lib shell32.lib dwmapi.lib uxtheme.lib msimg32.lib gdi32.lib user32.lib ole32.lib oleaut32.lib advapi32.lib psapi.lib hid.lib
 
-set SOURCES=src\main.cpp src\app.cpp src\minideck.cpp src\iconlib.cpp src\iconpicker.cpp src\dialogs.cpp src\ui_common.cpp src\theme.cpp src\engine.cpp src\config.cpp src\import_yaml.cpp src\winman.cpp src\vision.cpp src\actions.cpp src\device.cpp src\keys.cpp src\json.cpp src\util.cpp
+set SOURCES=src\main.cpp src\app.cpp src\minideck.cpp src\iconlib.cpp src\iconpicker.cpp src\dialogs.cpp src\ui_common.cpp src\theme.cpp src\engine.cpp src\config.cpp src\import_yaml.cpp src\winman.cpp src\vision.cpp src\recorder.cpp src\friendly.cpp src\simple.cpp src\discover.cpp src\actions.cpp src\device.cpp src\keys.cpp src\json.cpp src\util.cpp
 
 echo  Compiling resources...
 rc /nologo /fo build\app.res src\app.rc
