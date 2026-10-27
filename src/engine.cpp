@@ -1,6 +1,7 @@
 #include "engine.h"
 
 #include "actions.h"
+#include "friendly.h"
 #include "keys.h"
 #include "util.h"
 #include "vision.h"
@@ -25,6 +26,20 @@ void Engine::setLog(LogFn fn) {
 void Engine::setPageChanger(PageFn fn) {
     std::lock_guard<std::mutex> lk(logMu_);
     page_ = std::move(fn);
+}
+
+void Engine::setOutcome(OutcomeFn fn) {
+    std::lock_guard<std::mutex> lk(logMu_);
+    outcome_ = std::move(fn);
+}
+
+void Engine::report(const Outcome& o) {
+    OutcomeFn fn;
+    {
+        std::lock_guard<std::mutex> lk(logMu_);
+        fn = outcome_;
+    }
+    if (fn) fn(o);
 }
 
 int Engine::resolvePage(const std::string& alias, const std::string& name,
@@ -129,6 +144,7 @@ void Engine::onKey(const dev::KeyEvent& ev) {
 
     std::string alias;
     std::vector<cfg::Step> steps;
+    std::string title;   // the button's name, for the status line
     bool hasMacro = false;
     // A "Hold for a page" step on this key, resolved while we still have the
     // config in hand: the page to show while it is down, and the one to put
@@ -142,7 +158,10 @@ void Engine::onKey(const dev::KeyEvent& ev) {
             alias = kb->alias;
             if (const cfg::Binding* b = kb->findKey(keyName)) {
                 hasMacro = !b->steps.empty();
-                if (ev.down && hasMacro) steps = b->steps;
+                if (ev.down && hasMacro) {
+                    steps = b->steps;
+                    title = b->displayTitle();
+                }
                 for (const cfg::Step& s : b->steps)
                     if (s.action == "page_hold") {
                         holdPage = s.params.str("page");
@@ -205,6 +224,7 @@ void Engine::onKey(const dev::KeyEvent& ev) {
     job.steps = std::move(steps);
     job.alias = alias;
     job.label = "[" + alias + "] " + keys::displayName(keyName);
+    job.title = title;
     {
         std::lock_guard<std::mutex> lk(jobMu_);
         // Don't let a held-down key pile up hundreds of pending runs.
@@ -230,20 +250,33 @@ void Engine::workerMain() {
             jobs_.pop_front();
         }
         runningAlias_ = job.alias;
+        Outcome out;
+        out.button = job.title.empty() ? job.label : job.title;
+        out.alias = job.alias;
         try {
             log(job.label + " - running " + std::to_string(job.steps.size()) +
                 (job.steps.size() == 1 ? " step" : " steps"));
             runSequence(job.steps);
+            out.ok = true;
+        } catch (const fe::Error& e) {
+            log(job.label + " - stopped: " + e.what());
+            out.step = e.step;
+            out.problem = e.problem;
+            out.subject = e.subject;
+            out.technical = e.what();
         } catch (const std::exception& e) {
             log(job.label + " - stopped: " + e.what());
+            out.technical = e.what();
         }
+        report(out);
         runningAlias_.clear();
     }
 }
 
 void Engine::runSequenceAsync(const std::vector<cfg::Step>& steps,
                               const std::string& label,
-                              const std::string& alias) {
+                              const std::string& alias,
+                              const std::string& title) {
     if (steps.empty()) return;
     if (!worker_.joinable()) {
         // Test runs work even when the engine isn't started.
@@ -254,6 +287,7 @@ void Engine::runSequenceAsync(const std::vector<cfg::Step>& steps,
     job.steps = steps;
     job.label = label;
     job.alias = alias;
+    job.title = title;
     {
         std::lock_guard<std::mutex> lk(jobMu_);
         jobs_.push_back(std::move(job));
@@ -277,14 +311,31 @@ void Engine::runSequence(const std::vector<cfg::Step>& steps) {
     } guard{this};
 
     for (size_t i = 0; i < steps.size(); ++i) {
+        // Every failure leaves here as an fe::Error that knows its step, so
+        // the status line can say which one stopped. The technical text reads
+        // exactly as it always has.
+        fe::Problem problem = fe::Problem::None;
+        std::string subject;
+        std::string what;
         try {
             runStep(steps[i]);
+            continue;
+        } catch (const fe::Error& e) {
+            problem = e.problem;
+            subject = e.subject;
+            what = e.what();
         } catch (const std::exception& e) {
-            const std::string where = "step " + std::to_string(i + 1) + " (" +
-                                      steps[i].summary() + "): " + e.what();
-            if (!steps[i].continueOnError()) throw std::runtime_error(where);
-            log("  skipped " + where);
+            what = e.what();
         }
+        const std::string where = "step " + std::to_string(i + 1) + " (" +
+                                  steps[i].summary() + "): " + what;
+        if (steps[i].continueOnError()) {
+            log("  skipped " + where);
+            continue;
+        }
+        fe::Error err(problem, subject, where);
+        err.step = (int)i + 1;
+        throw err;
     }
 }
 
@@ -347,7 +398,14 @@ win::WindowInfo requireWindow(const js::Value& p) {
         if (!cls.empty()) who = "class " + cls;
         else if (!title.empty()) who = "title containing \"" + title + "\"";
         else who = "program " + exe;
-        throw std::runtime_error("no open window with " + who);
+        // Named the way the user knows it: the program, if the step says
+        // which; otherwise the title they typed.
+        const std::string subject =
+            !exe.empty()     ? fe::programName(exe)
+            : !title.empty() ? "a window called \"" + title + "\""
+                             : "the program it was recorded in";
+        throw fe::Error(fe::Problem::WindowMissing, subject,
+                        "no open window with " + who);
     }
     return w;
 }
@@ -411,6 +469,11 @@ void Engine::runStep(const cfg::Step& s) {
         double timeout = numDouble(p, "timeout", a == "click_image" ? 5.0 : 10.0);
         bool required = boolOf(p, "required", true);
 
+        // The same places the matcher looks.
+        if (!fileExists(resolveDataPath(image)))
+            throw fe::Error(fe::Problem::ImageFileMissing, baseName(image),
+                            "template image not found: " + image);
+
         vis::Match m;
         std::string err;
         bool found = vis::waitForImage(image, timeout, conf, nullptr, m, &err);
@@ -419,11 +482,14 @@ void Engine::runStep(const cfg::Step& s) {
                 log("  image not found (continuing): " + baseName(image));
                 return;
             }
-            throw std::runtime_error(
-                err.empty() ? ("could not find " + baseName(image) +
-                               " on screen within " +
-                               std::to_string((int)timeout) + "s")
-                            : err);
+            // An empty error means the search ran and simply found nothing;
+            // anything else is an unusable picture, said in the error itself.
+            if (err.empty())
+                throw fe::Error(fe::Problem::ImageNotFound, baseName(image),
+                                "could not find " + baseName(image) +
+                                    " on screen within " +
+                                    std::to_string((int)timeout) + "s");
+            throw std::runtime_error(err);
         }
         if (a == "click_image")
             act::click(true, m.x + numInt(p, "offset_x", 0),
@@ -593,8 +659,9 @@ void Engine::start() {
                             anyMouse);
             listenerActive_.store(true);
         } catch (const std::exception& e) {
-            throw std::runtime_error(
-                std::string("Could not read keyboard input: ") + e.what());
+            throw fe::Error(fe::Problem::InputBlocked, "",
+                            std::string("Could not read keyboard input: ") +
+                                e.what());
         }
     }
 
@@ -619,8 +686,9 @@ void Engine::start() {
         } catch (const std::exception& e) {
             listener_.stop();
             listenerActive_.store(false);
-            throw std::runtime_error(
-                std::string("Could not block macro keys: ") + e.what());
+            throw fe::Error(fe::Problem::InputBlocked, "",
+                            std::string("Could not block macro keys: ") +
+                                e.what());
         }
     }
 

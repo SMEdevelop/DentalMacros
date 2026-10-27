@@ -1,4 +1,5 @@
 #include "actions.h"
+#include "friendly.h"
 #include "keys.h"
 #include "util.h"
 
@@ -15,8 +16,41 @@ void sendAll(std::vector<INPUT>& in) {
     if (in.empty()) return;
     UINT sent = SendInput((UINT)in.size(), in.data(), sizeof(INPUT));
     if (sent != in.size())
-        throw std::runtime_error("SendInput was blocked: " +
-                                 lastErrorMessage());
+        throw fe::Error(fe::Problem::InputRefused, "",
+                        "SendInput was blocked: " + lastErrorMessage());
+}
+
+// The mandatory integrity level of a process (the last sub-authority of its
+// label: 0x2000 medium, 0x3000 high...), or 0 if Windows won't say.
+DWORD integrityOf(HANDLE process) {
+    HANDLE tok = nullptr;
+    if (!OpenProcessToken(process, TOKEN_QUERY, &tok)) return 0;
+    DWORD level = 0;
+    DWORD len = 0;
+    GetTokenInformation(tok, TokenIntegrityLevel, nullptr, 0, &len);
+    if (len > 0) {
+        std::vector<BYTE> buf(len);
+        if (GetTokenInformation(tok, TokenIntegrityLevel, buf.data(), len,
+                                &len)) {
+            PSID sid = ((TOKEN_MANDATORY_LABEL*)buf.data())->Label.Sid;
+            const UCHAR n = *GetSidSubAuthorityCount(sid);
+            if (n > 0) level = *GetSidSubAuthority(sid, (DWORD)(n - 1));
+        }
+    }
+    CloseHandle(tok);
+    return level;
+}
+
+// Typing or clicking into a program that would silently throw it away is
+// worse than not trying: the macro carries on as if it had worked. So stop
+// with a reason instead.
+void ensureReachable(HWND target) {
+    const std::string program = blockedProgram(target);
+    if (!program.empty())
+        throw fe::Error(fe::Problem::TargetElevated, fe::programName(program),
+                        program + " runs at a higher integrity level than "
+                                  "Dental Macros, so Windows drops input sent "
+                                  "to it");
 }
 
 INPUT keyInput(int vk, bool up) {
@@ -44,10 +78,34 @@ void sleepMs(int ms) {
 
 }  // namespace
 
+std::string blockedProgram(HWND target) {
+    HWND top = target ? GetAncestor(target, GA_ROOT) : nullptr;
+    if (!top) return "";
+    DWORD pid = 0;
+    GetWindowThreadProcessId(top, &pid);
+    if (!pid || pid == GetCurrentProcessId()) return "";
+
+    static const DWORD self = integrityOf(GetCurrentProcess());
+    if (!self) return "";
+    HANDLE p = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+    if (!p) return "";   // can't tell: let it try, as it always has
+    std::string name;
+    const DWORD level = integrityOf(p);
+    if (level > self) {
+        wchar_t buf[MAX_PATH * 2];
+        DWORD n = MAX_PATH * 2;
+        name = QueryFullProcessImageNameW(p, 0, buf, &n) ? narrow(buf)
+                                                         : "That program";
+    }
+    CloseHandle(p);
+    return name;
+}
+
 void pressCombo(const std::string& combo, int holdMs) {
     std::string err;
     std::vector<int> vks = keys::parseCombo(combo, &err);
     if (vks.empty()) throw std::runtime_error(err.empty() ? "bad key combo" : err);
+    ensureReachable(GetForegroundWindow());
 
     std::vector<INPUT> down;
     down.reserve(vks.size());
@@ -64,6 +122,7 @@ void pressCombo(const std::string& combo, int holdMs) {
 }
 
 void typeText(const std::string& text, int intervalMs) {
+    ensureReachable(GetForegroundWindow());
     std::wstring w = widen(text);
     std::vector<INPUT> batch;
     for (size_t i = 0; i < w.size(); ++i) {
@@ -119,6 +178,15 @@ void click(bool hasPos, int x, int y, const std::string& button,
     else if (b == "middle") { downFlag = MOUSEEVENTF_MIDDLEDOWN; upFlag = MOUSEEVENTF_MIDDLEUP; }
     else if (b == "left" || b.empty()) { downFlag = MOUSEEVENTF_LEFTDOWN; upFlag = MOUSEEVENTF_LEFTUP; }
     else throw std::runtime_error("unknown mouse button: " + button);
+
+    try {
+        POINT at{};
+        GetCursorPos(&at);
+        ensureReachable(WindowFromPoint(at));
+    } catch (...) {
+        if (restorePos) moveMouse(oldX, oldY);
+        throw;
+    }
 
     auto oneClick = [&] {
         std::vector<INPUT> in(2);
@@ -184,8 +252,13 @@ void openPath(const std::string& target) {
     if (trim(target).empty()) throw std::runtime_error("nothing to open");
     HINSTANCE r = ShellExecuteW(nullptr, L"open", widen(target).c_str(),
                                 nullptr, widen(exeDir()).c_str(), SW_SHOWNORMAL);
-    if ((INT_PTR)r <= 32)
-        throw std::runtime_error("could not open '" + target + "'");
+    const INT_PTR code = (INT_PTR)r;
+    if (code == SE_ERR_FNF || code == SE_ERR_PNF)
+        throw fe::Error(fe::Problem::ProgramMissing, baseName(target),
+                        "could not open '" + target + "': not found");
+    if (code <= 32)
+        throw std::runtime_error("could not open '" + target + "' (error " +
+                                 std::to_string((long long)code) + ")");
 }
 
 }  // namespace act

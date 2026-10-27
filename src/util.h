@@ -14,15 +14,62 @@ bool icontains(const std::string& hay, const std::string& needle);
 std::vector<std::string> split(const std::string& s, char sep);
 std::string replaceAll(std::string s, const std::string& from, const std::string& to);
 
-// Paths are all resolved relative to the folder holding the .exe so the app
-// behaves the same however it was launched (shortcut, Explorer, console).
+// Paths are all resolved relative to a fixed folder so the app behaves the
+// same however it was launched (shortcut, Explorer, console).
 std::string exePath();            // full path to DentalMacros.exe
 std::string exeDir();
+// Beside the program itself. For the user's files - settings, backups,
+// pictures, layouts - use dataPath() instead.
 std::string appPath(const std::string& relative);
 std::string joinPath(const std::string& a, const std::string& b);
 std::string baseName(const std::string& path);
 std::string stripExt(const std::string& path);
+// The shortest way to store a path: relative to the data folder, or to the
+// program's folder, when it is inside one of them; unchanged otherwise.
 std::string relativeToApp(const std::string& absolute);
+
+// ------------------------------------------------------------ data folder
+// Where the user's files live: beside the program whenever that folder can
+// be written - installed and portable copies alike, as it has always been -
+// and otherwise %LOCALAPPDATA%\DentalMacros, so a copy run from a protected
+// folder (Program Files, a locked-down share, a write-protected stick) still
+// keeps its settings. Decided on first use; moveDataToProfile() can move it
+// later in the run. Safe to call from any thread.
+std::string dataDir();
+std::string dataPath(const std::string& relative);
+bool dataDirIsFallback();          // true when it is the profile folder
+std::string profileDataDir();      // %LOCALAPPDATA%\DentalMacros, or ""
+
+// A relative path the user stored ("images\\stamp.png"): found in the data
+// folder first, then beside the program, where older setups kept them.
+// Absolute paths come back unchanged; a file found nowhere resolves into the
+// data folder.
+std::string resolveDataPath(const std::string& relative);
+
+// Switch to the profile folder for the rest of the run, after a save was
+// refused. Copies settings, pictures and layouts across first if the profile
+// folder has no settings yet. False if there is no profile folder or it
+// can't be written either.
+bool moveDataToProfile(std::string* error = nullptr);
+
+// The decision itself, with the file system passed in so it can be tested.
+struct DataDirProbe {
+    bool (*canCreateIn)(const std::string& dir);
+    bool (*exists)(const std::string& file);
+    bool (*deniesWrites)(const std::string& file);
+};
+std::string chooseDataDir(const std::string& exeDir,
+                          const std::string& profileDir,
+                          const DataDirProbe& probe);
+// Copy macros.json and the images and layouts folders from `from` to `to`,
+// unless `to` already has a macros.json. Never overwrites anything.
+bool migrateData(const std::string& from, const std::string& to);
+
+// Can a new file be created in `dir`? Tries it.
+bool canCreateIn(const std::string& dir);
+// Is `file` there but refusing writes - read-only, or denied to this user?
+// A file merely held open by another program is not refusing anything.
+bool fileDeniesWrites(const std::string& file);
 
 bool fileExists(const std::string& path);
 bool dirExists(const std::string& path);

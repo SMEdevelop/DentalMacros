@@ -1,4 +1,5 @@
 #include "app.h"
+#include "friendly.h"
 #include "gdiplus_inc.h"
 #include "util.h"
 
@@ -44,8 +45,12 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int showCmd) {
     try {
         rc = ui::runApp(inst, showCmd);
     } catch (const std::exception& e) {
-        MessageBoxW(nullptr, widen(e.what()).c_str(),
-                    L"Dental Macros - unexpected error", MB_ICONERROR);
+        // A message box rather than anything of ours: the window that would
+        // host a dialog may be what failed. Ctrl+C in it copies the details.
+        const fe::Friendly f = fe::explain(fe::Problem::Unexpected, "", e.what());
+        MessageBoxW(nullptr,
+                    widen(f.body + "\n\nDetails: " + f.technical).c_str(),
+                    widen("Dental Macros - " + f.title).c_str(), MB_ICONERROR);
     }
 
     // Every GDI+ object must already be gone by this point; the window class

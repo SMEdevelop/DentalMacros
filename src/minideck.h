@@ -98,6 +98,10 @@ public:
     void show(HINSTANCE inst);
     void hide();
     void toggle(HINSTANCE inst);
+    // Out of sight for a moment - while clicks are being recorded, say -
+    // without counting as hidden: nothing is saved, and resuming brings it
+    // back only if it was showing before.
+    void suspend(bool off);
     bool visible() const;
     void destroy();
 
@@ -135,6 +139,8 @@ private:
     bool hoverPrev_ = false, hoverNext_ = false;
 
     MiniPlacement place_;
+
+    bool suspended_ = false;   // see suspend()
     int hover_ = -1;
     bool hoverClose_ = false;
     bool tracking_ = false;

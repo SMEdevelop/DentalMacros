@@ -82,6 +82,9 @@ protected:
     virtual void onCommand(int id, int notify) {}
     virtual bool onOk() { return true; }   // false keeps the dialog open
     virtual void onCancel() {}
+    // Asked before Esc, Cancel or the close box shuts the window. Return
+    // false to keep it open - for a window holding work that would be lost.
+    virtual bool canCancel() { return true; }
     virtual bool onMessage(UINT msg, WPARAM wp, LPARAM lp, LRESULT& out) {
         return false;
     }

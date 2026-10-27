@@ -59,8 +59,7 @@ Image* iconFor(const std::string& relPath) {
     auto& cache = iconCache();
     auto it = cache.find(relPath);
     if (it != cache.end()) return it->second;
-    std::string full = joinPath(exeDir(), relPath);
-    if (!fileExists(full)) full = relPath;
+    const std::string full = resolveDataPath(relPath);
     Image* img = nullptr;
     if (fileExists(full)) {
         img = Image::FromFile(W(full).c_str());
@@ -102,7 +101,8 @@ MiniPlacement MiniDeck::placement() const {
         GetWindowRect(hwnd_, &r);
         p.x = r.left;
         p.y = r.top;
-        p.visible = IsWindowVisible(hwnd_) != 0;
+        // While suspended the window is hidden but still counts as shown.
+        p.visible = suspended_ ? place_.visible : IsWindowVisible(hwnd_) != 0;
     }
     return p;
 }
@@ -173,6 +173,20 @@ void MiniDeck::hide() {
     place_.visible = false;
     ShowWindow(hwnd_, SW_HIDE);
     if (moved_) moved_();
+}
+
+void MiniDeck::suspend(bool off) {
+    if (!hwnd_) return;
+    if (off) {
+        if (suspended_) return;
+        place_.visible = IsWindowVisible(hwnd_) != 0;
+        suspended_ = true;
+        ShowWindow(hwnd_, SW_HIDE);
+    } else {
+        if (!suspended_) return;
+        suspended_ = false;
+        if (place_.visible) ShowWindow(hwnd_, SW_SHOWNOACTIVATE);
+    }
 }
 
 void MiniDeck::toggle(HINSTANCE inst) {

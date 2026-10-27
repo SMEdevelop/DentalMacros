@@ -142,8 +142,7 @@ bool fileStamp(const std::string& path, FILETIME& out) {
 }
 
 bool loadTemplate(const std::string& path, Gray& out, std::string* error) {
-    std::string full = joinPath(exeDir(), path);
-    if (!fileExists(full)) full = path;
+    const std::string full = resolveDataPath(path);
     if (!fileExists(full)) {
         if (error) *error = "template image not found: " + path;
         return false;
@@ -516,7 +515,7 @@ bool savePng(const std::string& path, const Capture& cap, RECT crop,
         if (error) *error = "no PNG encoder available";
         return false;
     }
-    std::string fullPath = joinPath(exeDir(), path);
+    std::string fullPath = dataPath(path);
     size_t slash = fullPath.find_last_of("\\/");
     if (slash != std::string::npos) ensureDir(fullPath.substr(0, slash));
     Status st = bmp.Save(widen(fullPath).c_str(), &png, nullptr);
@@ -529,8 +528,7 @@ bool savePng(const std::string& path, const Capture& cap, RECT crop,
 }
 
 bool imageSize(const std::string& path, int& w, int& h) {
-    std::string full = joinPath(exeDir(), path);
-    if (!fileExists(full)) full = path;
+    const std::string full = resolveDataPath(path);
     if (!fileExists(full)) return false;
     ensureGdiPlus();
     Bitmap bmp(widen(full).c_str());

@@ -8,6 +8,7 @@
 #include "iconlib.h"
 #include "keys.h"
 #include "minideck.h"
+#include "simple.h"
 #include "theme.h"
 #include "ui_common.h"
 #include "util.h"
@@ -18,6 +19,7 @@
 #include <commdlg.h>
 #include <shellapi.h>
 #include <windowsx.h>
+#include <dbt.h>
 
 #include <algorithm>
 #include <cmath>
@@ -42,6 +44,12 @@ constexpr UINT WM_APP_TRAY = WM_APP + 3;
 constexpr UINT WM_APP_PAGE = WM_APP + 4;
 // The window in front changed, so the app-linked pages get another look.
 constexpr UINT WM_APP_FOREGROUND = WM_APP + 5;
+// A macro run finished, well or not, so the status line has news.
+constexpr UINT WM_APP_OUTCOME = WM_APP + 6;
+// The settings file could not be loaded: explain it once the window is up.
+constexpr UINT WM_APP_LOADPROBLEM = WM_APP + 7;
+// A brand-new setup: open first-run setup once the window is on screen.
+constexpr UINT WM_APP_SETUP = WM_APP + 8;
 
 enum {
     ID_TITLE_EDIT = 200,
@@ -57,25 +65,21 @@ enum {
     ID_BTN_ICON,
     ID_BTN_COLOR,
     ID_BTN_ENGINE,
-    ID_BTN_MENU,
+    ID_BTN_FLOATING,
     ID_BTN_SETTINGS,
+    ID_BTN_SIMPLE,
+    ID_BTN_ADVANCED,
+    // Simple mode's three ways to add a step (recording clicks is the fourth,
+    // shared with Advanced).
+    ID_BTN_S_TYPE,
+    ID_BTN_S_KEYS,
+    ID_BTN_S_WAIT,
     ID_DECK_COMBO,
     // The three gestures a tile can carry. One list is shown at a time and
     // every step button below acts on whichever is selected.
     ID_GESTURE_PRESS,
     ID_GESTURE_UP,
     ID_GESTURE_DOWN,
-
-    IDM_IMPORT = 400,
-    IDM_SAVE,
-    IDM_RELOAD,
-    IDM_EXPORT,
-    IDM_BACKUP,
-    IDM_SNIP,
-    IDM_LAYOUTS,
-    IDM_OPEN_FOLDER,
-    IDM_ABOUT,
-    IDM_EXIT,
 
     IDM_KB_RENAME = 430,
     IDM_KB_BLOCK,
@@ -113,19 +117,24 @@ enum {
     IDM_TRAY_TOGGLE,
     IDM_TRAY_EXIT,
     IDM_TRAY_MINI,
-
-    IDM_MINIDECK = 490,
 };
 
 // The system-wide start/stop shortcut. Any id unique within this window will
 // do; RegisterHotKey ids are per-window.
 constexpr int kToggleHotkeyId = 1;
 
+// Windows says devices changed in bursts - one plug-in is several messages -
+// so the keypads are looked for once things have been quiet this long.
+constexpr UINT_PTR kDeviceCheckTimer = 7;
+constexpr UINT kDeviceCheckDelayMs = 700;
+
 // Design-pixel metrics.
 constexpr int kToolbarH = 60;
 constexpr int kSidebarW = 214;
 constexpr int kInspectorW = 344;
 constexpr int kLogH = 132;
+// Simple mode keeps only the status line of the activity area.
+constexpr int kLogHSimple = 34;
 constexpr int kPad = 14;
 constexpr int kRowH = 30;
 
@@ -195,8 +204,7 @@ public:
         if (trim(relPath).empty()) return nullptr;
         auto it = cache_.find(relPath);
         if (it != cache_.end()) return it->second;
-        std::string full = joinPath(exeDir(), relPath);
-        if (!fileExists(full)) full = relPath;
+        const std::string full = resolveDataPath(relPath);
         Image* img = nullptr;
         if (fileExists(full)) {
             img = Image::FromFile(W(full).c_str());
@@ -291,19 +299,20 @@ private:
     void editStep();
     void removeStep();
     void moveStep(int delta);
-    void recordClicks();
+    // Records clicks onto the selected key. With a range, the new clicks
+    // replace those steps instead of being added at the end.
+    void recordClicks(int replaceFirst = -1, int replaceCount = 0);
     void testRun();
     void clearTile();
     void deleteBinding();
     void chooseTileIcon();
     void chooseTileColor();
     void toggleEngine();
-    void showMenu();
+    void openSettings();
     void importYaml();
-    void showLayouts();
     void reloadConfig();
     void exportConfig();
-    void backupNow();
+    void loadCopy();
     void duplicateBinding(int tileIndex);
     void copySteps();
     void pasteSteps();
@@ -337,6 +346,7 @@ private:
 
     // ---- mini deck
     void toggleMiniDeck();
+    void updateFloatingButton();
     void refreshMiniDeck();
     // Fire a binding by key name, for a click on the mini deck.
     void runBindingByKey(const std::string& key);
@@ -347,6 +357,35 @@ private:
     void removeTray();
     void trayMenu();
     void showWindowAgain();
+
+    // ---- status line and explained problems
+    enum class StatusTone { Plain, Good, Warn };
+    void setStatus(const std::string& text,
+                   StatusTone tone = StatusTone::Plain);
+    void drainOutcomes();
+    void noticeWhileAway(const std::string& title, const std::string& text);
+    bool findRestorableBackup(std::string& path, std::string& date);
+    void explainLoadProblem();
+    void restoreBackup(const std::string& backup, const std::string& date);
+
+    // ---- first-run setup
+    void runSetup();
+
+    // ---- simple mode
+    bool simple() const { return config_.settings.simpleMode; }
+    void setSimpleMode(bool on);
+    void refreshModeButtons();
+    void selectStep(size_t index);
+    int selectedRow() const;
+    void addSimpleStep(int which);
+    std::string askCombo();
+    void editSimpleRow(int row);
+    void removeSimpleRow(int row);
+    int deckHeaderH() const;
+    int pageStripY() const;
+
+    // ---- whether each keypad is there
+    void checkDevices(bool announce);
 
     HWND hwnd_ = nullptr;
     HINSTANCE inst_ = nullptr;
@@ -403,7 +442,13 @@ private:
     HWND btnUp_ = nullptr, btnDown_ = nullptr, btnTest_ = nullptr;
     HWND btnRecord_ = nullptr;
     HWND btnIcon_ = nullptr, btnColor_ = nullptr;
-    HWND btnEngine_ = nullptr, btnMenu_ = nullptr, btnSettings_ = nullptr;
+    HWND btnEngine_ = nullptr, btnFloating_ = nullptr, btnSettings_ = nullptr;
+    HWND btnSimple_ = nullptr, btnAdvanced_ = nullptr;
+    HWND btnSType_ = nullptr, btnSKeys_ = nullptr, btnSWait_ = nullptr;
+    // What the step list shows in Simple mode, one entry per list row.
+    std::vector<smp::Row> simpleRows_;
+    // The pause the click recorder last used, offered again next time.
+    rec::Speed recordSpeed_ = rec::Speed::Normal;
     std::vector<HWND> inspectorLabels_;
 
     // async plumbing
@@ -415,6 +460,23 @@ private:
     std::deque<eng::MonitorEvent> keyQueue_;
     std::string lastKeyText_;
     std::map<std::string, DWORD> lastFire_;   // "alias|key" -> tick
+    std::mutex outcomeMu_;
+    std::deque<eng::Outcome> outcomes_;
+
+    std::string statusText_;
+    StatusTone statusTone_ = StatusTone::Plain;
+    ULONGLONG lastAwayNotice_ = 0;
+    // The save problem already explained this run, so a save that keeps
+    // failing is one dialog and then the status line, not a dialog per edit.
+    fe::Problem saveProblemShown_ = fe::Problem::None;
+    bool destroying_ = false;
+    // The start/stop shortcut actually registered: the saved one, or a
+    // stand-in while another program owns it. Empty when there is none.
+    std::string activeHotkey_;
+    // Which keypads have a device attached right now, by deck name. Software
+    // buttons are never in it; a deck not in it has not been looked for yet
+    // and is drawn as present.
+    std::map<std::string, bool> present_;
 
     // The application the pages were last matched against, as "exe|class|
     // title". Compared before doing anything, so that clicking around inside
@@ -500,8 +562,15 @@ void MainWindow::onCreate() {
     UINT dpi = GetDpiForWindow(hwnd_);
     if (dpi >= 72 && dpi <= 480) setDpiScale(dpi / 96.0f);
 
-    config_.load(appPath("macros.json"));
+    config_.load(dataPath("macros.json"));
     countPointers();
+    if (dataDirIsFallback()) {
+        pushLog("Dental Macros' own folder (" + exeDir() +
+                ") can't be changed, so your settings are kept in " +
+                dataDir() + ".");
+        setStatus("Your settings are kept in your Windows profile, because "
+                  "Dental Macros' own folder can't be changed.");
+    }
 
     engine_.setLog([this](const std::string& m) { pushLog(m); });
     engine_.setMonitor([this](const eng::MonitorEvent& e) {
@@ -519,14 +588,25 @@ void MainWindow::onCreate() {
         }
         PostMessageW(hwnd_, WM_APP_PAGE, 0, 0);
     });
+    engine_.setOutcome([this](const eng::Outcome& o) {
+        {
+            std::lock_guard<std::mutex> lk(outcomeMu_);
+            if (outcomes_.size() > 50) outcomes_.pop_front();
+            outcomes_.push_back(o);
+        }
+        PostMessageW(hwnd_, WM_APP_OUTCOME, 0, 0);
+    });
     engine_.updateConfig(config_);
 
     // ---- toolbar controls
     btnEngine_ = makeButton(hwnd_, "Start Listening", 0, 0, 132, 34,
                             ID_BTN_ENGINE);
     setTone(btnEngine_, Tone::Good);
+    btnFloating_ = makeButton(hwnd_, "Show floating buttons", 0, 0, 176, 34,
+                              ID_BTN_FLOATING);
     btnSettings_ = makeButton(hwnd_, "Settings", 0, 0, 92, 34, ID_BTN_SETTINGS);
-    btnMenu_ = makeButton(hwnd_, "More", 0, 0, 76, 34, ID_BTN_MENU);
+    btnSimple_ = makeButton(hwnd_, "Simple", 0, 0, 76, 34, ID_BTN_SIMPLE);
+    btnAdvanced_ = makeButton(hwnd_, "Advanced", 0, 0, 96, 34, ID_BTN_ADVANCED);
 
     // ---- deck controls
     std::vector<std::string> deckLabels;
@@ -556,6 +636,9 @@ void MainWindow::onCreate() {
     btnTest_ = makeButton(hwnd_, "Test run", 0, 0, 100, 30, ID_BTN_TEST);
     btnRecord_ = makeButton(hwnd_, "Record clicks...", 0, 0, 100, 30,
                             ID_BTN_RECORD);
+    btnSType_ = makeButton(hwnd_, "+ Type text", 0, 0, 100, 30, ID_BTN_S_TYPE);
+    btnSKeys_ = makeButton(hwnd_, "+ Press keys", 0, 0, 100, 30, ID_BTN_S_KEYS);
+    btnSWait_ = makeButton(hwnd_, "+ Wait", 0, 0, 100, 30, ID_BTN_S_WAIT);
 
     // ---- log
     logEdit_ = makeEdit(hwnd_, "", 0, 0, 100, 100, ID_LOG_EDIT, true, true);
@@ -564,6 +647,7 @@ void MainWindow::onCreate() {
 
     reportLoadProblems();
     applyToggleHotkey();
+    checkDevices(true);
     startForegroundHook();
     // Start on the page the application already in front asks for, rather
     // than waiting for the user to alt-tab once before the rules mean
@@ -572,6 +656,7 @@ void MainWindow::onCreate() {
 
     layout();
     refreshInspector();
+    refreshModeButtons();
 
     // ---- the always-on-top palette
     mini_.setRunner([this](const std::string& key) { runBindingByKey(key); });
@@ -592,6 +677,9 @@ void MainWindow::onCreate() {
     mini_.setOnPlacementChanged([this] {
         saveMiniPlacement();
         if (config_.dirty) saveConfig();
+        // Shown or hidden from anywhere - the tray, its own menu - the
+        // toolbar button says what pressing it will do now.
+        updateFloatingButton();
     });
     {
         MiniPlacement p;
@@ -604,9 +692,15 @@ void MainWindow::onCreate() {
     }
     refreshMiniDeck();
     if (config_.settings.miniDeckVisible) mini_.show(inst_);
+    updateFloatingButton();
 
     if (config_.settings.startEngineOnLaunch && !config_.keyboards.empty())
         toggleEngine();
+
+    // Nothing set up and never offered: offer it, once the window is up.
+    if (config_.loadError.empty() && config_.keyboards.empty() &&
+        !config_.settings.setupDone)
+        PostMessageW(hwnd_, WM_APP_SETUP, 0, 0);
 }
 
 void MainWindow::reportLoadProblems() {
@@ -620,17 +714,16 @@ void MainWindow::reportLoadProblems() {
     }
 
     pushLog("Could not read macros.json: " + config_.loadError);
-    showMessage(hwnd_, "Configuration problem",
-                "macros.json could not be read:\n\n" + config_.loadError +
-                    "\n\nDental Macros opened with an empty setup and has not "
-                    "touched your file. Fix or move it and choose "
-                    "More > Reload macros.json.\n\nIf you save anything before "
-                    "then, the file you have now is copied to macros.json.bak "
-                    "first - nothing is thrown away.",
-                true);
+    pushLog("  The file has not been touched. If anything is saved before it "
+            "is fixed, it is copied to macros.json.bak first.");
+    setStatus("\xE2\x9A\xA0 Your buttons couldn't be loaded.", StatusTone::Warn);
+    // Explained once the window is up: the fixes on offer reload the
+    // settings, which can't happen halfway through creating the window.
+    PostMessageW(hwnd_, WM_APP_LOADPROBLEM, 0, 0);
 }
 
 void MainWindow::onDestroy() {
+    destroying_ = true;
     releaseToggleHotkey();
     stopForegroundHook();
     // Before the config is out of reach: the palette knows where it ended up.
@@ -667,18 +760,26 @@ void MainWindow::layout() {
     GetClientRect(hwnd_, &rc);
     const int W_ = rc.right, H_ = rc.bottom;
 
+    const bool sm = simple();
+    auto show = [](HWND h, bool on) { ShowWindow(h, on ? SW_SHOW : SW_HIDE); };
+
     rcToolbar_ = {0, 0, W_, S(kToolbarH)};
-    rcLog_ = {0, H_ - S(kLogH), W_, H_};
+    rcLog_ = {0, H_ - S(sm ? kLogHSimple : kLogH), W_, H_};
     rcSidebar_ = {0, S(kToolbarH), S(kSidebarW), rcLog_.top};
     rcInspector_ = {W_ - S(kInspectorW), S(kToolbarH), W_, rcLog_.top};
     rcDeck_ = {rcSidebar_.right, S(kToolbarH), rcInspector_.left, rcLog_.top};
 
     // toolbar buttons, right-aligned
     int by = (S(kToolbarH) - S(34)) / 2;
-    int x = W_ - S(kPad) - S(76);
-    MoveWindow(btnMenu_, x, by, S(76), S(34), TRUE);
-    x -= S(8) + S(92);
+    int x = W_ - S(kPad) - S(92);
     MoveWindow(btnSettings_, x, by, S(92), S(34), TRUE);
+    // Simple | Advanced, side by side so they read as one switch.
+    x -= S(8) + S(96);
+    MoveWindow(btnAdvanced_, x, by, S(96), S(34), TRUE);
+    x -= S(2) + S(76);
+    MoveWindow(btnSimple_, x, by, S(76), S(34), TRUE);
+    x -= S(8) + S(176);
+    MoveWindow(btnFloating_, x, by, S(176), S(34), TRUE);
     layoutEngineButton();
 
     // Deck header. A combo box's window height controls how far its list
@@ -686,6 +787,7 @@ void MainWindow::layout() {
     // would leave the dropdown unusable.
     MoveWindow(deckCombo_, rcDeck_.left + S(kPad), rcDeck_.top + S(14), S(240),
                S(28) * 9, TRUE);
+    show(deckCombo_, !sm);
 
     // inspector
     const int ix = rcInspector_.left + S(kPad);
@@ -693,31 +795,55 @@ void MainWindow::layout() {
     int y = rcInspector_.top + S(58);
     MoveWindow(titleEdit_, ix, y, iw, S(26), TRUE);
     y += S(34);
+    // Simple mode has no icons, so the colour takes the icon's place.
     MoveWindow(btnIcon_, ix, y, S(100), S(28), TRUE);
-    MoveWindow(btnColor_, ix + S(108), y, S(100), S(28), TRUE);
+    MoveWindow(btnColor_, sm ? ix : ix + S(108), y, S(100), S(28), TRUE);
+    show(btnIcon_, !sm);
     y += S(50);
 
+    // In Simple mode this band carries the "What it does" caption instead.
     MoveWindow(btnGesturePress_, ix, y, S(76), S(26), TRUE);
     MoveWindow(btnGestureUp_, ix + S(80), y, S(76), S(26), TRUE);
     MoveWindow(btnGestureDown_, ix + S(160), y, S(76), S(26), TRUE);
+    show(btnGesturePress_, !sm);
+    show(btnGestureUp_, !sm);
+    show(btnGestureDown_, !sm);
     y += S(32);
 
     int listBottom = rcInspector_.bottom - S(kPad) - S(34) * 3 - S(8);
     MoveWindow(stepList_, ix, y, iw, std::max(S(60), listBottom - y), TRUE);
     int by2 = listBottom + S(8);
-    MoveWindow(btnAddStep_, ix, by2, S(94), S(30), TRUE);
-    MoveWindow(btnEditStep_, ix + S(100), by2, S(64), S(30), TRUE);
-    MoveWindow(btnDelStep_, ix + S(170), by2, S(78), S(30), TRUE);
     int by3 = by2 + S(36);
-    MoveWindow(btnUp_, ix, by3, S(56), S(30), TRUE);
-    MoveWindow(btnDown_, ix + S(62), by3, S(66), S(30), TRUE);
-    MoveWindow(btnTest_, ix + iw - S(104), by3, S(104), S(30), TRUE);
     int by4 = by3 + S(36);
-    MoveWindow(btnRecord_, ix, by4, iw, S(30), TRUE);
+    if (sm) {
+        // Two columns: the four things Simple mode can add, then try it and
+        // take one out.
+        const int hw = (iw - S(6)) / 2;
+        const int x2 = ix + hw + S(6);
+        MoveWindow(btnSType_, ix, by2, hw, S(30), TRUE);
+        MoveWindow(btnSKeys_, x2, by2, hw, S(30), TRUE);
+        MoveWindow(btnRecord_, ix, by3, hw, S(30), TRUE);
+        MoveWindow(btnSWait_, x2, by3, hw, S(30), TRUE);
+        MoveWindow(btnTest_, ix, by4, hw, S(30), TRUE);
+        MoveWindow(btnDelStep_, x2, by4, hw, S(30), TRUE);
+    } else {
+        MoveWindow(btnAddStep_, ix, by2, S(94), S(30), TRUE);
+        MoveWindow(btnEditStep_, ix + S(100), by2, S(64), S(30), TRUE);
+        MoveWindow(btnDelStep_, ix + S(170), by2, S(78), S(30), TRUE);
+        MoveWindow(btnUp_, ix, by3, S(56), S(30), TRUE);
+        MoveWindow(btnDown_, ix + S(62), by3, S(66), S(30), TRUE);
+        MoveWindow(btnTest_, ix + iw - S(104), by3, S(104), S(30), TRUE);
+        MoveWindow(btnRecord_, ix, by4, iw, S(30), TRUE);
+    }
+    for (HWND h : {btnSType_, btnSKeys_, btnSWait_}) show(h, sm);
+    for (HWND h : {btnAddStep_, btnEditStep_, btnUp_, btnDown_}) show(h, !sm);
+    setText(btnRecord_, sm ? "+ Record clicks" : "Record clicks...");
+    setText(btnTest_, sm ? "Try it" : "Test run");
 
-    // log
+    // log - in Simple mode only its status line is left
     MoveWindow(logEdit_, S(kPad), rcLog_.top + S(26), W_ - S(kPad) * 2,
                S(kLogH) - S(26) - S(10), TRUE);
+    show(logEdit_, !sm);
 
     layoutDeck();
     InvalidateRect(hwnd_, nullptr, FALSE);
@@ -728,9 +854,8 @@ std::string MainWindow::engineButtonLabel() const {
     // Show the way out only while there is something to escape from, and only
     // when the shortcut really is ours - if another program claimed it,
     // printing it here would be a lie.
-    if (hotkeyRegistered_)
-        return "Stop Listening  (" +
-               keys::prettyCombo(config_.settings.toggleHotkey) + ")";
+    if (hotkeyRegistered_ && !activeHotkey_.empty())
+        return "Stop Listening  (" + keys::prettyCombo(activeHotkey_) + ")";
     return "Stop Listening";
 }
 
@@ -743,8 +868,10 @@ void MainWindow::layoutEngineButton() {
     GetClientRect(hwnd_, &rc);
     const int by = (S(kToolbarH) - S(34)) / 2;
     const int w = std::max(S(132), textWidthOf(btnEngine_, label) + S(28));
-    // sits to the left of Settings and More
-    const int x = rc.right - S(kPad) - S(76) - S(8) - S(92) - S(14) - w;
+    // sits to the left of the floating-buttons toggle, the Simple | Advanced
+    // switch and Settings
+    const int x = rc.right - S(kPad) - S(92) - S(8) - S(96) - S(2) - S(76) -
+                  S(8) - S(176) - S(14) - w;
     MoveWindow(btnEngine_, x, by, w, S(34), TRUE);
 }
 
@@ -791,14 +918,21 @@ void MainWindow::layoutPages() {
     if (!kb) return;
     kb->normalizePages();
 
-    const int y = rcDeck_.top + S(kPageStripY);
+    // Simple mode makes no pages, but a deck that already has several still
+    // shows them, so a page changing by itself is never a mystery. No "+" and
+    // no padlock there: those are for building pages, in Advanced.
+    if (simple() && kb->pages.size() < 2) return;
+
+    const int y = rcDeck_.top + S(pageStripY());
     const int h = S(kPageStripH);
     // The padlock is pinned to the right end, and the tabs stop short of it
     // rather than sliding underneath.
     const int pinW = S(30);
-    rcPagePin_ = {rcDeck_.right - S(kPad) - pinW, y, rcDeck_.right - S(kPad),
-                  y + h};
-    const int limit = rcPagePin_.left - S(8);
+    if (!simple())
+        rcPagePin_ = {rcDeck_.right - S(kPad) - pinW, y,
+                      rcDeck_.right - S(kPad), y + h};
+    const int limit =
+        simple() ? rcDeck_.right - S(kPad) : rcPagePin_.left - S(8);
 
     HDC dc = GetDC(hwnd_);
     Graphics g(dc);
@@ -815,7 +949,7 @@ void MainWindow::layoutPages() {
     };
     for (size_t i = 0; i < kb->pages.size(); ++i)
         if (!place((int)i, W(kb->pages[i].displayName()))) break;
-    place(-1, L"+");
+    if (!simple()) place(-1, L"+");
     ReleaseDC(hwnd_, dc);
 }
 
@@ -837,7 +971,7 @@ void MainWindow::layoutDeck() {
     RECT area = rcDeck_;
     area.left += S(kPad);
     area.right -= S(kPad);
-    area.top += S(kDeckHeaderH);
+    area.top += S(deckHeaderH());
     area.bottom -= S(kPad);
     const int availW = area.right - area.left;
     const int availH = area.bottom - area.top;
@@ -960,7 +1094,11 @@ void MainWindow::paint(HDC hdc) {
         RectF head((REAL)(rcInspector_.left + S(kPad)),
                    (REAL)(rcInspector_.top + S(14)), (REAL)S(kInspectorW - kPad * 2),
                    (REAL)S(22));
-        if (b)
+        const cfg::Keyboard* headKb = currentKb();
+        if (b && simple() && headKb && headKb->softwareOnly)
+            drawText(g, L"On-screen button", head, 15, theme().text,
+                     Align::Left, true);
+        else if (b)
             drawText(g, W("Key: " + keys::displayName(b->key)), head, 15,
                      theme().text, Align::Left, true);
         else
@@ -970,13 +1108,41 @@ void MainWindow::paint(HDC hdc) {
         RectF sub((REAL)(rcInspector_.left + S(kPad)),
                   (REAL)(rcInspector_.top + S(38)),
                   (REAL)S(kInspectorW - kPad * 2), (REAL)S(18));
-        drawText(g, b ? L"Label shown on the key" : L"Pick a key on the deck",
-                 sub, 12, theme().textFaint, Align::Left);
+        if (simple())
+            drawText(g, b ? L"Name on the button"
+                          : L"Pick a button to change what it does",
+                     sub, 12, theme().textFaint, Align::Left);
+        else
+            drawText(g, b ? L"Label shown on the key" : L"Pick a key on the deck",
+                     sub, 12, theme().textFaint, Align::Left);
+
+        // Where Advanced has its press / wheel buttons.
+        if (simple() && b) {
+            RectF cap((REAL)(rcInspector_.left + S(kPad)),
+                      (REAL)(rcInspector_.top + S(58 + 34 + 50)),
+                      (REAL)S(kInspectorW - kPad * 2), (REAL)S(26));
+            drawText(g, L"WHAT IT DOES", cap, 11, theme().textFaint,
+                     Align::Left, true);
+        }
 
         // log heading
-        RectF logHead((REAL)S(kPad), (REAL)(rcLog_.top + S(6)), (REAL)S(300),
-                      (REAL)S(18));
-        drawText(g, L"Activity", logHead, 12, theme().textDim, Align::Left, true);
+        // Simple mode keeps just the status line, without a heading.
+        const int statusX = simple() ? kPad : kPad + 74;
+        const int statusY = simple() ? 8 : 6;
+        if (!simple()) {
+            RectF logHead((REAL)S(kPad), (REAL)(rcLog_.top + S(6)),
+                          (REAL)S(300), (REAL)S(18));
+            drawText(g, L"Activity", logHead, 12, theme().textDim, Align::Left,
+                     true);
+        }
+        if (!statusText_.empty()) {
+            RectF statusBox((REAL)S(statusX), (REAL)(rcLog_.top + S(statusY)),
+                            (REAL)(W_ - S(kPad + statusX)), (REAL)S(18));
+            const Color tone = statusTone_ == StatusTone::Good   ? theme().good
+                               : statusTone_ == StatusTone::Warn ? theme().warn
+                                                                 : theme().textDim;
+            drawText(g, W(statusText_), statusBox, 12, tone, Align::Left);
+        }
 
         if (dragging_) paintDragGhost(g);
     }
@@ -1050,7 +1216,8 @@ void MainWindow::paintSidebar(Graphics& g) {
     int w = S(kSidebarW) - S(kPad) * 2;
     int y = rcSidebar_.top + S(14);
 
-    drawText(g, L"KEYBOARDS", RectF((REAL)x, (REAL)y, (REAL)w, (REAL)S(16)), 11,
+    drawText(g, simple() ? L"YOUR BUTTONS" : L"KEYBOARDS",
+             RectF((REAL)x, (REAL)y, (REAL)w, (REAL)S(16)), 11,
              theme().textFaint, Align::Left, true);
     y += S(24);
 
@@ -1066,8 +1233,25 @@ void MainWindow::paintSidebar(Graphics& g) {
         if (sel || hot)
             fillRounded(g, toRectF(row.rect), S(6.0f),
                         sel ? theme().accentDim : theme().panelAlt);
-        RectF tr((REAL)(x + S(10)), (REAL)y, (REAL)(w - S(20)), (REAL)S(kRowH));
-        drawText(g, W(kb.alias), tr, 13, sel ? theme().text : theme().textDim,
+        // A keypad gets a dot: green while it is attached, grey while it is
+        // switched off, asleep or unplugged. Software buttons have nothing to
+        // be attached, so no dot.
+        int textX = x + S(10);
+        bool missing = false;
+        if (!kb.softwareOnly) {
+            auto it = present_.find(kb.alias);
+            missing = it != present_.end() && !it->second;
+            const REAL d = (REAL)S(7);
+            SolidBrush dot(missing ? theme().textFaint : theme().good);
+            g.FillEllipse(&dot, (REAL)(x + S(10)),
+                          (REAL)y + ((REAL)S(kRowH) - d) / 2, d, d);
+            textX = x + S(24);
+        }
+        RectF tr((REAL)textX, (REAL)y, (REAL)(x + w - S(10) - textX),
+                 (REAL)S(kRowH));
+        drawText(g, W(kb.alias), tr, 13,
+                 missing ? theme().textFaint
+                         : sel ? theme().text : theme().textDim,
                  Align::Left, sel);
         // No badge is the default, fully-blocking case. "pass" = nothing is
         // taken from this keyboard; "some" = only the keys that run macros.
@@ -1077,7 +1261,7 @@ void MainWindow::paintSidebar(Graphics& g) {
             : !kb.block     ? L"pass"
             : !kb.blockAllKeys ? L"some"
                                : nullptr;
-        if (badgeText) {
+        if (badgeText && !simple()) {
             // Sized to its text rather than to a fixed box: "mouse" is longer
             // than "some", and a clipped badge reads as a rendering bug.
             const REAL bw =
@@ -1101,11 +1285,12 @@ void MainWindow::paintSidebar(Graphics& g) {
                    (REAL)S(10));
         drawGlyphPlus(g, plus, theme().accent, S(1.6f));
         RectF tr((REAL)(x + S(28)), (REAL)y, (REAL)(w - S(30)), (REAL)S(kRowH));
-        drawText(g, L"Add a keyboard", tr, 13, theme().accent, Align::Left);
+        drawText(g, simple() ? L"Add a keypad" : L"Add a keyboard", tr, 13,
+                 theme().accent, Align::Left);
         y += S(kRowH) + S(2);
     }
 
-    {
+    if (!simple()) {
         // A spare mouse or a trackpad. Its own row rather than a checkbox in
         // the keyboard scan, because you are looking for a different piece of
         // hardware and the list you need is a different list.
@@ -1138,12 +1323,17 @@ void MainWindow::paintSidebar(Graphics& g) {
                    (REAL)S(10));
         drawGlyphPlus(g, plus, theme().accent, S(1.6f));
         RectF tr((REAL)(x + S(28)), (REAL)y, (REAL)(w - S(30)), (REAL)S(kRowH));
-        drawText(g, L"Add software buttons", tr, 13, theme().accent,
-                 Align::Left);
+        drawText(g, simple() ? L"Add on-screen buttons" : L"Add software buttons",
+                 tr, 13, theme().accent, Align::Left);
         y += S(kRowH) + S(14);
     }
 
-    // ---- action palette
+    // ---- action palette - Advanced only: Simple mode adds steps with the
+    // inspector's four buttons instead of dragging.
+    if (simple()) {
+        paletteContentH_ = 0;
+        return;
+    }
     drawText(g, L"DRAG ONTO A KEY",
              RectF((REAL)x, (REAL)y, (REAL)w, (REAL)S(16)), 11,
              theme().textFaint, Align::Left, true);
@@ -1202,14 +1392,14 @@ void MainWindow::paintWelcome(Graphics& g) {
     RectF icon((REAL)(cx - S(24)), (REAL)(cy - S(92)), (REAL)S(48), (REAL)S(48));
     drawActionIcon(g, "keys", icon, theme().accent);
 
-    drawText(g, L"Set up your macro keyboard",
+    drawText(g, L"Set up your first button",
              RectF((REAL)(cx - S(210)), (REAL)(cy - S(34)), (REAL)S(420),
                    (REAL)S(26)),
              17, theme().text, Align::Center, true);
     drawText(g,
-             L"Dental Macros can tell your keyboards apart, so a spare keyboard or "
-             L"numpad can run macros while you keep typing normally on your "
-             L"main one.",
+             L"Make buttons that type and click for you - on your screen, or "
+             L"on a spare keypad while you keep typing normally on your main "
+             L"keyboard.",
              RectF((REAL)(cx - S(200)), (REAL)(cy - S(4)), (REAL)S(400),
                    (REAL)S(56)),
              12, theme().textDim, Align::Center, false, false, true);
@@ -1219,7 +1409,7 @@ void MainWindow::paintWelcome(Graphics& g) {
     fillRounded(g, toRectF(rcWelcomeBtn_), S(8.0f),
                 hot ? mix(theme().accent, Color(255, 255, 255, 255), 0.12f)
                     : theme().accent);
-    drawText(g, L"Scan for keyboards", toRectF(rcWelcomeBtn_), 13,
+    drawText(g, L"Get started", toRectF(rcWelcomeBtn_), 13,
              Color(255, 255, 255, 255), Align::Center, true);
 }
 
@@ -1227,17 +1417,28 @@ void MainWindow::paintDeck(Graphics& g) {
     cfg::Keyboard* kb = currentKb();
     if (!kb) return;
 
-    RectF hint((REAL)(rcDeck_.left + S(kPad) + S(252)), (REAL)(rcDeck_.top + S(14)),
-               (REAL)std::max(0, (int)(rcDeck_.right - rcDeck_.left) - S(280)),
-               (REAL)S(28));
-    drawText(g, L"Click a key to edit it  \x2022  drag an action onto it  \x2022  "
-                L"right-click for more",
-             hint, 11, theme().textFaint, Align::Left);
+    if (!simple()) {
+        RectF hint((REAL)(rcDeck_.left + S(kPad) + S(252)),
+                   (REAL)(rcDeck_.top + S(14)),
+                   (REAL)std::max(0, (int)(rcDeck_.right - rcDeck_.left) - S(280)),
+                   (REAL)S(28));
+        drawText(g, L"Click a key to edit it  \x2022  drag an action onto it  "
+                    L"\x2022  right-click for more",
+                 hint, 11, theme().textFaint, Align::Left);
+    } else if (pageTabs_.empty()) {
+        RectF hint((REAL)(rcDeck_.left + S(kPad)), (REAL)(rcDeck_.top + S(14)),
+                   (REAL)std::max(0, (int)(rcDeck_.right - rcDeck_.left) -
+                                         S(kPad * 2)),
+                   (REAL)S(28));
+        drawText(g, L"Click a button to change what it does  \x2022  "
+                    L"right-click it to rename or remove it",
+                 hint, 11, theme().textFaint, Align::Left);
+    }
 
     // Tiles can be scrolled, so keep them inside the deck area rather than
     // letting them paint over the header, the sidebar or the log.
     RECT clip = rcDeck_;
-    clip.top += S(kDeckHeaderH - 4);
+    clip.top += S(deckHeaderH() - 4);
     Region oldClip;
     g.GetClip(&oldClip);
     g.SetClip(Rect(clip.left, clip.top, clip.right - clip.left,
@@ -1307,7 +1508,8 @@ void MainWindow::paintPages(Graphics& g) {
 
     // The padlock: shut means the deck stops following the application in
     // front. Drawn as a shackle over a body rather than shipped as an image,
-    // like every other glyph here.
+    // like every other glyph here. Simple mode has none.
+    if (IsRectEmpty(&rcPagePin_)) return;
     const bool follow = config_.settings.switchPageWithApp;
     RectF pin = toRectF(rcPagePin_);
     const bool pinHover = hoverPageTab_ == -2;
@@ -1510,6 +1712,7 @@ void MainWindow::refreshInspector() {
     EnableWindow(btnColor_, has);
     EnableWindow(btnAddStep_, has);
     EnableWindow(btnRecord_, has);
+    for (HWND h : {btnSType_, btnSKeys_, btnSWait_}) EnableWindow(h, has);
     const std::vector<cfg::Step>* shown = editingSteps();
     EnableWindow(btnTest_, shown && !shown->empty());
     refreshGestureButtons();
@@ -1527,7 +1730,15 @@ void MainWindow::refreshInspector() {
     stepListFor_ = nowFor;
 
     SendMessageW(stepList_, LB_RESETCONTENT, 0, 0);
-    if (has)
+    simpleRows_.clear();
+    if (has && simple() && shown) {
+        simpleRows_ = smp::rowsFor(*shown);
+        for (size_t r = 0; r < simpleRows_.size(); ++r)
+            SendMessageW(stepList_, LB_ADDSTRING, 0,
+                         (LPARAM)W(std::to_string(r + 1) + ".  " +
+                                   simpleRows_[r].text)
+                             .c_str());
+    } else if (has)
         for (size_t i = 0; shown && i < shown->size(); ++i)
             SendMessageW(stepList_, LB_ADDSTRING, 0,
                          (LPARAM)W(std::to_string(i + 1) + ".  " +
@@ -1537,8 +1748,8 @@ void MainWindow::refreshInspector() {
 
     if (has && keep >= 0) {
         // The step that was selected may have just been deleted off the end.
-        if (shown && keep >= (int)shown->size())
-            keep = (int)shown->size() - 1;
+        const int rows = (int)SendMessageW(stepList_, LB_GETCOUNT, 0, 0);
+        if (keep >= rows) keep = rows - 1;
         if (keep >= 0) SendMessageW(stepList_, LB_SETCURSEL, (WPARAM)keep, 0);
     }
 
@@ -1547,6 +1758,14 @@ void MainWindow::refreshInspector() {
 }
 
 void MainWindow::updateStepButtons() {
+    if (simple()) {
+        // A row of advanced steps can't be removed from here - only shown.
+        const int row = selectedRow();
+        EnableWindow(btnDelStep_,
+                     row >= 0 &&
+                         simpleRows_[(size_t)row].kind != smp::Kind::Advanced);
+        return;
+    }
     const std::vector<cfg::Step>* list = editingSteps();
     int sel = (int)SendMessageW(stepList_, LB_GETCURSEL, 0, 0);
     const bool hasStep = list && sel >= 0 && sel < (int)list->size();
@@ -1578,10 +1797,45 @@ void MainWindow::saveConfig() {
     }
 
     std::string err;
-    if (!config_.save(&err)) {
+    bool saved = config_.save(&err);
+    // The program's folder refuses writes - copied into Program Files, say,
+    // or locked down by whoever manages the PC. Carry on in the user's
+    // profile folder instead of losing every change from here on.
+    if (!saved && !dataDirIsFallback() &&
+        fe::saveProblem(config_.lastSaveError) == fe::Problem::SaveDenied) {
+        pushLog("Dental Macros' own folder refuses changes (" + err +
+                "). Trying the Windows profile folder instead.");
+        std::string moveErr;
+        if (moveDataToProfile(&moveErr)) {
+            config_.path = dataPath("macros.json");
+            saved = config_.save(&err);
+            if (saved) {
+                pushLog("Your settings are now kept in " + dataDir() + ".");
+                setStatus("Your settings are now kept in your Windows profile, "
+                          "because Dental Macros' own folder can't be changed.");
+            }
+        } else {
+            pushLog("  The Windows profile folder can't be used either: " +
+                    moveErr);
+        }
+    }
+    if (!saved) {
         pushLog("Could not save settings: " + err);
-        showMessage(hwnd_, "Could not save", err, true);
+        const fe::Problem p = fe::saveProblem(config_.lastSaveError);
+        setStatus("\xE2\x9A\xA0 Your changes haven't been saved.",
+                  StatusTone::Warn);
+        // Never a dialog while closing - there is nothing left to show it on.
+        if (p != saveProblemShown_ && !destroying_) {
+            saveProblemShown_ = p;
+            showFriendly(hwnd_, fe::explain(p, "", err));
+        }
         return;
+    }
+    if (saveProblemShown_ != fe::Problem::None) {
+        saveProblemShown_ = fe::Problem::None;
+        pushLog("Saving works again.");
+        setStatus("\xE2\x9C\x93 Your changes are being saved again.",
+                  StatusTone::Good);
     }
     if (!config_.lastBackup.empty()) {
         pushLog("The unreadable macros.json was kept as " +
@@ -1633,7 +1887,7 @@ bool MainWindow::runDial(const std::string& key, bool up) {
     if (steps.empty()) return false;
     lastFire_[currentAlias_ + "|" + b->key] = GetTickCount();
     SetTimer(hwnd_, 2, 40, nullptr);
-    engine_.runSequenceAsync(steps, "Dial", currentAlias_);
+    engine_.runSequenceAsync(steps, "Dial", currentAlias_, b->displayTitle());
     return true;
 }
 
@@ -1782,6 +2036,10 @@ void MainWindow::addStep(const std::string& presetAction) {
 }
 
 void MainWindow::editStep() {
+    if (simple()) {
+        editSimpleRow(selectedRow());
+        return;
+    }
     std::vector<cfg::Step>* steps = editingSteps();
     if (!steps) return;
     int sel = (int)SendMessageW(stepList_, LB_GETCURSEL, 0, 0);
@@ -1795,6 +2053,10 @@ void MainWindow::editStep() {
 }
 
 void MainWindow::removeStep() {
+    if (simple()) {
+        removeSimpleRow(selectedRow());
+        return;
+    }
     std::vector<cfg::Step>* steps = editingSteps();
     if (!steps) return;
     int sel = (int)SendMessageW(stepList_, LB_GETCURSEL, 0, 0);
@@ -1821,122 +2083,183 @@ void MainWindow::moveStep(int delta) {
     updateStepButtons();
 }
 
-void MainWindow::recordClicks() {
-    cfg::Binding* b = selectedBinding();
-    if (!b) return;
+void MainWindow::recordClicks(int replaceFirst, int replaceCount) {
+    cfg::Keyboard* kb = currentKb();
+    if (!kb || !selectedBinding()) return;
 
-    std::string countText = "1";
-    if (!askText(hwnd_, "Record clicks",
-                 "How many clicks do you want to record?", countText))
+    // Where the clicks are going, pinned down before anything can move. While
+    // recording, the user works in other programs, and a page tied to one of
+    // them comes to the front by itself - which clears the selection and
+    // would otherwise send the clicks nowhere, or to another key entirely.
+    const std::string alias = kb->alias;
+    const int page = kb->activePage;
+    const int bindingIndex = tiles_[(size_t)selectedTile_].binding;
+    const int gesture = gesture_;
+
+    // Out of the way while recording: the recorder sits in a corner, and
+    // everything the clicks need to land on should be in plain view.
+    mini_.suspend(true);
+    ShowWindow(hwnd_, SW_HIDE);
+    std::vector<rec::Click> clicks;
+    const bool got = recordClicksPanel(hwnd_, clicks, recordSpeed_);
+    ShowWindow(hwnd_, SW_SHOW);
+    SetForegroundWindow(hwnd_);
+    mini_.suspend(false);
+    if (!got) return;
+
+    kb = config_.keyboard(alias);
+    if (!kb || page >= (int)kb->pages.size() || bindingIndex < 0 ||
+        bindingIndex >= (int)kb->pages[(size_t)page].bindings.size())
         return;
-    char* end = nullptr;
-    long count = strtol(countText.c_str(), &end, 10);
-    if (!end || *end != '\0' || count < 1 || count > 200) {
-        showMessage(hwnd_, "Check that number",
-                    "Enter a whole number of clicks, from 1 to 200.", true);
-        return;
+    cfg::Binding& b = kb->pages[(size_t)page].bindings[(size_t)bindingIndex];
+    std::vector<cfg::Step>& steps =
+        gesture == 1 ? b.scrollUp : gesture == 2 ? b.scrollDown : b.steps;
+    const std::vector<cfg::Step> recorded = rec::buildSteps(clicks, recordSpeed_);
+    size_t at = steps.size();
+    if (replaceFirst >= 0 && replaceCount > 0 &&
+        (size_t)(replaceFirst + replaceCount) <= steps.size()) {
+        at = (size_t)replaceFirst;
+        steps.erase(steps.begin() + replaceFirst,
+                    steps.begin() + replaceFirst + replaceCount);
     }
+    steps.insert(steps.begin() + (std::ptrdiff_t)at, recorded.begin(),
+                 recorded.end());
 
-    // The window the first click landed in. Recorded clicks are absolute
-    // screen coordinates, so they only land correctly if that window is back
-    // at the size and position it had while recording - which is what the
-    // window_prepare / window_release pair around the clicks arranges.
-    ClickCapture target;
-    bool haveTarget = false;
-
-    std::vector<cfg::Step> recorded;
-    for (int i = 1; i <= (int)count; ++i) {
-        ClickCapture cc;
-        std::string prompt =
-            "Click " + std::to_string(i) + " of " + std::to_string(count) +
-            ":\n\nMove to where you want this click, then press the RIGHT "
-            "mouse button to record that spot.\n\nLeft click still works "
-            "normally, so you can open whatever the click needs to land on "
-            "first. Esc stops recording and keeps what's captured so far.";
-        if (!captureClick(hwnd_, prompt, cc)) break;
-
-        // As in the AutoHotkey original: the window is taken from the first
-        // click only. Later clicks are expected to be inside it.
-        if (i == 1 && cc.hasWindow) {
-            target = cc;
-            haveTarget = true;
-        }
-
-        cfg::Step click;
-        click.action = "click";
-        click.params = js::Value::object();
-        click.params["x"] = cc.x;
-        click.params["y"] = cc.y;
-        recorded.push_back(click);
-
-        std::string delayText = "200";
-        if (!askText(hwnd_, "Record clicks",
-                     "Delay after click " + std::to_string(i) +
-                         ", in milliseconds:",
-                     delayText,
-                     "200 = fast    500 = half a second    1500 = slow dialog"))
-            break;
-        char* dend = nullptr;
-        double ms = strtod(delayText.c_str(), &dend);
-        if (!dend || *dend != '\0' || ms < 0) {
-            showMessage(hwnd_, "Check that number",
-                        "Enter a delay in milliseconds, 0 or more.", true);
+    // Back to the key the clicks went into, on the page it lives on.
+    if (kb->activePage != page) setActivePage(alias, page);
+    for (size_t i = 0; i < tiles_.size(); ++i)
+        if (tiles_[i].binding == bindingIndex) {
+            selectTile((int)i);
             break;
         }
-        if (ms > 0) {
-            cfg::Step wait;
-            wait.action = "sleep";
-            wait.params = js::Value::object();
-            wait.params["seconds"] = ms / 1000.0;
-            recorded.push_back(wait);
-        }
-    }
-
-    if (recorded.empty()) return;
-
-    if (haveTarget) {
-        cfg::Step prep;
-        prep.action = "window_prepare";
-        prep.params = js::Value::object();
-        prep.params["class"] = target.cls;
-        if (!target.exe.empty()) prep.params["exe"] = target.exe;
-        prep.params["x"] = target.winX;
-        prep.params["y"] = target.winY;
-        prep.params["w"] = target.winW;
-        prep.params["h"] = target.winH;
-        recorded.insert(recorded.begin(), prep);
-
-        cfg::Step release;
-        release.action = "window_release";
-        release.params = js::Value::object();
-        recorded.push_back(release);
-    }
-
-    std::vector<cfg::Step>* steps = editingSteps();
-    if (!steps) return;
-    for (auto& s : recorded) steps->push_back(s);
+    gesture_ = gesture;
     modelChanged();
-    SendMessageW(stepList_, LB_SETCURSEL, (WPARAM)(steps->size() - 1), 0);
     refreshInspector();
+    selectStep(at + recorded.size() - 1);
 
-    pushLog("Recorded " + std::to_string(recorded.size()) + " step(s) into \"" +
-            b->displayTitle() + "\".");
-    if (haveTarget) {
-        pushLog("  locked to " + target.cls +
-                (target.exe.empty() ? "" : " (" + target.exe + ")") + " at " +
-                std::to_string(target.winX) + "," +
-                std::to_string(target.winY) + " " +
-                std::to_string(target.winW) + "x" +
-                std::to_string(target.winH) +
-                " - the clicks only land correctly there.");
+    const rec::Target& target = clicks.front().window;
+    const std::string n = std::to_string(clicks.size());
+    const std::string plural = clicks.size() == 1 ? " click" : " clicks";
+    if (target.has) {
+        pushLog("Recorded " + n + plural + " in " + target.displayName() +
+                " into \"" + b.displayTitle() + "\" (" +
+                std::to_string(recorded.size()) + " steps).");
+        pushLog("  Each time it runs, " + target.displayName() +
+                "'s window is put back where it was (" +
+                std::to_string(target.x) + "," + std::to_string(target.y) +
+                ", " + std::to_string(target.w) + "x" +
+                std::to_string(target.h) +
+                ") so the clicks line up, then returned afterwards.");
         if (target.maximized)
-            pushLog("  it was maximised; it will be un-maximised to that exact "
-                    "size, then put back afterwards.");
+            pushLog("  It was full-screen; it will be full-screen again "
+                    "afterwards.");
     } else {
-        pushLog("  no window was detected under the first click, so the clicks "
-                "are not locked to one - they will go wherever those screen "
-                "positions happen to be.");
+        pushLog("Recorded " + n + plural + " into \"" + b.displayTitle() +
+                "\".");
+        pushLog("  The first click isn't inside a program, so the clicks go "
+                "to those spots on the screen, wherever things are.");
     }
+}
+
+// Replace the current settings with a saved copy - an export, or one of the
+// daily backups. The current file is kept in the backups folder first.
+void MainWindow::loadCopy() {
+    const std::string backups = dataPath("backups");
+    const std::wstring initialDir = widen(dirExists(backups) ? backups : dataDir());
+    wchar_t file[MAX_PATH * 2] = {0};
+    OPENFILENAMEW ofn{};
+    ofn.lStructSize = sizeof(ofn);
+    ofn.hwndOwner = hwnd_;
+    ofn.lpstrFilter = L"Dental Macros settings\0*.json\0All files\0*.*\0";
+    ofn.lpstrFile = file;
+    ofn.nMaxFile = MAX_PATH * 2;
+    ofn.lpstrInitialDir = initialDir.c_str();
+    ofn.lpstrTitle = L"Load a copy of your settings";
+    ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_EXPLORER;
+    if (!GetOpenFileNameW(&ofn)) return;
+
+    const std::string chosen = narrow(file);
+    const std::string current = dataPath("macros.json");
+    if (iequals(chosen, current)) {
+        showMessage(hwnd_, "That's the file in use",
+                    "That is the settings file Dental Macros is using right "
+                    "now. Choose a saved copy instead - your daily copies are "
+                    "in the backups folder.");
+        return;
+    }
+
+    cfg::Config probe;
+    probe.load(chosen);
+    if (!probe.loadError.empty()) {
+        showMessage(hwnd_, "Couldn't load that file",
+                    "That doesn't look like a Dental Macros settings file, or "
+                    "it's damaged. Nothing was changed.\n\nDetails: " +
+                        probe.loadError,
+                    true);
+        return;
+    }
+    int keys = 0;
+    for (const auto& k : probe.keyboards) keys += totalBindings(k);
+    const size_t decks = probe.keyboards.size();
+    if (!askYesNo(hwnd_, "Load this copy?",
+                  "It has " + std::to_string(decks) +
+                      (decks == 1 ? " set" : " sets") + " of buttons and " +
+                      std::to_string(keys) + (keys == 1 ? " button" : " buttons") +
+                      ".\n\nThey will replace the buttons you have now. Your "
+                      "current settings are saved in the backups folder "
+                      "first, so you can go back."))
+        return;
+
+    if (config_.dirty) saveConfig();
+    std::string kept;
+    if (fileExists(current)) {
+        ensureDir(backups);
+        // Named after today's date so it sorts, and is eventually tidied
+        // away, alongside the daily copies.
+        kept = joinPath(backups, "macros-" + dateStamp() + "-before-load-" +
+                                     replaceAll(timeStamp(), ":", "") + ".json");
+        if (!copyFile(current, kept, false)) {
+            showMessage(hwnd_, "Nothing was changed",
+                        "Dental Macros couldn't keep a copy of your current "
+                        "settings, so it didn't replace them.",
+                        true);
+            return;
+        }
+    }
+    if (!copyFile(chosen, current, true)) {
+        showMessage(hwnd_, "Nothing was changed",
+                    "Windows didn't let Dental Macros copy that file into "
+                    "place. Your buttons are as they were.",
+                    true);
+        return;
+    }
+    config_.dirty = false;   // the file on disk is now the one to show
+    reloadConfig();
+    pushLog("Loaded settings from " + chosen + ".");
+    if (!kept.empty())
+        pushLog("  The ones you had before are in " + relativeToApp(kept) + ".");
+}
+
+void MainWindow::openSettings() {
+    SettingsAction action = SettingsAction::None;
+    if (!settingsDialog(hwnd_, config_.settings, &action)) return;
+    saveConfig();
+    engine_.updateConfig(config_);
+    applyToggleHotkey();
+    switch (action) {
+        case SettingsAction::SaveCopy: exportConfig(); break;
+        case SettingsAction::LoadCopy: loadCopy(); break;
+        case SettingsAction::Reload: reloadConfig(); break;
+        case SettingsAction::ImportMacroKb: importYaml(); break;
+        case SettingsAction::RunSetup: runSetup(); break;
+        case SettingsAction::None: break;
+    }
+}
+
+void MainWindow::updateFloatingButton() {
+    if (!btnFloating_) return;
+    setText(btnFloating_, mini_.visible() ? "Hide floating buttons"
+                                          : "Show floating buttons");
 }
 
 void MainWindow::testRun() {
@@ -1948,7 +2271,7 @@ void MainWindow::testRun() {
              : gesture_ == 2 ? " wheel down"
                              : "") +
             " (" + std::to_string(steps->size()) + " steps)");
-    engine_.runSequenceAsync(*steps, "Test", currentAlias_);
+    engine_.runSequenceAsync(*steps, "Test", currentAlias_, b->displayTitle());
 }
 
 void MainWindow::clearTile() {
@@ -2009,9 +2332,13 @@ void MainWindow::toggleEngine() {
             engine_.updateConfig(config_);
             engine_.start();
             setTone(btnEngine_, Tone::Danger);
-        } catch (const std::exception& e) {
-            showMessage(hwnd_, "Could not start listening", e.what(), true);
+        } catch (const fe::Error& e) {
             pushLog(std::string("Could not start listening: ") + e.what());
+            showFriendly(hwnd_, fe::explain(e.problem, e.subject, e.what()));
+        } catch (const std::exception& e) {
+            // Already a sentence meant for the user ("add a keypad first").
+            pushLog(std::string("Not listening: ") + e.what());
+            showMessage(hwnd_, "Not listening yet", e.what());
         }
     }
     layoutEngineButton();
@@ -2034,7 +2361,12 @@ void MainWindow::importYaml() {
     imported.settings = config_.settings;
     std::string err;
     if (!cfg::importMacroKbYaml(narrow(file), imported, &err)) {
-        showMessage(hwnd_, "Import failed", err, true);
+        showFriendly(hwnd_, fe::Friendly{
+                                "That file couldn't be imported",
+                                "It doesn't look like a macrokb macros.yaml, "
+                                "or part of it couldn't be read. Nothing was "
+                                "added.",
+                                "", err});
         return;
     }
 
@@ -2059,22 +2391,6 @@ void MainWindow::importYaml() {
     pushLog("Imported " + std::to_string(keys) + " macro(s) from macros.yaml.");
 }
 
-void MainWindow::showLayouts() {
-    auto names = win::listLayouts(config_.settings.layoutsDir);
-    std::string body;
-    if (names.empty())
-        body =
-            "No window layouts saved yet.\n\nAdd a \"Save the window layout\" "
-            "step to a key, run it, and the arrangement of your windows is "
-            "stored here.";
-    else {
-        body = "Saved window layouts:\n\n";
-        for (const auto& n : names) body += "   \xE2\x80\xA2  " + n + "\n";
-        body += "\nUse them with the \"Restore a window layout\" action.";
-    }
-    showMessage(hwnd_, "Window layouts", body);
-}
-
 void MainWindow::reloadConfig() {
     if (config_.dirty &&
         !askYesNo(hwnd_, "Reload macros.json",
@@ -2086,7 +2402,7 @@ void MainWindow::reloadConfig() {
     if (wasRunning) engine_.stop();
 
     const std::string previous = currentAlias_;
-    config_.load(appPath("macros.json"));
+    config_.load(dataPath("macros.json"));
     dailyBackupDone_ = false;
     icons_.clear();
     engine_.updateConfig(config_);
@@ -2099,6 +2415,7 @@ void MainWindow::reloadConfig() {
 
     reportLoadProblems();
     applyToggleHotkey();
+    checkDevices(false);
     layout();
     refreshInspector();
 
@@ -2130,24 +2447,15 @@ void MainWindow::exportConfig() {
     std::string err;
     const std::string dest = narrow(file.data());
     if (!config_.saveAs(dest, &err)) {
-        showMessage(hwnd_, "Export failed", err, true);
+        showFriendly(hwnd_, fe::Friendly{
+                                "The copy couldn't be saved",
+                                "Windows didn't let Dental Macros write that "
+                                "file. Try saving it somewhere else, such as "
+                                "Documents.",
+                                "", err});
         return;
     }
     pushLog("Exported a copy to " + dest);
-}
-
-void MainWindow::backupNow() {
-    if (config_.dirty) saveConfig();
-    std::string where;
-    if (config_.writeDailyBackup(10, &where)) {
-        pushLog("Backed up to " + relativeToApp(where));
-        showMessage(hwnd_, "Backed up",
-                    "Today's copy is in:\n\n" + where);
-    } else {
-        showMessage(hwnd_, "Already backed up",
-                    "Today's backup already exists in the backups folder next "
-                    "to Dental Macros. Use \"Export a copy\" for a second one.");
-    }
 }
 
 void MainWindow::duplicateBinding(int tileIndex) {
@@ -2512,6 +2820,7 @@ void MainWindow::releaseToggleHotkey() {
     if (!hotkeyRegistered_) return;
     UnregisterHotKey(hwnd_, kToggleHotkeyId);
     hotkeyRegistered_ = false;
+    activeHotkey_.clear();
 }
 
 void MainWindow::applyToggleHotkey() {
@@ -2530,41 +2839,49 @@ void MainWindow::applyToggleHotkey() {
     // on and off dozens of times.
     if (RegisterHotKey(hwnd_, kToggleHotkeyId, mods | MOD_NOREPEAT, (UINT)vk)) {
         hotkeyRegistered_ = true;
+        activeHotkey_ = combo;
         pushLog("Start/stop listening from anywhere with " +
                 keys::prettyCombo(combo) + ".");
     } else {
-        pushLog("Another program already owns " + keys::prettyCombo(combo) +
-                " - pick a different start/stop shortcut in Settings.");
+        // An off switch that doesn't work is worse than a different one, so
+        // borrow a stand-in for this run. The saved choice is left alone and
+        // tried first again next time, in case the other program has gone.
+        static const char* kStandIns[] = {"ctrl+alt+shift+m", "ctrl+alt+shift+k",
+                                          "ctrl+alt+shift+f12",
+                                          "ctrl+alt+shift+pause"};
+        for (const char* standIn : kStandIns) {
+            if (iequals(standIn, combo)) continue;
+            unsigned smods = 0;
+            int svk = 0;
+            std::string serr;
+            if (!keys::parseHotkey(standIn, smods, svk, &serr)) continue;
+            if (!RegisterHotKey(hwnd_, kToggleHotkeyId, smods | MOD_NOREPEAT,
+                                (UINT)svk))
+                continue;
+            hotkeyRegistered_ = true;
+            activeHotkey_ = standIn;
+            break;
+        }
+        if (hotkeyRegistered_) {
+            pushLog("Another program already owns " + keys::prettyCombo(combo) +
+                    ", so start/stop listening is " +
+                    keys::prettyCombo(activeHotkey_) + " for now.");
+            setStatus("Your off switch is " + keys::prettyCombo(activeHotkey_) +
+                          " for now - another program is using " +
+                          keys::prettyCombo(combo) + ".",
+                      StatusTone::Warn);
+        } else {
+            pushLog("Another program already owns " + keys::prettyCombo(combo) +
+                    " - pick a different start/stop shortcut in Settings.");
+            setStatus("\xE2\x9A\xA0 The emergency off switch isn't working - "
+                      "another program is using it. Choose another in "
+                      "Settings.",
+                      StatusTone::Warn);
+        }
     }
     // The button spells the shortcut out, so it has to be rebuilt whenever
     // the shortcut changes or fails to register.
     layoutEngineButton();
-}
-
-void MainWindow::showMenu() {
-    HMENU m = CreatePopupMenu();
-    AppendMenuW(m, MF_STRING | (mini_.visible() ? MF_CHECKED : 0), IDM_MINIDECK,
-                L"Buttons on top of everything");
-    AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
-    AppendMenuW(m, MF_STRING, IDM_SNIP, L"Snip a template image...");
-    AppendMenuW(m, MF_STRING, IDM_LAYOUTS, L"Window layouts...");
-    AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
-    AppendMenuW(m, MF_STRING, IDM_IMPORT, L"Import from macrokb (macros.yaml)...");
-    AppendMenuW(m, MF_STRING, IDM_SAVE, L"Save now");
-    AppendMenuW(m, MF_STRING, IDM_RELOAD, L"Reload macros.json");
-    AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
-    AppendMenuW(m, MF_STRING, IDM_BACKUP, L"Back up settings now");
-    AppendMenuW(m, MF_STRING, IDM_EXPORT, L"Export a copy...");
-    AppendMenuW(m, MF_STRING, IDM_OPEN_FOLDER, L"Open the Dental Macros folder");
-    AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
-    AppendMenuW(m, MF_STRING, IDM_ABOUT, L"About Dental Macros");
-    AppendMenuW(m, MF_STRING, IDM_EXIT, L"Exit");
-
-    RECT r;
-    GetWindowRect(btnMenu_, &r);
-    TrackPopupMenu(m, TPM_RIGHTALIGN | TPM_TOPALIGN, r.right, r.bottom, 0,
-                   hwnd_, nullptr);
-    DestroyMenu(m);
 }
 
 void MainWindow::addSoftwareDeck() {
@@ -2596,16 +2913,22 @@ void MainWindow::keyboardContextMenu(int index, POINT pt) {
 
     HMENU m = CreatePopupMenu();
     AppendMenuW(m, MF_STRING, IDM_KB_RENAME, L"Rename...");
-    AppendMenuW(m, MF_STRING | (kb.block ? MF_CHECKED : 0), IDM_KB_BLOCK,
-                L"Block these keys from apps");
-    // Greyed rather than hidden when the keyboard blocks nothing at all: the
-    // option still describes this keyboard, it just has nothing to act on.
-    AppendMenuW(m,
-                MF_STRING | (kb.blockAllKeys ? MF_CHECKED : 0) |
-                    (kb.block ? 0 : MF_GRAYED),
-                IDM_KB_BLOCK_ALL,
-                L"      Turn off all normal input, not just macro keys");
-    AppendMenuW(m, MF_STRING, IDM_KB_REMATCH, L"Re-detect this keyboard...");
+    if (!simple()) {
+        AppendMenuW(m, MF_STRING | (kb.block ? MF_CHECKED : 0), IDM_KB_BLOCK,
+                    L"Block these keys from apps");
+        // Greyed rather than hidden when the keyboard blocks nothing at all:
+        // the option still describes this keyboard, it just has nothing to
+        // act on.
+        AppendMenuW(m,
+                    MF_STRING | (kb.blockAllKeys ? MF_CHECKED : 0) |
+                        (kb.block ? 0 : MF_GRAYED),
+                    IDM_KB_BLOCK_ALL,
+                    L"      Turn off all normal input, not just macro keys");
+    }
+    if (!kb.softwareOnly)
+        AppendMenuW(m, MF_STRING, IDM_KB_REMATCH,
+                    simple() ? L"Find this keypad again..."
+                             : L"Re-detect this keyboard...");
     AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(m, MF_STRING, IDM_KB_REMOVE, L"Remove this keyboard");
     int cmd = (int)TrackPopupMenu(m, TPM_RETURNCMD | TPM_LEFTALIGN, pt.x, pt.y,
@@ -2692,6 +3015,8 @@ void MainWindow::keyboardContextMenu(int index, POINT pt) {
             break;
         }
     }
+    // Renamed, re-detected or removed: the dots are keyed by name and match.
+    checkDevices(false);
 }
 
 void MainWindow::tileContextMenu(int tileIndex, POINT pt) {
@@ -2703,16 +3028,20 @@ void MainWindow::tileContextMenu(int tileIndex, POINT pt) {
         AppendMenuW(m, MF_STRING, IDM_TILE_REKEY, L"Assign a key here...");
     } else {
         AppendMenuW(m, MF_STRING, IDM_TILE_RENAME, L"Rename...");
-        AppendMenuW(m, MF_STRING, IDM_TILE_ICON, L"Choose an icon...");
-        if (!b->icon.empty())
-            AppendMenuW(m, MF_STRING, IDM_TILE_ICON_CLEAR, L"Remove the icon");
+        if (!simple()) {
+            AppendMenuW(m, MF_STRING, IDM_TILE_ICON, L"Choose an icon...");
+            if (!b->icon.empty())
+                AppendMenuW(m, MF_STRING, IDM_TILE_ICON_CLEAR,
+                            L"Remove the icon");
+        }
         AppendMenuW(m, MF_STRING, IDM_TILE_COLOR, L"Choose a colour...");
         if (!b->color.empty())
             AppendMenuW(m, MF_STRING, IDM_TILE_COLOR_CLEAR,
                         L"Use the default colour");
         AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
         AppendMenuW(m, MF_STRING | (b->steps.empty() ? MF_GRAYED : 0),
-                    IDM_TILE_TEST, L"Test run");
+                    IDM_TILE_TEST, simple() ? L"Try it" : L"Test run");
+        if (!simple()) {
         AppendMenuW(m, MF_STRING, IDM_TILE_DUPLICATE, L"Duplicate to another key...");
         AppendMenuW(m, MF_STRING | (b->steps.empty() ? MF_GRAYED : 0),
                     IDM_TILE_COPY_STEPS, L"Copy the steps");
@@ -2725,8 +3054,10 @@ void MainWindow::tileContextMenu(int tileIndex, POINT pt) {
                            L" step(s)").c_str());
         AppendMenuW(m, MF_STRING | (b->steps.empty() ? MF_GRAYED : 0),
                     IDM_TILE_CLEAR, L"Clear all steps");
+        }
         AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
-        AppendMenuW(m, MF_STRING, IDM_TILE_REMOVE, L"Remove this key");
+        AppendMenuW(m, MF_STRING, IDM_TILE_REMOVE,
+                    simple() ? L"Remove this button" : L"Remove this key");
     }
     int cmd = (int)TrackPopupMenu(m, TPM_RETURNCMD | TPM_LEFTALIGN, pt.x, pt.y,
                                   0, hwnd_, nullptr);
@@ -2761,6 +3092,417 @@ void MainWindow::tileContextMenu(int tileIndex, POINT pt) {
         case IDM_TILE_CLEAR: clearTile(); break;
         case IDM_TILE_REMOVE: deleteBinding(); break;
     }
+}
+
+// --------------------------------------------------------- first-run setup
+// Welcome, checks, first button - then turn the answers into a deck with that
+// one button on it, ready to press.
+void MainWindow::runSetup() {
+    SetupContext ctx;
+    ctx.offSwitch = activeHotkey_.empty() ? "" : keys::prettyCombo(activeHotkey_);
+    ctx.runAtLogin = runAtLoginEnabled();
+
+    SetupResult r;
+    const bool done = runSetupWizard(hwnd_, ctx, r);
+    // Finished or skipped, it has been offered: never again uninvited.
+    config_.settings.setupDone = true;
+    if (!done) {
+        config_.dirty = true;
+        saveConfig();
+        pushLog("Setup skipped.");
+        setStatus("You can run setup again any time from Settings.");
+        return;
+    }
+
+    cfg::Keyboard kb;
+    cfg::Binding b;
+    if (r.onScreen) {
+        kb.alias = config_.uniqueAlias("My buttons");
+        kb.softwareOnly = true;
+        kb.block = false;   // nothing to block: no keyboard behind it
+        b.key = "btn1";
+    } else {
+        kb.alias = config_.uniqueAlias(
+            !r.deviceName.empty() && r.deviceName.size() <= 24 ? r.deviceName
+                                                               : "My keypad");
+        kb.match = r.match;
+        kb.block = true;
+        // Only keys that carry a button stop typing. If the wrong keyboard was
+        // ever picked here, that costs one key rather than all of them.
+        kb.blockAllKeys = false;
+        b.key = r.keyName;
+    }
+    kb.deck = "auto";
+    b.title = r.title;
+    b.steps = r.steps;
+    kb.active().bindings.push_back(b);
+    const std::string alias = kb.alias;
+    config_.keyboards.push_back(std::move(kb));
+
+    config_.settings.simpleMode = true;
+    // A keypad only works while listening, so listen from now on. On-screen
+    // buttons work without it.
+    if (!r.onScreen) config_.settings.startEngineOnLaunch = true;
+    if (r.runAtLogin != runAtLoginEnabled()) {
+        std::string err;
+        if (!setRunAtLogin(r.runAtLogin, &err))
+            pushLog("Could not change starting with Windows: " + err);
+    }
+    config_.dirty = true;
+    saveConfig();
+    engine_.updateConfig(config_);
+
+    selectKeyboard(alias);
+    layout();
+    refreshInspector();
+    refreshModeButtons();
+    checkDevices(false);
+    for (size_t i = 0; i < tiles_.size(); ++i)
+        if (tiles_[i].binding == 0) {
+            selectTile((int)i);
+            break;
+        }
+
+    if (!r.onScreen && !engine_.running()) toggleEngine();
+    refreshMiniDeck();
+    if (r.onScreen && r.floating && !mini_.visible()) toggleMiniDeck();
+
+    pushLog("Setup finished: \"" + r.title + "\" on " +
+            (r.onScreen ? std::string("on-screen buttons")
+                        : "the " + keys::displayName(r.keyName) + " key of " +
+                              alias) +
+            ".");
+    if (!r.onScreen && !r.matchStable)
+        pushLog("  Two identical keyboards are attached, so the keypad is "
+                "recognised by its USB port - keep it in the same one.");
+    setStatus("\xE2\x9C\x93 You're set. Press your new button to try it.",
+              StatusTone::Good);
+}
+
+// ------------------------------------------------------------ simple mode
+// Simple mode is a view, not a different file: it shows a button's steps as
+// a few plain rows (smp::rowsFor) and makes only four kinds of them. Steps
+// it doesn't make are shown as an "advanced steps" row and left alone.
+void MainWindow::setSimpleMode(bool on) {
+    if (simple() == on) return;
+    config_.settings.simpleMode = on;
+    gesture_ = 0;              // Simple shows what a press does, nothing else
+    stepListFor_.clear();      // the rows mean different things now
+    saveConfig();
+    layout();
+    refreshInspector();
+    refreshModeButtons();
+    InvalidateRect(hwnd_, nullptr, FALSE);
+}
+
+void MainWindow::refreshModeButtons() {
+    setPrimary(btnSimple_, simple());
+    setPrimary(btnAdvanced_, !simple());
+}
+
+// Select the list row that shows step `index` - in Simple mode a row can
+// stand for several steps.
+void MainWindow::selectStep(size_t index) {
+    const int row = simple() ? smp::rowOfStep(simpleRows_, index) : (int)index;
+    SendMessageW(stepList_, LB_SETCURSEL, (WPARAM)row, 0);
+    updateStepButtons();
+}
+
+int MainWindow::selectedRow() const {
+    const int sel = (int)SendMessageW(stepList_, LB_GETCURSEL, 0, 0);
+    return sel >= 0 && sel < (int)simpleRows_.size() ? sel : -1;
+}
+
+// 0 = type text, 1 = press keys, 2 = wait.
+void MainWindow::addSimpleStep(int which) {
+    if (!selectedBinding()) return;
+    cfg::Step step;
+    step.params = js::Value::object();
+    if (which == 0) {
+        std::string text;
+        if (!askLongText(hwnd_, "Type text", "What should it type?", text,
+                         "Press Enter for a new line."))
+            return;
+        step.action = "type";
+        step.params["text"] = text;
+    } else if (which == 1) {
+        const std::string combo = askCombo();
+        if (combo.empty()) return;
+        step.action = "keys";
+        step.params["combo"] = combo;
+    } else {
+        double seconds = 1.0;
+        if (!chooseWait(hwnd_, seconds)) return;
+        step.action = "sleep";
+        step.params["seconds"] = seconds;
+    }
+    // Asked for again: the binding is not held across a dialog.
+    std::vector<cfg::Step>* steps = editingSteps();
+    if (!steps) return;
+    steps->push_back(step);
+    modelChanged();
+    selectStep(steps->size() - 1);
+}
+
+std::string MainWindow::askCombo() {
+    KeyCaptureResult r = captureKey(
+        hwnd_, "Press keys",
+        "Press the keys now - for example, hold Ctrl and press S.", "", true,
+        false);
+    if (!r.ok) return "";
+    return r.combo.empty() ? r.keyName : r.combo;
+}
+
+void MainWindow::editSimpleRow(int row) {
+    if (row < 0 || row >= (int)simpleRows_.size()) return;
+    const smp::Row r = simpleRows_[(size_t)row];
+    std::vector<cfg::Step>* steps = editingSteps();
+    if (!steps || r.first >= steps->size()) return;
+    // Copied: the list may be rebuilt while a dialog is open.
+    cfg::Step step = (*steps)[r.first];
+
+    switch (r.kind) {
+        case smp::Kind::Type: {
+            std::string text = step.params.str("text");
+            if (!askLongText(hwnd_, "Type text", "What should it type?", text,
+                             "Press Enter for a new line."))
+                return;
+            step.params["text"] = text;
+            break;
+        }
+        case smp::Kind::Keys: {
+            const std::string combo = askCombo();
+            if (combo.empty()) return;
+            step.params["combo"] = combo;
+            break;
+        }
+        case smp::Kind::Wait: {
+            double seconds = step.params.num("seconds", 1.0);
+            if (!chooseWait(hwnd_, seconds)) return;
+            step.params["seconds"] = seconds;
+            break;
+        }
+        case smp::Kind::Clicks:
+            if (!askYesNo(hwnd_, "Record these clicks again?",
+                          "The clicks you record now will replace these "
+                          "ones."))
+                return;
+            recordClicks((int)r.first, (int)r.count);
+            return;
+        case smp::Kind::Advanced:
+            // Simple mode never edits these. Show them where they can be.
+            setSimpleMode(false);
+            selectStep(r.first);
+            pushLog("Switched to Advanced to show the advanced steps.");
+            return;
+    }
+
+    steps = editingSteps();
+    if (!steps || r.first >= steps->size()) return;
+    (*steps)[r.first] = step;
+    modelChanged();
+    selectStep(r.first);
+}
+
+void MainWindow::removeSimpleRow(int row) {
+    if (row < 0 || row >= (int)simpleRows_.size()) return;
+    const smp::Row r = simpleRows_[(size_t)row];
+    if (r.kind == smp::Kind::Advanced) return;   // never from Simple mode
+    std::vector<cfg::Step>* steps = editingSteps();
+    if (!steps || r.first + r.count > steps->size()) return;
+    steps->erase(steps->begin() + (std::ptrdiff_t)r.first,
+                 steps->begin() + (std::ptrdiff_t)(r.first + r.count));
+    modelChanged();
+    if (!simpleRows_.empty())
+        SendMessageW(stepList_, LB_SETCURSEL,
+                     (WPARAM)std::min(row, (int)simpleRows_.size() - 1), 0);
+    updateStepButtons();
+}
+
+int MainWindow::deckHeaderH() const {
+    // Simple mode has no layout picker, so one band: the page tabs when the
+    // deck has more than one page, a hint when it doesn't.
+    return simple() ? 50 : kDeckHeaderH;
+}
+
+int MainWindow::pageStripY() const { return simple() ? 14 : kPageStripY; }
+
+// --------------------------------------------------------- keypad presence
+// Look for every keypad's device, and say so when one comes or goes. A
+// Bluetooth keypad that has gone to sleep looks exactly like one that was
+// never set up - except for this dot.
+void MainWindow::checkDevices(bool announce) {
+    std::vector<dev::InputDevice> attached = dev::listKeyboards();
+    for (auto& m : dev::listMice()) attached.push_back(std::move(m));
+
+    std::map<std::string, bool> now;
+    std::string gone, back;
+    int goneCount = 0;
+    for (const cfg::Keyboard& kb : config_.keyboards) {
+        if (kb.softwareOnly || kb.match.empty()) continue;
+        bool there = false;
+        for (const auto& d : attached)
+            if (cfg::specMatches(kb.match, d.path)) { there = true; break; }
+        now[kb.alias] = there;
+
+        auto was = present_.find(kb.alias);
+        const bool known = was != present_.end();
+        if (!there && (!known || was->second)) {
+            gone = kb.alias;
+            ++goneCount;
+        }
+        if (there && known && !was->second) back = kb.alias;
+    }
+    const bool changed = now != present_;
+    present_ = std::move(now);
+    if (changed) InvalidateRect(hwnd_, &rcSidebar_, FALSE);
+    if (!announce) return;
+
+    if (goneCount > 1) {
+        pushLog(std::to_string(goneCount) + " keypads aren't connected.");
+        setStatus("\xE2\x9A\xA0 " + std::to_string(goneCount) +
+                      " keypads aren't connected - the grey dots on the "
+                      "left. Switch them on, or plug them back in.",
+                  StatusTone::Warn);
+    } else if (!gone.empty()) {
+        pushLog("\"" + gone + "\" isn't connected.");
+        setStatus("\xE2\x9A\xA0 " + gone + " isn't connected. Switch it on, "
+                  "or plug it back in.",
+                  StatusTone::Warn);
+    } else if (!back.empty()) {
+        pushLog("\"" + back + "\" is connected again.");
+        setStatus("\xE2\x9C\x93 " + back + " is connected again.",
+                  StatusTone::Good);
+    }
+}
+
+// ------------------------------------------------------------ status line
+// One line beside the Activity heading: the last thing worth knowing, in
+// plain words - a button that ran, one that stopped and why, a save that
+// failed. The log underneath keeps the technical detail.
+void MainWindow::setStatus(const std::string& text, StatusTone tone) {
+    statusText_ = text;
+    statusTone_ = tone;
+    RECT head{0, rcLog_.top, rcLog_.right, rcLog_.top + S(26)};
+    InvalidateRect(hwnd_, &head, FALSE);
+}
+
+void MainWindow::drainOutcomes() {
+    std::deque<eng::Outcome> batch;
+    {
+        std::lock_guard<std::mutex> lk(outcomeMu_);
+        batch.swap(outcomes_);
+    }
+    for (const eng::Outcome& o : batch) {
+        if (o.ok) {
+            setStatus("\xE2\x9C\x93 \"" + o.button + "\" ran.", StatusTone::Good);
+            continue;
+        }
+        const std::string line = fe::stoppedLine(o.button, o.step, o.problem,
+                                                 o.subject, o.technical);
+        setStatus("\xE2\x9A\xA0 " + line, StatusTone::Warn);
+        // Buttons mostly run with this window out of sight - pressed on the
+        // keypad or the floating buttons - where the status line can't be seen.
+        if (!IsWindowVisible(hwnd_) || IsIconic(hwnd_))
+            noticeWhileAway("A button stopped", line);
+    }
+}
+
+void MainWindow::noticeWhileAway(const std::string& title,
+                                 const std::string& text) {
+    // One at a time: a key pressed over and over against a closed program
+    // should not become a stack of notifications.
+    const ULONGLONG now = GetTickCount64();
+    if (lastAwayNotice_ && now - lastAwayNotice_ < 10000) return;
+    lastAwayNotice_ = now;
+
+    if (trayAdded_) {
+        NOTIFYICONDATAW nid{};
+        nid.cbSize = sizeof(nid);
+        nid.hWnd = hwnd_;
+        nid.uID = 1;
+        nid.uFlags = NIF_INFO;
+        nid.dwInfoFlags = NIIF_WARNING;
+        wcsncpy(nid.szInfoTitle, W(title).c_str(), 63);
+        wcsncpy(nid.szInfo, W(text).c_str(), 255);
+        Shell_NotifyIconW(NIM_MODIFY, &nid);
+    } else {
+        FLASHWINFO fi{};
+        fi.cbSize = sizeof(fi);
+        fi.hwnd = hwnd_;
+        fi.dwFlags = FLASHW_TRAY | FLASHW_TIMERNOFG;
+        FlashWindowEx(&fi);
+    }
+}
+
+// ------------------------------------------------------- settings problems
+// The newest daily backup that loads cleanly, and the date it was taken.
+// A backup made after the file went bad is a copy of the damage, so each is
+// tried rather than trusting the newest.
+bool MainWindow::findRestorableBackup(std::string& path, std::string& date) {
+    const std::string dir = dataPath("backups");
+    std::vector<std::string> names = listFiles(dir, ".json");
+    for (auto it = names.rbegin(); it != names.rend(); ++it) {
+        const std::string& name = *it;
+        if (name.rfind("macros-", 0) != 0 || name.size() < 17) continue;
+        cfg::Config probe;
+        probe.load(joinPath(dir, name));
+        if (!probe.loadError.empty()) continue;
+        path = joinPath(dir, name);
+        date = name.substr(7, 10);
+        return true;
+    }
+    return false;
+}
+
+void MainWindow::explainLoadProblem() {
+    if (config_.loadError.empty()) return;
+    if (config_.loadLocked) {
+        if (showFriendly(hwnd_, fe::explain(fe::Problem::ConfigLocked, "",
+                                            config_.loadError)))
+            reloadConfig();
+        return;
+    }
+    std::string backup, date;
+    const bool have = findRestorableBackup(backup, date);
+    const fe::Friendly f =
+        fe::explain(fe::Problem::ConfigDamaged,
+                    have ? fe::friendlyDate(date) : "", config_.loadError);
+    if (showFriendly(hwnd_, f) && have) restoreBackup(backup, date);
+}
+
+void MainWindow::restoreBackup(const std::string& backup,
+                               const std::string& date) {
+    const std::string current = dataPath("macros.json");
+    std::string kept;
+    if (fileExists(current)) {
+        // The damaged file is kept, never replaced in place: whatever is
+        // wrong with it, it may still hold work worth getting back.
+        kept = freeBackupPath(current);
+        if (!copyFile(current, kept, false)) {
+            showMessage(hwnd_, "Nothing was changed",
+                        "Dental Macros couldn't keep a copy of the damaged "
+                        "settings file, so it didn't replace it.",
+                        true);
+            return;
+        }
+    }
+    if (!copyFile(backup, current, true)) {
+        showMessage(hwnd_, "Nothing was changed",
+                    "Windows didn't let Dental Macros put the saved copy in "
+                    "place.",
+                    true);
+        return;
+    }
+    config_.dirty = false;
+    reloadConfig();
+    if (!config_.loadError.empty()) return;   // explained again by the reload
+    pushLog("Restored " + relativeToApp(backup) + ".");
+    if (!kept.empty())
+        pushLog("  The damaged file was kept as " + relativeToApp(kept) + ".");
+    setStatus("\xE2\x9C\x93 Your buttons are back, from the copy saved on " +
+                  fe::friendlyDate(date) + ".",
+              StatusTone::Good);
 }
 
 // ------------------------------------------------------------------- logs
@@ -2863,7 +3605,8 @@ void MainWindow::runBindingByKey(const std::string& key) {
     lastFire_[currentAlias_ + "|" + b->key] = GetTickCount();
     SetTimer(hwnd_, 2, 60, nullptr);
     InvalidateRect(hwnd_, nullptr, FALSE);
-    engine_.runSequenceAsync(b->steps, "Buttons", currentAlias_);
+    engine_.runSequenceAsync(b->steps, "Buttons", currentAlias_,
+                             b->displayTitle());
 }
 
 void MainWindow::saveMiniPlacement() {
@@ -3040,11 +3783,36 @@ LRESULT CALLBACK MainWindow::wndProc(HWND hwnd, UINT msg, WPARAM wp,
             self->drainPageRequests();
             return 0;
 
+        case WM_APP_OUTCOME:
+            self->drainOutcomes();
+            return 0;
+
+        case WM_APP_LOADPROBLEM:
+            self->explainLoadProblem();
+            return 0;
+
+        case WM_APP_SETUP:
+            self->runSetup();
+            return 0;
+
         case WM_APP_FOREGROUND:
             self->onForegroundChanged((HWND)wp);
             return 0;
 
+        case WM_DEVICECHANGE:
+            // Sent to every top-level window when anything is plugged in,
+            // removed, paired or drops off Bluetooth. Which device is not
+            // said, so look again once the burst is over.
+            if (wp == DBT_DEVNODES_CHANGED)
+                SetTimer(hwnd, kDeviceCheckTimer, kDeviceCheckDelayMs, nullptr);
+            return TRUE;
+
         case WM_TIMER:
+            if (wp == kDeviceCheckTimer) {
+                KillTimer(hwnd, kDeviceCheckTimer);
+                self->checkDevices(true);
+                return 0;
+            }
             if (wp == 2) {
                 // fade out the "just fired" glow, then stop ticking
                 DWORD now = GetTickCount();
@@ -3149,7 +3917,7 @@ LRESULT CALLBACK MainWindow::wndProc(HWND hwnd, UINT msg, WPARAM wp,
             SetFocus(hwnd);
 
             if (self->config_.keyboards.empty()) {
-                if (ptIn(self->rcWelcomeBtn_, p)) self->addKeyboard();
+                if (ptIn(self->rcWelcomeBtn_, p)) self->runSetup();
                 return 0;
             }
             for (const auto& r : self->kbRows_) {
@@ -3265,7 +4033,7 @@ LRESULT CALLBACK MainWindow::wndProc(HWND hwnd, UINT msg, WPARAM wp,
                     return 0;
                 }
             for (const PageTab& t : self->pageTabs_)
-                if (ptIn(t.rect, p) && t.index >= 0) {
+                if (ptIn(t.rect, p) && t.index >= 0 && !self->simple()) {
                     self->pageContextMenu(t.index, screen);
                     return 0;
                 }
@@ -3293,15 +4061,25 @@ LRESULT CALLBACK MainWindow::wndProc(HWND hwnd, UINT msg, WPARAM wp,
                     if (notify == BN_CLICKED) self->toggleEngine();
                     return 0;
                 case ID_BTN_SETTINGS:
-                    if (notify == BN_CLICKED &&
-                        settingsDialog(hwnd, self->config_.settings)) {
-                        self->saveConfig();
-                        self->engine_.updateConfig(self->config_);
-                        self->applyToggleHotkey();
-                    }
+                    if (notify == BN_CLICKED) self->openSettings();
                     return 0;
-                case ID_BTN_MENU:
-                    if (notify == BN_CLICKED) self->showMenu();
+                case ID_BTN_FLOATING:
+                    if (notify == BN_CLICKED) self->toggleMiniDeck();
+                    return 0;
+                case ID_BTN_SIMPLE:
+                    if (notify == BN_CLICKED) self->setSimpleMode(true);
+                    return 0;
+                case ID_BTN_ADVANCED:
+                    if (notify == BN_CLICKED) self->setSimpleMode(false);
+                    return 0;
+                case ID_BTN_S_TYPE:
+                    if (notify == BN_CLICKED) self->addSimpleStep(0);
+                    return 0;
+                case ID_BTN_S_KEYS:
+                    if (notify == BN_CLICKED) self->addSimpleStep(1);
+                    return 0;
+                case ID_BTN_S_WAIT:
+                    if (notify == BN_CLICKED) self->addSimpleStep(2);
                     return 0;
                 case ID_BTN_ADD_STEP:
                     if (notify == BN_CLICKED) self->addStep();
@@ -3359,43 +4137,6 @@ LRESULT CALLBACK MainWindow::wndProc(HWND hwnd, UINT msg, WPARAM wp,
                             }
                         }
                     }
-                    return 0;
-
-                case IDM_SNIP: {
-                    std::string path;
-                    if (snipTemplate(hwnd, path))
-                        self->pushLog("Saved template " + path);
-                    return 0;
-                }
-                case IDM_MINIDECK: self->toggleMiniDeck(); return 0;
-                case IDM_LAYOUTS: self->showLayouts(); return 0;
-                case IDM_IMPORT: self->importYaml(); return 0;
-                case IDM_SAVE:
-                    self->saveConfig();
-                    self->pushLog("Settings saved.");
-                    return 0;
-                case IDM_RELOAD: self->reloadConfig(); return 0;
-                case IDM_EXPORT: self->exportConfig(); return 0;
-                case IDM_BACKUP: self->backupNow(); return 0;
-                case IDM_OPEN_FOLDER:
-                    ShellExecuteW(nullptr, L"open", widen(exeDir()).c_str(),
-                                  nullptr, nullptr, SW_SHOWNORMAL);
-                    return 0;
-                case IDM_ABOUT:
-                    showMessage(
-                        hwnd, "About Dental Macros",
-                        "Dental Macros - a per-keyboard macro deck for Windows.\n\n"
-                        "Because Windows Raw Input reports which physical "
-                        "keyboard each keystroke came from, a spare keyboard "
-                        "or numpad can be dedicated entirely to macros while "
-                        "you keep typing normally on your main one.\n\n"
-                        "Everything runs locally. Nothing is sent anywhere.\n\n"
-                        "Settings are stored in macros.json next to the "
-                        "program.");
-                    return 0;
-                case IDM_EXIT:
-                    self->quitting_ = true;
-                    DestroyWindow(hwnd);
                     return 0;
             }
             break;

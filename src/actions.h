@@ -2,6 +2,7 @@
 #pragma once
 #include <string>
 #include <vector>
+#include <windows.h>
 
 namespace act {
 
@@ -18,5 +19,13 @@ void scroll(int notches);
 
 void runCommand(const std::string& cmd, bool wait);
 void openPath(const std::string& target);
+
+// Typing, key presses and clicks check this first. Windows silently drops
+// synthetic input sent to a program running at a higher integrity level -
+// "as administrator" - than the sender, so the macro would carry on as if it
+// had worked. Returns that program's path when `target` (or its top-level
+// window) belongs to one; empty when input will get through, or when Windows
+// won't say.
+std::string blockedProgram(HWND target);
 
 }  // namespace act

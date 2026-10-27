@@ -3,6 +3,7 @@
 #pragma once
 #include "config.h"
 #include "device.h"
+#include "friendly.h"
 
 #include <array>
 #include <atomic>
@@ -24,6 +25,18 @@ struct MonitorEvent {
     std::string devicePath;
     std::string alias;      // configured keyboard, empty if unmatched
     bool hasMacro = false;
+};
+
+// How a macro run ended, for the status line. Fired on the worker thread once
+// per run, after the last step or the one that stopped it.
+struct Outcome {
+    bool ok = false;
+    std::string button;     // the button's name, or the run's label
+    std::string alias;
+    int step = 0;           // 1-based step that stopped it; 0 when ok
+    fe::Problem problem = fe::Problem::None;
+    std::string subject;
+    std::string technical;
 };
 
 // Decides which key-downs are presses. Two kinds are not: a key the keyboard
@@ -57,12 +70,14 @@ public:
     // change page with the engine stopped - so the engine only ever asks,
     // and sees the answer when the app hands back a fresh snapshot.
     using PageFn = std::function<void(const std::string& alias, int page)>;
+    using OutcomeFn = std::function<void(const Outcome&)>;
 
     Engine() = default;
     ~Engine();
 
     void setLog(LogFn fn);
     void setPageChanger(PageFn fn);
+    void setOutcome(OutcomeFn fn);
     // The monitor callback fires for EVERY keystroke on every keyboard, so
     // the UI can show a live key trace. Set to nullptr to turn it off.
     void setMonitor(MonitorFn fn);
@@ -71,17 +86,22 @@ public:
     // keystroke uses the new bindings.
     void updateConfig(const cfg::Config& c);
 
-    void start();          // throws std::runtime_error with a friendly message
+    // Throws fe::Error (InputBlocked) when Windows won't let it read or block
+    // input, and std::runtime_error with a sentence for the user otherwise.
+    void start();
     void stop();
     bool running() const { return running_.load(); }
 
     // Run a sequence on the worker thread (used by the Test button and by
     // clicking a software button). `alias` says which deck it belongs to, so
     // a page step in the sequence knows whose pages it is talking about.
+    // `title` is the button's name for the status line; empty uses `label`.
     void runSequenceAsync(const std::vector<cfg::Step>& steps,
                           const std::string& label,
-                          const std::string& alias = "");
-    // Run a sequence on the calling thread; throws on the first failing step.
+                          const std::string& alias = "",
+                          const std::string& title = "");
+    // Run a sequence on the calling thread. Throws fe::Error on the first
+    // failing step, carrying that step's number.
     void runSequence(const std::vector<cfg::Step>& steps);
 
     // Listen for keystrokes without running macros - used by "press a key"
@@ -95,6 +115,7 @@ private:
         // Which deck fired it, so a "Go to a page" step knows whose pages it
         // is talking about. Empty for a Test run from the editor.
         std::string alias;
+        std::string title;   // the button's name, when there is one
     };
 
     void onKey(const dev::KeyEvent& ev);
@@ -136,6 +157,8 @@ private:
     LogFn log_;
     MonitorFn monitor_;
     PageFn page_;
+    OutcomeFn outcome_;
+    void report(const Outcome& o);
 
     // Keys currently holding a page open, and the page each should put back
     // when it is released. Keyed the same way PressFilter keys presses, so two
