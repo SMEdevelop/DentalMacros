@@ -21,9 +21,11 @@ it drops the Python and OpenCV dependencies entirely.
 ![The main window in Simple mode: keypads on the left, the keys in the middle, the selected button on the right](docs/screenshot-main.png)
 
 It looks and reads like the other SMEdevelop office apps: warm cream panels, a
-denim main button, seven key colours that keep white text readable, buttons
-and rows at least 48 pixels tall, and plain words that say what each button
-does ("Save step", "Delete button", "Add keypad").
+denim main button, seven key colours that keep white text readable, roomy
+buttons and rows, and plain words that say what each button does ("Save
+step", "Delete button", "Add keypad"). It draws the design system at a
+little over four fifths of its size, so text and icons stay the size they
+were before the redesign.
 
 ![The first step of setup: on my screen, or on a spare keypad](docs/screenshot-setup.png)
 

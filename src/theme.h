@@ -50,10 +50,27 @@ struct Theme {
 const Theme& theme();
 
 // DPI. Set once at startup from the window's DPI.
-void setDpiScale(float s);
+//
+// The design system's sizes (17px body, 48px buttons) read large on an office
+// PC, so the app draws them at kUiSize of that: text and icons come out at the
+// size Dental Macros used before the redesign, and every gap and button
+// shrinks with them, so the look stays the same, only smaller. dpiScale(), S()
+// and Sf() all include it.
+constexpr float kUiSize = 0.82f;
+void setDpiScale(float s);   // s = window DPI / 96
 float dpiScale();
 int S(int px);          // scale a design-time pixel value
 float Sf(float px);
+
+// The floating buttons keep their own 30-46px sizes, so they are drawn at the
+// plain DPI scale: S() and Sf() leave kUiSize out while one of these lives.
+struct FullSize {
+    FullSize();
+    ~FullSize();
+    FullSize(const FullSize&) = delete;
+    FullSize& operator=(const FullSize&) = delete;
+    float saved;
+};
 
 COLORREF toColorRef(const Gdiplus::Color& c);
 Gdiplus::Color fromHex(const std::string& hex, const Gdiplus::Color& fallback);

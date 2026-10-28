@@ -563,9 +563,15 @@ bool MainWindow::create(HINSTANCE inst, int showCmd) {
 
     // Centre on the primary monitor's work area, and never larger than it -
     // the default size is bigger than a small laptop screen at 150% scaling.
+    // The window opens at its full size even though what's inside is drawn
+    // smaller (kUiSize), so the keypad gets the room.
     RECT work = workAreaNear(nullptr);
-    int w = std::min<int>(S(1280), work.right - work.left);
-    int h = std::min<int>(S(880), work.bottom - work.top);
+    int w = 0, h = 0;
+    {
+        const FullSize fullSize;
+        w = std::min<int>(S(1280), work.right - work.left);
+        h = std::min<int>(S(880), work.bottom - work.top);
+    }
     int sx = work.left + ((work.right - work.left) - w) / 2;
     int sy = work.top + ((work.bottom - work.top) - h) / 2;
 
@@ -1215,7 +1221,7 @@ void MainWindow::layoutDeck() {
     int tileH = (availH - gap * (rows - 1)) / rows;
     // Always as many columns as fit across, though: a key cut off at the
     // side can't be scrolled to.
-    int side = std::max(std::min(S(104), tileW), std::min({tileW, tileH, S(160)}));
+    int side = std::max(std::min(S(92), tileW), std::min({tileW, tileH, S(160)}));
     int gridW = side * cols + gap * (cols - 1);
     const int gridH = side * rows + gap * (rows - 1);
     deckContentH_ = gridH;
@@ -1808,15 +1814,23 @@ void MainWindow::paintTile(Graphics& g, const DeckTile& tile,
         }
     }
 
-    // Top to bottom: the badge row, the icon (36px on a key with room for
-    // it), then two lines of label. On a small key the icon gives way first,
-    // so the name - what the key is for - always fits.
-    const float labelPx = r.Width >= Sf(150) ? 22.0f : r.Width >= Sf(110) ? 17.0f
-                                                                       : 15.0f;
-    const REAL lineH = Sf(labelPx * 1.3f);
+    // Top to bottom: the badge row, the icon (about a third of the key, as
+    // before the redesign), then two lines of label. On a small key the icon
+    // gives way first, so the name - what the key is for - always fits.
+    const float labelPx = r.Width >= Sf(150) ? 17.0f : r.Width >= Sf(110) ? 15.0f
+                                                                       : 14.0f;
+    const REAL lineH = Sf(labelPx * 1.4f);  // Segoe UI needs about 1.33
     const REAL top = r.Y + (kb->softwareOnly ? Sf(12) : Sf(8) + tagH + Sf(4));
-    const REAL room = r.GetBottom() - Sf(6) - lineH * 2 - Sf(4) - top;
-    const REAL isz = std::max(0.0f, std::min(Sf(36), room));
+    // Room for two lines of label only when the name needs them. drawText
+    // pads each side by about a sixth of the text size; measureText doesn't.
+    const std::wstring title = W(b->displayTitle());
+    const int lines = measureText(g, title, labelPx, true).Width + Sf(labelPx) * 0.4f <=
+                              r.Width - Sf(12)
+                          ? 1
+                          : 2;
+    const REAL room = r.GetBottom() - Sf(6) - lineH * lines - Sf(4) - top;
+    const REAL isz =
+        std::max(0.0f, std::min(std::min(r.Width, r.Height) * 0.34f, room));
     RectF iconBox(r.X + (r.Width - isz) / 2, top, isz, isz);
     if (isz < Sf(18)) iconBox = RectF(r.X + r.Width / 2, top, 0, 0);
     const bool unfinished = b->steps.empty() && !b->isDial();
@@ -1853,13 +1867,16 @@ void MainWindow::paintTile(Graphics& g, const DeckTile& tile,
         drawActionIcon(g, "scroll", iconBox, kWhite);
     }
 
-    // MessageButton labels are 22px bold; a key too narrow for that gets a
-    // smaller size, still bold, so two words still fit across it.
-    const REAL labelTop = iconBox.Height > 0 ? iconBox.GetBottom() + Sf(4) : top;
+    // Key labels are bold; a narrow key gets a smaller size so two words
+    // still fit across it.
+    // The "No steps yet" tag can be taller than the room left for an icon;
+    // the name still gets all of its lines.
+    const REAL labelTop =
+        std::max(top, std::min(iconBox.Height > 0 ? iconBox.GetBottom() + Sf(4) : top,
+                               r.GetBottom() - Sf(4) - lineH * lines));
     RectF label(r.X + Sf(6), labelTop, r.Width - Sf(12),
                 r.GetBottom() - Sf(4) - labelTop);
-    drawText(g, W(b->displayTitle()), label, labelPx, kWhite, Align::Center,
-             true, true, true);
+    drawText(g, title, label, labelPx, kWhite, Align::Center, true, true, true);
 }
 
 void MainWindow::paintDragGhost(Graphics& g) {
