@@ -19,10 +19,12 @@ constexpr wchar_t kClassName[] = L"DentalMacrosMini";
 
 // Design-pixel metrics. Deliberately tight - the whole point is a window that
 // takes up less room than the icons already on the desktop.
-constexpr int kPad = 5;
-constexpr int kGap = 4;
-constexpr int kGripH = 15;
-constexpr int kPageBarH = 15;
+constexpr int kPad = 6;
+constexpr int kGap = 6;
+// The grip and the close button: still small, by choice (docs/REDESIGN.md
+// section 6), but big enough to hit.
+constexpr int kGripH = 24;
+constexpr int kPageBarH = 22;
 constexpr int kFlashMs = 450;
 
 enum {
@@ -298,35 +300,41 @@ void MiniDeck::paintButton(void* graphics, size_t index) {
     Graphics& g = *reinterpret_cast<Graphics*>(graphics);
     const MiniButton& b = buttons_[index];
     RectF r = toRectF(rects_[index]);
-    const float radius = Sf(6.0f);
     const bool hover = hover_ == (int)index;
 
-    float fire = 0.0f;
+    // A button that just ran does the press: a quick shrink to 96%.
     auto it = fired_.find(b.key);
-    if (it != fired_.end()) {
-        DWORD age = GetTickCount() - it->second;
-        if (age < (DWORD)kFlashMs) fire = 1.0f - (float)age / (float)kFlashMs;
+    if (it != fired_.end() && GetTickCount() - it->second < 160) {
+        const float dw = r.Width * 0.04f, dh = r.Height * 0.04f;
+        r = RectF(r.X + dw / 2, r.Y + dh / 2, r.Width - dw, r.Height - dh);
     }
+    // The house shape, scaled down with the button: the design system's 16px
+    // on a 64px key is a quarter of its height.
+    const float radius = r.Height * 0.25f;
 
-    Color base = readableTileColor(b.color, hover ? theme().tileHover
-                                                  : theme().tile);
-    if (hover && trim(b.color).empty()) base = theme().tileHover;
-    if (fire > 0) base = mix(base, theme().good, fire * 0.6f);
-    // A key with nothing on it yet is drawn back towards the panel, so the
-    // palette reads as "these do something" at a glance. A dial counts as
-    // doing something even with no press bound: scrolling it still works.
-    if (!b.hasSteps && !b.isDial) base = mix(base, theme().panel, 0.5f);
+    // Hover lifts a key one shade, as bundle.css's .sme-msg:hover does.
+    Color base = readableTileColor(b.color, theme().tile);
+    if (hover) base = mix(base, tok().white, 0.08f);
+    const bool unfinished = !b.hasSteps && !b.isDial;
 
-    fillRounded(g, r, radius, base);
-    strokeRounded(g, r, radius,
-                  hover ? theme().accent : withAlpha(theme().border, 150),
-                  hover ? Sf(1.6f) : 1.0f);
+    if (unfinished) {
+        // Nothing on it yet: drawn like an empty slot, dashed, so the
+        // palette reads as "these do something" at a glance. A dial counts
+        // as doing something even with no press bound: scrolling it works.
+        fillRounded(g, r, radius, tok().surfaceRaised);
+        strokeRoundedDashed(g, r, radius, hover ? tok().primary : tok().lineStrong,
+                            Sf(1.5f));
+    } else {
+        fillRounded(g, r, radius, base);
+        if (hover) strokeRounded(g, r, radius, tok().primary, Sf(2.0f));
+    }
+    const Color ink = unfinished ? tok().inkMuted : tok().white;
 
     // Two chevrons in the corner: scrolling over this one turns it.
     if (b.isDial) {
         RectF mark(r.GetRight() - Sf(9.0f), r.Y + Sf(2.5f), Sf(6.0f),
                    Sf(8.0f));
-        drawGlyphDial(g, mark, withAlpha(theme().text, 150));
+        drawGlyphDial(g, mark, ink);
     }
 
     // At this size there is room for a glyph and a key name and nothing else.
@@ -338,8 +346,7 @@ void MiniDeck::paintButton(void* graphics, size_t index) {
     // Library icons are drawn, not loaded, so they cost nothing to cache and
     // stay crisp at 30 pixels where a downscaled PNG would not.
     if (isLibraryIcon(b.icon) &&
-        drawLibraryIcon(g, libraryIconId(b.icon), iconBox,
-                        withAlpha(Color(255, 255, 255, 255), 235))) {
+        drawLibraryIcon(g, libraryIconId(b.icon), iconBox, ink)) {
         // drawn
     } else if (Image* img = iconFor(b.icon)) {
         float iw = (float)img->GetWidth(), ih = (float)img->GetHeight();
@@ -351,17 +358,16 @@ void MiniDeck::paintButton(void* graphics, size_t index) {
             g.DrawImage(img, dst);
         }
     } else if (!b.firstAction.empty()) {
-        drawActionIcon(g, b.firstAction, iconBox,
-                       withAlpha(Color(255, 255, 255, 255), 235));
+        drawActionIcon(g, b.firstAction, iconBox, ink);
     }
 
     RectF label(r.X + Sf(1.0f), r.GetBottom() - r.Height * 0.40f,
                 r.Width - Sf(2.0f), r.Height * 0.34f);
     // A software button shows the start of its own name instead of a key.
+    // Small by choice; the full name is in the grip strip on hover.
     const std::string foot = b.showKey ? keys::displayName(b.key) : b.title;
-    drawText(g, W(foot), label,
-             place_.tile <= kMiniTileSmall ? 8.0f : 9.0f,
-             withAlpha(Color(255, 255, 255, 255), 225), Align::Center, true);
+    drawText(g, W(foot), label, place_.tile <= kMiniTileSmall ? 9.0f : 10.0f,
+             ink, Align::Center, true);
 }
 
 void MiniDeck::paint(HDC hdc) {
@@ -378,22 +384,28 @@ void MiniDeck::paint(HDC hdc) {
         g.SetSmoothingMode(SmoothingModeAntiAlias);
         g.SetTextRenderingHint(TextRenderingHintClearTypeGridFit);
 
-        SolidBrush bg(theme().panel);
+        const Tok& k = tok();
+        SolidBrush bg(k.surfaceRaised);
         g.FillRectangle(&bg, 0, 0, w, h);
-        RectF frame(0.5f, 0.5f, (REAL)w - 1.0f, (REAL)h - 1.0f);
-        strokeRounded(g, frame, Sf(7.0f), theme().border, 1.0f);
 
         // Grip strip. The whole strip drags, so there is no hunting for a
         // title bar that this window deliberately does not have.
         RectF gripR = toRectF(rcGrip_);
-        SolidBrush gripBg(theme().panelAlt);
+        SolidBrush gripBg(k.surfaceSunken);
         g.FillRectangle(&gripBg, gripR);
+        Pen gripLine(k.line, 1.0f);
+        g.DrawLine(&gripLine, gripR.X, gripR.GetBottom() - 0.5f, gripR.GetRight(),
+                   gripR.GetBottom() - 0.5f);
+        RectF frame(0.5f, 0.5f, (REAL)w - 1.0f, (REAL)h - 1.0f);
+        strokeRounded(g, frame, Sf(8.0f), k.lineStrong, 1.0f);
 
+        // Six dots: the usual sign for "drag me".
         const float cy = gripR.Y + gripR.Height / 2;
-        SolidBrush dot(theme().textFaint);
+        SolidBrush dot(k.inkMuted);
         for (int i = 0; i < 3; ++i)
-            g.FillEllipse(&dot, Sf(6.0f) + i * Sf(4.0f), cy - Sf(1.0f),
-                          Sf(2.0f), Sf(2.0f));
+            for (int j = 0; j < 2; ++j)
+                g.FillEllipse(&dot, Sf(7.0f) + i * Sf(4.5f),
+                              cy - Sf(3.5f) + j * Sf(4.5f), Sf(2.5f), Sf(2.5f));
 
         // The hovered button's title, or the keyboard's name when nothing is
         // under the cursor. This is where a label too long for a 38-pixel
@@ -404,12 +416,12 @@ void MiniDeck::paint(HDC hdc) {
             strip = !b.title.empty() ? b.title
                     : b.showKey        ? keys::displayName(b.key)
                                        : std::string("Button");
-            if (!b.hasSteps) strip += " - no steps yet";
+            if (!b.hasSteps) strip += ": no steps yet";
         }
-        RectF capR(Sf(18.0f), gripR.Y, gripR.Width - Sf(18.0f) - Sf(kGripH),
+        RectF capR(Sf(24.0f), gripR.Y, gripR.Width - Sf(24.0f) - Sf(kGripH),
                    gripR.Height);
-        drawText(g, W(strip), capR, 9,
-                 hover_ >= 0 ? theme().text : theme().textDim, Align::Left);
+        drawText(g, W(strip), capR, 11, hover_ >= 0 ? k.ink : k.inkMuted,
+                 Align::Left, hover_ >= 0);
 
         // The page bar. Name in the middle, an arrow at each end - the
         // smallest thing that says which layer these buttons belong to and
@@ -428,7 +440,9 @@ void MiniDeck::paint(HDC hdc) {
 
             auto arrow = [&](const RECT& box, bool left, bool hot) {
                 RectF r = toRectF(box);
-                Pen pen(hot ? theme().text : theme().textFaint, Sf(1.2f));
+                Pen pen(hot ? k.primaryInk : k.inkMuted, Sf(1.6f));
+                pen.SetStartCap(LineCapRound);
+                pen.SetEndCap(LineCapRound);
                 const float cx = r.X + r.Width / 2, cy2 = r.Y + r.Height / 2;
                 const float d = Sf(2.6f);
                 const float tip = left ? cx - d : cx + d;
@@ -444,25 +458,31 @@ void MiniDeck::paint(HDC hdc) {
             const std::string label =
                 page_.name + "   " + std::to_string(page_.index + 1) + "/" +
                 std::to_string(page_.count);
-            drawText(g, W(label), nameR, 9, theme().textDim, Align::Center);
+            drawText(g, W(label), nameR, 11, k.inkMuted, Align::Center);
         }
 
+        // The round close button: the one icon-only control the design
+        // system allows. Its tooltip-free name is "Close" in the menu.
         RectF cl = toRectF(rcClose_);
-        Pen x(hoverClose_ ? theme().danger : theme().textFaint, Sf(1.3f));
-        const float m = Sf(4.5f);
-        g.DrawLine(&x, cl.X + m, cl.Y + m, cl.GetRight() - m,
-                   cl.GetBottom() - m);
-        g.DrawLine(&x, cl.GetRight() - m, cl.Y + m, cl.X + m,
-                   cl.GetBottom() - m);
+        if (hoverClose_) {
+            const float d = std::min(cl.Width, cl.Height) - Sf(4.0f);
+            SolidBrush hot(k.surfaceHover);
+            g.FillEllipse(&hot, cl.X + (cl.Width - d) / 2, cl.Y + (cl.Height - d) / 2,
+                          d, d);
+        }
+        const float m = std::min(cl.Width, cl.Height) * 0.22f;
+        drawUiIcon(g, "close",
+                   RectF(cl.X + m, cl.Y + m, cl.Width - m * 2, cl.Height - m * 2),
+                   hoverClose_ ? k.dangerInk : k.inkMuted);
 
         if (buttons_.empty()) {
             const REAL top = (REAL)S(kGripH) +
                              (page_.count > 1 ? (REAL)S(kPageBarH) : 0.0f);
             RectF empty(Sf(8.0f), top, (REAL)w - Sf(16.0f), (REAL)h - top);
             drawText(g,
-                     page_.count > 1 ? L"No keys on this page yet"
-                                     : L"No keys on this keyboard yet",
-                     empty, 10, theme().textFaint, Align::Center);
+                     page_.count > 1 ? L"No buttons on this page yet"
+                                     : L"No buttons here yet",
+                     empty, 11, k.inkMuted, Align::Center, false, true, true);
         } else {
             for (size_t i = 0; i < buttons_.size(); ++i) paintButton(&g, i);
         }
@@ -512,7 +532,7 @@ void MiniDeck::contextMenu(POINT screenPt) {
     AppendMenuW(m, MF_POPUP, (UINT_PTR)cols, L"Buttons per row");
     AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(m, MF_STRING, IDM_MINI_OPEN, L"Open Dental Macros");
-    AppendMenuW(m, MF_STRING, IDM_MINI_HIDE, L"Hide these buttons");
+    AppendMenuW(m, MF_STRING, IDM_MINI_HIDE, L"Hide floating buttons");
 
     // A menu put up by a window that never takes focus needs the foreground
     // nudge, or it will not close when the user clicks away from it.

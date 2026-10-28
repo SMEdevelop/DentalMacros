@@ -18,7 +18,16 @@ This is a C++ fork of the Python `macrokb` tool in the `Macros` folder. It has
 the same engine but a real graphical deck instead of a form-based editor, and
 it drops the Python and OpenCV dependencies entirely.
 
-![What the tiles and icons look like](docs/ui-preview.png)
+![The main window in Simple mode: keypads on the left, the keys in the middle, the selected button on the right](docs/screenshot-main.png)
+
+It looks and reads like the other SMEdevelop office apps: warm cream panels, a
+denim main button, seven key colours that keep white text readable, buttons
+and rows at least 48 pixels tall, and plain words that say what each button
+does ("Save step", "Delete button", "Add keypad").
+
+![The first step of setup: on my screen, or on a spare keypad](docs/screenshot-setup.png)
+
+![Every icon in the library, and tiles in each key colour](docs/ui-preview.png)
 
 ---
 
@@ -149,15 +158,16 @@ launched, and the window tests drive a throwaway window of their own.
 
 The first time Dental Macros opens, a short setup makes your first button:
 
-1. **Welcome** - two questions: buttons on your screen or on a keypad, and
-   whether the first one types something or clicks through screens.
-2. **Checking** - plain checks with a tick each: your settings can be saved,
+1. **Where** - one question: buttons on your screen, or on a spare keypad.
+2. **Checking** - plain checks, each with a tick, a warning sign or a cross
+   beside it: your settings can be saved,
    your keypad can be read, the emergency off switch works, and any dental
    programs it finds (with a warning for one running as administrator, which
    would ignore typing and clicks). For a keypad: press any key on it, and
    that key becomes your first button.
-3. **Your first button** - type what it should type, or record the clicks;
-   give it a name; choose whether Dental Macros starts with Windows.
+3. **Your first button** - whether it types something or clicks through
+   screens, then the words or the recorded clicks; give it a name; choose
+   whether Dental Macros starts with Windows.
 
 You land in Simple mode with the button selected and ready to press. Setup is
 offered once; **Skip setup** leaves you to it, and **Settings → Run setup
@@ -167,10 +177,11 @@ carry a button; its other keys keep typing until you give them buttons too.
 To set things up by hand instead (in Advanced mode):
 
 1. Plug in the keyboard or numpad you want to dedicate to macros.
-2. Run `build\DentalMacros.exe`, skip setup, and click **Add a keyboard**.
-3. Pick your macro keyboard from the list and give it a name.
-   - Not sure which entry is which? Click **Identify by pressing a key** and
-     press a key on the pad — the matching entry highlights itself.
+2. Run `build\DentalMacros.exe`, skip setup, and click **Add a keypad**.
+3. Press any key on the keypad you want (or pick it from the list), press
+   **Add keypad** and give it a name.
+   - The window listens from the moment it opens, so a key pressed on the pad
+     picks it. A pad that shows up as several inputs is listed once.
    - By default, whichever keyboard you choose stops typing into your apps
      while Dental Macros is listening — so pick the *spare* one. If you'd rather
      put macros on F13–F24 or extra keys of the keyboard you actually type on,
@@ -180,10 +191,10 @@ To set things up by hand instead (in Advanced mode):
    keypad, pick **Numeric keypad** and you get a keypad-shaped grid.
 5. Click a key on the grid, then **Add step** — or drag an action straight
    from the left-hand list onto a key.
-6. Click **Start Listening**.
+6. Click **Start listening**.
 
 "Listening" is the state where Dental Macros is watching your macro keyboard: its
-keys fire macros, and — for any keyboard with *Block these keys from apps*
+keys fire macros, and — for any keyboard with *Stop its button keys from typing*
 ticked — they stop typing into your apps. Everything else in the app works
 whether or not it is listening; you can build and test macros with it off. The
 line under the title always says which state you are in and what it means.
@@ -194,8 +205,8 @@ Right-click a keyboard in the sidebar and you get two related options:
 
 | Option | What it does |
 |---|---|
-| **Block these keys from apps** | Whether this keyboard gives up *anything*. Untick it and macro keys fire *and* type — useful for testing. |
-| **Turn off all normal input, not just macro keys** | Only matters when the first is ticked. **Ticked** (the default): the whole keyboard goes silent — right for a dedicated macro pad. **Unticked**: only the keys that actually run a macro stop typing; every other key on that keyboard works normally. |
+| **Stop its button keys from typing** | Whether this keyboard gives up *anything*. Untick it and macro keys fire *and* type — useful for testing. |
+| **Stop every key from typing** | Only matters when the first is ticked. **Ticked** (the default): the whole keyboard goes silent — right for a dedicated macro pad. **Unticked**: only the keys that actually run a macro stop typing; every other key on that keyboard works normally. |
 
 Untick the second one when your macro keys are F13–F24, extra keys, or
 anything else on a keyboard you also type on. You keep the whole keyboard and
@@ -210,7 +221,7 @@ keys, `click` for software buttons with no keyboard behind them. A keypad's
 dot is green while Windows can see it and grey while it is switched off,
 asleep or unplugged; the status line says when one goes or comes back, and
 its keys work again on their own as soon as it does. New keyboards
-take their starting values from **Settings → Keypads → New keypads**, and
+take their starting values from **Settings → Keypads → When a new keypad is added**, and
 this option applies the moment you change it — unlike the
 first one, it needs no stop-and-start.
 
@@ -220,7 +231,7 @@ Settings save themselves as you work, and the previous day's file is kept in
 **Ctrl+Alt+Shift+M starts and stops listening from anywhere in Windows**, so a
 pad that has stopped typing can always be handed back without finding the
 window. The Stop button spells the shortcut out while it is listening. Change
-or clear it under **Settings → Keypads → Emergency off switch**.
+or clear it under **Settings → Keypads → Off switch**.
 
 ### What blocking costs the keyboard you type on
 
@@ -249,19 +260,19 @@ flat table read and nothing else.
 Two cases must still be paid for, because there is no honest shortcut:
 
 - keys that **actually run a macro** on a blocking keyboard, and
-- **every** key on a keyboard set to *Turn off all normal input*, since the
+- **every** key on a keyboard set to *Stop every key from typing*, since the
   point is that the whole device goes silent, and only the device itself can
   tell you which keyboard a keystroke came from.
 
 If your main keyboard still feels slow, the options in order of how little you
-give up: untick **Turn off all normal input** so only bound keys are
+give up: untick **Stop every key from typing** so only bound keys are
 inspected; move the macros to **software buttons** (below), which install no
-hook at all; or untick **Block these keys from apps**, which means macro keys
+hook at all; or untick **Stop its button keys from typing**, which means macro keys
 fire *and* type.
 
 ### Buttons with no keyboard
 
-**＋ Add software buttons** in the sidebar makes a deck with no keyboard
+**Add on-screen buttons** in the sidebar makes a deck with no keyboard
 behind it. The buttons live on the deck and on the always-on-top palette, and
 you fire them by clicking. There is no key to press, nothing is taken from
 anything you type, and **no hook is installed** — so this cannot cost a
@@ -271,17 +282,17 @@ It is the right answer when you want macros but not at the price of touching
 your typing, when the macro pad is not plugged in, or when there is no spare
 keyboard to dedicate to the job.
 
-They need no **Start Listening**: a click is not a keystroke, so there is
+They need no **Start listening**: a click is not a keystroke, so there is
 nothing to intercept. If software buttons are all you have configured,
 Dental Macros does not register for raw keyboard input at all, and says so in the
 activity log rather than claiming to be listening to something.
 
 Everything else about them is an ordinary binding — label, icon, colour,
-steps, Test run, and firing from the always-on-top palette.
+steps, Try it, and firing from the always-on-top palette.
 
 ### Bluetooth keypads
 
-A Bluetooth keypad is added with **＋ Add a keyboard** like any other. A
+A Bluetooth keypad is added with **Add a keypad** like any other. A
 Bluetooth LE keypad is listed under the name it was paired with.
 
 Windows splits a keypad into several inputs: its keys, its media keys, often a
@@ -381,7 +392,7 @@ three cases:
 
 - **They send keystrokes.** Very common — the mouse presents a second,
   keyboard-shaped endpoint, and its own software maps the side panel onto
-  key combinations. Add that endpoint with **＋ Add a keyboard**; it appears
+  key combinations. Add that endpoint with **Add a keypad**; it appears
   in the list under the mouse's own name. This works today and needs nothing
   special.
 - **They arrive as HID buttons on a second collection.** Dental Macros registers
@@ -454,23 +465,23 @@ action onto a key to add it as a step.
 
 **Middle — the deck.** A strip of [pages](#pages) along the top, and below it
 one tile per key. Each tile shows its key name, an icon, and the label you
-give it. Tiles light up green for a moment when their key fires, so you can
-see at a glance that the pad is being read correctly.
+give it. A tile gives a quick press, shrinking for a moment, when its key fires, so
+you can see at a glance that the pad is being read correctly.
 
 - **Click** an empty tile to assign a key to it
 - **Click** a configured tile to select and edit it
 - **Double-click** to rename
-- **Right-click** for icon, colour, test run, duplicating the key, copying and
+- **Right-click** for icon, colour, try it, duplicating the key, copying and
   pasting its steps, and removal
 - **Scroll** when a deck has more keys than fit
 
 **Right — the inspector.** The label, icon and colour for the selected key,
-plus its list of steps with add / edit / remove / reorder and **Test run**.
+plus its list of steps with add / edit / remove / reorder and **Try it**.
 
 Click a step to select it; **double-click** it to open the editor. A selected
 step stays selected while you edit, delete or move it, so a run of changes
 does not need a re-click between each one.
-**Record clicks...** builds a click sequence for you. Dental Macros steps out
+**Record clicks** builds a click sequence for you. Dental Macros steps out
 of the way and a small recorder window stays on top in the corner of the
 screen. **Right-click** each spot you want clicked, in order; each one is
 listed in the recorder and marked on screen with its number. Right-click
@@ -480,7 +491,7 @@ Made a mistake? **Undo last** takes back the newest click, **Remove** drops
 the one selected in the list, and **Redo this spot** makes your next
 right-click replace the selected one. **Fast / Normal / Slow** sets the pause
 between clicks (0.2, 0.5 or 1.5 seconds). Nothing is added to the key until
-you press **Done**; **Cancel** asks before throwing clicks away. Each click
+you press **Save clicks**; **Cancel** asks before throwing clicks away. Each click
 becomes a `click` step, with a `sleep` step between clicks; edit any of them
 afterwards like any other step.
 
@@ -504,8 +515,8 @@ stops shows a notification instead.
 
 ### Icons
 
-**Icon...** in the inspector opens a library of 55 built-in icons — Office,
-Media, Actions, Arrows and Practice — and **Browse for an image file...**
+**Choose an icon** in the inspector opens a library of 51 built-in icons —
+Office, Media, Actions, Arrows and Practice — and **Use a picture file**
 inside it is still there if you would rather use a picture of your own.
 
 They are drawn in code rather than shipped as image files, for the same
@@ -522,7 +533,7 @@ existed keep working exactly as they did.
 The deck above is an editor. The other half is a launcher: a small window of
 just the buttons that stays on top of whatever you are working in, so a macro
 can be fired with the mouse when the pad is out of reach — or not plugged in
-at all. Open it with **Show floating buttons** at the top of the main window,
+at all. Open it with **Floating buttons** at the top of the main window,
 or from the notification-area icon when the main window is closed.
 
 Each button is 38 pixels by default, smaller than a desktop icon, and the
@@ -537,8 +548,8 @@ that strip puts it away.
   large), **buttons per row** (2 to 10), and a way back to the main window.
 - **Hover** a button and its full label appears in the top strip. There is no
   room for a long label on a 38-pixel square, so it goes where it can be read.
-- Buttons **flash green** when they run, whether you clicked them here or
-  pressed the key on the pad.
+- Buttons **shrink for a moment** when they run, whether you clicked them
+  here or pressed the key on the pad.
 
 Two deliberate details. It **never takes focus**: a macro that types or
 clicks acts on whatever window is in front, so a palette that grabbed the
@@ -609,8 +620,8 @@ and fires a macro on page three is worse than either answer on its own.
 
 ### A page per application
 
-Right-click a page → **Show this page for an application...** and pick from
-what is running. From then on that page comes to the front by itself whenever
+Right-click a page → **Bring up this page for a program...** and pick from
+the programs that are open. From then on that page comes to the front by itself whenever
 that program does, and the deck goes back to the **default page** - the one
 with no rule - when you move to anything else.
 
@@ -624,9 +635,9 @@ Three things make it liveable rather than infuriating:
 
 - **A page you pick by hand stays put** until you move to a different
   application. Switching away the moment you touch it would be useless.
-- **The padlock** at the right of the strip turns the whole thing off. Green
-  and open means the deck follows what you are doing; grey and shut means it
-  stays exactly where you left it. It is remembered in `macros.json` as
+- **Follow the program in front**, the switch at the right of the strip,
+  turns the whole thing off. Highlighted means the deck follows what you are
+  doing; plain means it stays exactly where you left it. It is remembered in `macros.json` as
   `switchPageWithApp`.
 - **Coming here does not count.** Dental Macros's own window taking focus is
   never treated as an application change, so a page cannot slide out from
@@ -647,7 +658,7 @@ program opened a different kind of window. Add a class or title by hand in
 | Action | Notes |
 |---|---|
 | Type text | Unicode, layout-independent. Optional per-character delay. |
-| Press a hotkey | e.g. `ctrl+shift+t`. **Record** captures a combo you press. |
+| Press a hotkey | e.g. `ctrl+shift+t`. **Press keys** captures a combo you press. |
 | Mouse click | At a position, or wherever the pointer is. |
 | Move the pointer / Scroll the wheel | |
 | Find an image and click it | Waits for the picture, then clicks it. |
@@ -670,8 +681,8 @@ repeat.
 
 ### Image matching
 
-**Snip...**, next to **Browse** on the picture field of "Find an image and
-click it" or "Wait for an image", hides Dental Macros, dims the screen and
+**Take a picture of the screen**, under the picture field of "Find an image
+and click it" or "Wait for an image", hides Dental Macros, dims the screen and
 lets you drag a box around a button or icon. That PNG becomes the template the
 step searches for.
 
@@ -682,8 +693,8 @@ search takes a few tens of milliseconds.
 
 Tips:
 
-- Snip something **distinctive** — the button itself, not the whole dialog. If
-  you snip a blank area, Dental Macros refuses it and tells you why, rather than
+- Take a picture of something **distinctive** — the button itself, not the whole dialog. If
+  you pick a blank area, Dental Macros refuses it and tells you why, rather than
   silently matching the wrong thing.
 - Include detail in **both directions**. Matching ignores brightness and
   contrast, so a plain horizontal band — a toolbar edge, a divider line —
@@ -691,7 +702,7 @@ Tips:
   anywhere along it. A patch with structure across *and* down pins the
   position exactly. Capturing the button's text or icon is usually enough.
 - Avoid anything that changes: a clock, a caret, a progress bar.
-- Templates are resolution-dependent. Re-snip if you change display scaling.
+- Templates are resolution-dependent. Take the picture again if you change display scaling.
 - If a match is missed, lower the confidence (0.75 is forgiving, 0.85 is the
   default, 0.95 is strict).
 
@@ -738,7 +749,7 @@ similarity, so it still works after the apps have been restarted.
 
 ## Coming from the Python macrokb
 
-**Settings → Import from macrokb...** reads your existing config:
+**Settings → Import from macrokb** reads your existing config:
 keyboards, key bindings, every step, and your settings. Nothing is
 overwritten — imported keyboards are added alongside anything already set up,
 and the original `macros.yaml` is not modified.
@@ -766,7 +777,8 @@ write-protected stick), in `%LOCALAPPDATA%\DentalMacros`. The first time
 that happens, the settings, `images\` and `layouts\` are copied across;
 nothing is ever copied over settings already there. The same move happens
 mid-run if Windows starts refusing saves in the program's folder. Settings →
-**Show my settings file** and the About box both say which folder is in use.
+**Show my settings file** and the About section of Settings both say which
+folder is in use.
 Pictures stored by relative path are looked for in that folder first, then
 beside the program.
 
@@ -889,8 +901,8 @@ says your changes haven't been saved, until they are again.
 
 Separately, the first save of each run copies the previous settings to
 `backups\macros-<date>.json`, keeping the ten most recent. Under **Settings →
-Backup and restore**, **Save a copy...** writes one wherever you like, and
-**Load a copy...** puts a saved copy or daily backup back in place - after
+Backup and restore**, **Save a copy** writes one wherever you like, and
+**Load a copy** puts a saved copy or daily backup back in place - after
 keeping the settings you have now in `backups\` first.
 
 `match` is a substring of the device path. Prefer the `VID_xxxx&PID_xxxx`
@@ -912,25 +924,25 @@ treated as matching the whole keypad.
 **Nothing happens when I press a key on the macro pad.** Is Dental Macros
 listening? The status under the title says. With it listening, press a key — if
 the tile flashes green, Dental Macros sees it. If it doesn't, the wrong keyboard
-is registered: right-click it in the sidebar → *Re-detect this keyboard*.
+is registered: right-click it in the sidebar → *Find this keypad again*.
 
 **Macros don't fire when an admin window is focused.** Windows won't deliver
 hook events to a normal program from an elevated one. Run Dental Macros as
 administrator if you need that.
 
 **My macro keyboard still types into apps.** Blocking is per keyboard —
-right-click it in the sidebar and check *Block these keys from apps*. Stop and
+right-click it in the sidebar and check *Stop its button keys from typing*. Stop and
 start listening afterwards.
 
 **Only *some* keys on my macro keyboard type through.** That is
-*Turn off all normal input, not just macro keys* being unticked, which is
+*Stop every key from typing* being unticked, which is
 exactly what it does: keys carrying a macro are taken, the rest keep typing.
 Tick it to silence the whole keyboard. Note a tile with no steps counts as
 "no macro", so finish the binding and the key stops typing.
 
 **I lost my whole keyboard.** Press Ctrl+Alt+Shift+M — that stops listening
 from anywhere in Windows and hands every key straight back. Then either pick a
-different keyboard, or untick *Turn off all normal input, not just macro keys*
+different keyboard, or untick *Stop every key from typing*
 so only your bound keys are taken.
 
 **A key occasionally types through anyway.** Blocking correlates the hook with
@@ -969,9 +981,12 @@ src/
   minideck.cpp    the small always-on-top window of just the buttons
   iconlib.cpp     the built-in icon library: the table and the drawing
   iconpicker.cpp  the library laid out as a grid you click
-  dialogs.cpp     keyboard picker, key capture, step editor, snip overlay
-  ui_common.cpp   dark-themed controls and the modal host
-  theme.cpp       colours, DPI scaling, hand-drawn icons
+  dialogs.cpp     keypad picker, key capture, step editor, settings, setup,
+                  the click recorder, snip overlay
+  ui_common.cpp   standard controls in the design system's style, the modal
+                  host and its prompts
+  theme.cpp       painting: buttons, tiles, banners, toasts, icons; DPI
+  tokens.cpp      the design system's colours, type, spacing and sizes
   engine.cpp      key routing and step execution
   device.cpp      Raw Input capture + the blocking hook   <- the core trick
   actions.cpp     SendInput typing, hotkeys, clicks, launching
@@ -988,12 +1003,13 @@ src/
   util.cpp        strings, paths, files
   app.ico         generated - see tools/make_icon.cpp
 tests/
-  selftest.cpp        510 checks over every non-UI subsystem
+  selftest.cpp        539 checks over every non-UI subsystem
   render_preview.cpp  renders the icons and tiles to a PNG
 tools/
   make_icon.cpp       exports src\app.ico from theme.cpp's drawAppIcon()
 docs/
   ui-preview.png      generated by the tests; shown at the top of this file
+  screenshot-*.png    the main window and the first setup step
 ```
 
 `src\app.ico` is committed, so an ordinary build never regenerates it. Run
@@ -1151,7 +1167,7 @@ that means for a program like this one.
   mouse input into whatever window happens to have focus, and runs whatever
   programs and commands you tell it to. A macro pointed at the wrong window,
   or fired by accident, can overwrite work, send messages, or delete things.
-  Test new macros with **Test run** before binding them to a key.
+  Test new macros with **Try it** before binding them to a key.
 - **It installs a system-wide keyboard hook.** While it is listening, keys on
   the keyboards you configure stop reaching your other programs. Choose a
   spare keyboard, and remember Ctrl+Alt+Shift+M hands it straight back.

@@ -18,6 +18,7 @@
 #include "recorder.h"
 #include "simple.h"
 #include "discover.h"
+#include "tokens.h"
 #include "util.h"
 #include "vision.h"
 #include "winman.h"
@@ -495,6 +496,131 @@ static void testSimpleMode() {
 
 // ------------------------------------------------------- first-run setup
 // When setup is offered, and which dental programs it recognises.
+static void testDesignSystem() {
+    section("SMEdevelop design system");
+
+    // --- the values, exactly as tokens.json has them
+    const tk::Colors& c = tk::colors();
+    struct Want { const char* name; const tk::Rgb& got; const char* hex; };
+    const Want want[] = {
+        {"surface", c.surface, "#f7f3ec"},
+        {"surface-raised", c.surfaceRaised, "#fffdf9"},
+        {"surface-sunken", c.surfaceSunken, "#efe8dc"},
+        {"surface-hover", c.surfaceHover, "#e6dccb"},
+        {"line", c.line, "#e3d9c8"},
+        {"line-strong", c.lineStrong, "#9a8a74"},
+        {"ink", c.ink, "#3a3027"},
+        {"ink-muted", c.inkMuted, "#6e5f4e"},
+        {"sky-100", c.sky100, "#e3eef6"},
+        {"sand-100", c.sand100, "#f1e6d8"},
+        {"primary", c.primary, "#3d6b8e"},
+        {"primary-hover", c.primaryHover, "#335c7b"},
+        {"primary-tint", c.primaryTint, "#e3eef6"},
+        {"primary-ink", c.primaryInk, "#2f5878"},
+        {"focus-ring", c.focusRing, "#3d6b8e"},
+        {"success", c.success, "#4f7a52"},
+        {"warning", c.warning, "#c98a2b"},
+        {"warning-tint", c.warningTint, "#faf0d9"},
+        {"warning-ink", c.warningInk, "#8a5a12"},
+        {"danger", c.danger, "#b4483a"},
+        {"danger-tint", c.dangerTint, "#f8e5e0"},
+        {"danger-ink", c.dangerInk, "#a03f32"},
+    };
+    bool allMatch = true;
+    std::string wrong;
+    for (const Want& w : want)
+        if (tk::toHex(w.got) != w.hex) {
+            allMatch = false;
+            wrong += std::string(w.name) + "=" + tk::toHex(w.got) + " ";
+        }
+    ok(allMatch, "every colour token has its tokens.json value", wrong);
+    ok(c.overlay.a == 102 && tk::toHex(c.overlay) == "#3a3027",
+       "the overlay is warm brown at 40%");
+
+    // --- the contrast the design system promises
+    auto ratio = [](const tk::Rgb& a, const tk::Rgb& b) {
+        return tk::contrast(a, b);
+    };
+    std::string low;
+    bool inkOk = true;
+    for (const tk::Rgb* g : {&c.surface, &c.surfaceRaised, &c.surfaceSunken,
+                             &c.sky100, &c.sand100})
+        if (ratio(c.ink, *g) < 10.0) {
+            inkOk = false;
+            low += tk::toHex(*g) + " ";
+        }
+    ok(inkOk, "ink is 10:1 or better on every ground and wash", low);
+    bool mutedOk = true;
+    low.clear();
+    for (const tk::Rgb* g : {&c.surface, &c.surfaceRaised, &c.surfaceSunken}) {
+        // The design system rounds to 5:1; 4.9 leaves room for that rounding
+        // while still being well past the 4.5 legibility floor.
+        if (ratio(c.inkMuted, *g) < 4.9) {
+            mutedOk = false;
+            char buf[48];
+            std::snprintf(buf, sizeof(buf), "%s %.2f ", tk::toHex(*g).c_str(),
+                          ratio(c.inkMuted, *g));
+            low += buf;
+        }
+    }
+    ok(mutedOk, "ink-muted is about 5:1 on surface, raised and sunken", low);
+    ok(ratio(c.onPrimary, c.primary) >= 5.5, "white on the primary is 5.7:1");
+    ok(ratio(c.primaryInk, c.primaryTint) >= 6.0,
+       "primary-ink is readable on its tint");
+    ok(ratio(c.warningInk, c.warningTint) >= 5.0, "warning-ink on its tint");
+    ok(ratio(c.dangerInk, c.dangerTint) >= 5.0, "danger-ink on its tint");
+    ok(ratio(c.focusRing, c.surfaceRaised) >= 4.5,
+       "the focus ring shows on every panel");
+    bool keysOk = true;
+    low.clear();
+    const tk::Rgb white{255, 255, 255, 255};
+    for (const tk::KeyColor& k : tk::keyColors())
+        if (ratio(white, k.rgb) < 4.6) {
+            keysOk = false;
+            low += std::string(k.id) + " ";
+        }
+    ok(keysOk, "white text is 4.7:1 or better on all seven key colours", low);
+
+    // --- key colours: only the seven, and older files map onto them
+    ok(tk::keyColors().size() == 7, "there are exactly seven key colours");
+    ok(std::string(tk::defaultKeyColor().id) == "walnut",
+       "a new key is walnut");
+    bool selfMapped = true;
+    for (const tk::KeyColor& k : tk::keyColors())
+        if (&tk::nearestKeyColor(k.hex) != &k) selfMapped = false;
+    ok(selfMapped, "each of the seven maps to itself");
+    auto nearest = [](const char* hex) {
+        return std::string(tk::nearestKeyColor(hex).id);
+    };
+    ok(nearest("") == "walnut" && nearest("not a colour") == "walnut",
+       "no colour, or a broken one, is walnut");
+    ok(nearest("#808080") == "walnut" && nearest("#202020") == "walnut",
+       "greys go to walnut, the neutral one");
+    ok(nearest("#ff0000") == "red" && nearest("#e74c3c") == "red",
+       "a bright red from before becomes terracotta");
+    ok(nearest("#22c55e") == "green", "a green becomes sage");
+    ok(nearest("#4f8cff") == "blue", "the old blue accent becomes denim");
+    ok(nearest("#f59e0b") == "ochre", "an amber becomes ochre");
+    ok(nearest("#8b5cf6") == "plum", "a violet becomes plum");
+    ok(nearest("#14b8a6") == "spruce", "a teal becomes spruce");
+    ok(nearest("  #B4483A ") == "red", "hex is read in either case, with spaces");
+
+    // --- type
+    ok(tk::spec(tk::Text::Body).size == 17,
+       "17px is the reading size");
+    ok(tk::spec(tk::Text::Button).size == 18 &&
+           tk::spec(tk::Text::Button).weight == 600,
+       "buttons are 18px semibold");
+    ok(tk::spec(tk::Text::Title).size == 26 && tk::spec(tk::Text::Title).weight == 700,
+       "headings are 26px bold");
+    bool noHeavy = true;
+    for (int i = 0; i <= (int)tk::Text::CompactBold; ++i)
+        if (tk::spec((tk::Text)i).weight > 800) noHeavy = false;
+    ok(noHeavy, "nothing is heavier than 800");
+    ok(tk::kTargetMin == 48 && tk::kTargetBig == 64,
+       "tap targets are 48px, the main action 64px");
+}
+
 static void testFirstRun() {
     section("First-run setup");
 
@@ -2734,6 +2860,7 @@ int main(int argc, char** argv) {
     testDataFolder();
     testSimpleMode();
     testFirstRun();
+    testDesignSystem();
     testIconLibrary();
     testSoftwareDeck();
     testPages();

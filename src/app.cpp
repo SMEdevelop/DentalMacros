@@ -81,6 +81,10 @@ enum {
     ID_GESTURE_UP,
     ID_GESTURE_DOWN,
 
+    // The seven key colours, ID_SWATCH_FIRST .. ID_SWATCH_LAST.
+    ID_SWATCH_FIRST = 300,
+    ID_SWATCH_LAST = ID_SWATCH_FIRST + 6,
+
     IDM_KB_RENAME = 430,
     IDM_KB_BLOCK,
     IDM_KB_BLOCK_ALL,
@@ -109,9 +113,6 @@ enum {
     IDM_PAGE_LEFT,
     IDM_PAGE_RIGHT,
     IDM_PAGE_REMOVE,
-    // The running windows offered as an application rule. One id per window,
-    // so the range has to be wide enough for a busy desktop.
-    IDM_PAGE_APP_PICK = 1200,
 
     IDM_TRAY_SHOW = 480,
     IDM_TRAY_TOGGLE,
@@ -128,17 +129,19 @@ constexpr int kToggleHotkeyId = 1;
 constexpr UINT_PTR kDeviceCheckTimer = 7;
 constexpr UINT kDeviceCheckDelayMs = 700;
 
-// Design-pixel metrics.
-constexpr int kToolbarH = 60;
-constexpr int kSidebarW = 214;
-constexpr int kInspectorW = 344;
+// Design-pixel metrics, from the SMEdevelop design system (tokens.h).
+constexpr int kToolbarH = 80;
+constexpr int kSidebarW = 296;
+// Room for seven 48px colour swatches side by side.
+constexpr int kInspectorW = 412;
+// The activity log, Advanced only.
 constexpr int kLogH = 132;
-// Simple mode keeps only the status line of the activity area.
-constexpr int kLogHSimple = 34;
-// Simple mode's two rows of "+" buttons above the step list, in design px.
-constexpr int kSimpleAddRowsH = 72;
-constexpr int kPad = 14;
-constexpr int kRowH = 30;
+// A banner, with room inside it for a 48px button.
+constexpr int kBannerH = 64;
+constexpr int kPad = tk::kSpace5;   // side padding, 24
+// How long a toast stays up.
+constexpr DWORD kToastMs = 4000;
+constexpr UINT_PTR kToastTimer = 8;
 
 // Every key on every page. What "all its keys" means when a keyboard is
 // about to be removed, and what an import is really bringing in - the active
@@ -264,6 +267,18 @@ private:
     void paintTile(Graphics& g, const DeckTile& tile, cfg::Keyboard* kb);
     void paintWelcome(Graphics& g);
     void paintDragGhost(Graphics& g);
+    void paintInspector(Graphics& g);
+    void paintStatusBanner(Graphics& g);
+    void paintToast(Graphics& g);
+    // A problem or a notice heads the middle column until it clears or is
+    // dismissed; a success is a toast instead.
+    bool bannerShown() const;
+    BannerKind bannerKind() const;
+    void showToast(const std::string& text, bool good);
+    // Which of the panel's controls are shown: those of the current mode,
+    // and only while a key is picked.
+    void showInspectorControls();
+    void setKeyColor(int index);
 
     // ---- model helpers
     cfg::Keyboard* currentKb();
@@ -361,7 +376,9 @@ private:
     void showWindowAgain();
 
     // ---- status line and explained problems
-    enum class StatusTone { Plain, Good, Warn };
+    // Plain: an info banner. Good: a toast. Warn, Danger: a banner of that
+    // kind.
+    enum class StatusTone { Plain, Good, Warn, Danger };
     void setStatus(const std::string& text,
                    StatusTone tone = StatusTone::Plain);
     void drainOutcomes();
@@ -385,6 +402,7 @@ private:
     void removeSimpleRow(int row);
     int deckHeaderH() const;
     int pageStripY() const;
+    int pageStripH() const;
 
     // ---- whether each keypad is there
     void checkDevices(bool announce);
@@ -415,6 +433,18 @@ private:
     // regions
     RECT rcToolbar_{}, rcSidebar_{}, rcDeck_{}, rcInspector_{}, rcLog_{};
     RECT rcWelcomeBtn_{};
+    RECT rcBanner_{}, rcBannerDismiss_{};
+    bool hoverDismiss_ = false;
+    bool bannerDismissed_ = false;
+    // Where the deck's own header starts: below the banner, when there is one.
+    int deckTop_ = 0;
+    int toolbarPillsLeft_ = 0;
+    // Heights in the panel on the right that the painted labels line up with.
+    int insHeadY_ = 0, insNameY_ = 0, insColourY_ = 0, captionY_ = 0;
+    std::string toastText_;
+    bool toastGood_ = false;
+    // The banner says a button stopped, so the next one that runs clears it.
+    bool statusFromRun_ = false;
     std::vector<DeckTile> tiles_;
     std::vector<PageTab> pageTabs_;
     RECT rcPagePin_{};
@@ -447,6 +477,7 @@ private:
     HWND btnEngine_ = nullptr, btnFloating_ = nullptr, btnSettings_ = nullptr;
     HWND btnSimple_ = nullptr, btnAdvanced_ = nullptr;
     HWND btnSType_ = nullptr, btnSKeys_ = nullptr, btnSWait_ = nullptr;
+    std::vector<HWND> swatches_;   // the seven key colours, in tk order
     // What the step list shows in Simple mode, one entry per list row.
     std::vector<smp::Row> simpleRows_;
     // The pause the click recorder last used, offered again next time.
@@ -533,8 +564,8 @@ bool MainWindow::create(HINSTANCE inst, int showCmd) {
     // Centre on the primary monitor's work area, and never larger than it -
     // the default size is bigger than a small laptop screen at 150% scaling.
     RECT work = workAreaNear(nullptr);
-    int w = std::min<int>(S(1240), work.right - work.left);
-    int h = std::min<int>(S(830), work.bottom - work.top);
+    int w = std::min<int>(S(1280), work.right - work.left);
+    int h = std::min<int>(S(880), work.bottom - work.top);
     int sx = work.left + ((work.right - work.left) - w) / 2;
     int sy = work.top + ((work.bottom - work.top) - h) / 2;
 
@@ -545,7 +576,7 @@ bool MainWindow::create(HINSTANCE inst, int showCmd) {
                             nullptr, nullptr, inst, this);
     if (!hwnd_) return false;
 
-    applyDarkFrame(hwnd_);
+    applyFrame(hwnd_);
 
     // Start hidden only if there is actually a tray icon to come back from.
     bool startHidden = config_.settings.startMinimized;
@@ -601,14 +632,18 @@ void MainWindow::onCreate() {
     engine_.updateConfig(config_);
 
     // ---- toolbar controls
-    btnEngine_ = makeButton(hwnd_, "Start Listening", 0, 0, 132, 34,
-                            ID_BTN_ENGINE);
-    setTone(btnEngine_, Tone::Good);
-    btnFloating_ = makeButton(hwnd_, "Show floating buttons", 0, 0, 176, 34,
+    // The listen button, then three pills - the most the top bar may carry.
+    btnEngine_ = makeButton(hwnd_, "Start listening", 0, 0, 160, 48,
+                            ID_BTN_ENGINE, true);
+    btnFloating_ = makeButton(hwnd_, "Floating buttons", 0, 0, 176, 48,
                               ID_BTN_FLOATING);
-    btnSettings_ = makeButton(hwnd_, "Settings", 0, 0, 92, 34, ID_BTN_SETTINGS);
-    btnSimple_ = makeButton(hwnd_, "Simple", 0, 0, 76, 34, ID_BTN_SIMPLE);
-    btnAdvanced_ = makeButton(hwnd_, "Advanced", 0, 0, 96, 34, ID_BTN_ADVANCED);
+    makePill(btnFloating_);
+    btnSettings_ = makeButton(hwnd_, "Settings", 0, 0, 92, 48, ID_BTN_SETTINGS);
+    makePill(btnSettings_);
+    btnSimple_ = makeButton(hwnd_, "Simple", 0, 0, 76, 48, ID_BTN_SIMPLE);
+    makePill(btnSimple_, PillPart::First);
+    btnAdvanced_ = makeButton(hwnd_, "Advanced", 0, 0, 96, 48, ID_BTN_ADVANCED);
+    makePill(btnAdvanced_, PillPart::Last);
 
     // ---- deck controls
     std::vector<std::string> deckLabels;
@@ -616,31 +651,47 @@ void MainWindow::onCreate() {
         deckIds_.push_back(p.id);
         deckLabels.push_back(p.label);
     }
-    deckCombo_ = makeCombo(hwnd_, 0, 0, 220, 28, ID_DECK_COMBO, deckLabels, 0);
+    deckCombo_ = makeCombo(hwnd_, 0, 0, 260, 40, ID_DECK_COMBO, deckLabels, 0);
+    setComboHeight(deckCombo_, 40);
+    setTextStyle(deckCombo_, tk::Text::Compact);
+    // It sits on the page itself, not on a panel.
+    setSurface(deckCombo_, toColorRef(tok().surface));
 
     // ---- inspector controls
-    titleEdit_ = makeEdit(hwnd_, "", 0, 0, 100, 26, ID_TITLE_EDIT);
-    btnIcon_ = makeButton(hwnd_, "Icon...", 0, 0, 90, 28, ID_BTN_ICON);
-    btnColor_ = makeButton(hwnd_, "Colour...", 0, 0, 90, 28, ID_BTN_COLOR);
-    btnGesturePress_ = makeButton(hwnd_, "Press", 0, 0, 76, 26,
+    titleEdit_ = makeEdit(hwnd_, "", 0, 0, 100, 48, ID_TITLE_EDIT);
+    btnIcon_ = makeButton(hwnd_, "Choose an icon", 0, 0, 90, 40, ID_BTN_ICON);
+    btnColor_ = makeButton(hwnd_, "Colour...", 0, 0, 90, 40, ID_BTN_COLOR);
+    for (size_t i = 0; i < tk::keyColors().size(); ++i) {
+        const tk::KeyColor& kc = tk::keyColors()[i];
+        swatches_.push_back(makeSwatch(hwnd_, 0, 0, 48,
+                                       ID_SWATCH_FIRST + (int)i, kc.hex, kc.name));
+    }
+    btnGesturePress_ = makeButton(hwnd_, "Press", 0, 0, 76, 40,
                                   ID_GESTURE_PRESS);
-    btnGestureUp_ = makeButton(hwnd_, "Wheel \u2191", 0, 0, 76, 26,
-                               ID_GESTURE_UP);
-    btnGestureDown_ = makeButton(hwnd_, "Wheel \u2193", 0, 0, 76, 26,
+    makePill(btnGesturePress_, PillPart::First);
+    btnGestureUp_ = makeButton(hwnd_, "Turn up", 0, 0, 76, 40, ID_GESTURE_UP);
+    makePill(btnGestureUp_, PillPart::Middle);
+    btnGestureDown_ = makeButton(hwnd_, "Turn down", 0, 0, 76, 40,
                                  ID_GESTURE_DOWN);
+    makePill(btnGestureDown_, PillPart::Last);
     stepList_ = makeList(hwnd_, 0, 0, 100, 100, ID_STEP_LIST);
-    btnAddStep_ = makeButton(hwnd_, "Add step", 0, 0, 90, 30, ID_BTN_ADD_STEP,
-                             true);
-    btnEditStep_ = makeButton(hwnd_, "Edit", 0, 0, 68, 30, ID_BTN_EDIT_STEP);
-    btnDelStep_ = makeButton(hwnd_, "Remove", 0, 0, 78, 30, ID_BTN_DEL_STEP);
-    btnUp_ = makeButton(hwnd_, "Up", 0, 0, 52, 30, ID_BTN_UP);
-    btnDown_ = makeButton(hwnd_, "Down", 0, 0, 62, 30, ID_BTN_DOWN);
-    btnTest_ = makeButton(hwnd_, "Test run", 0, 0, 100, 30, ID_BTN_TEST);
-    btnRecord_ = makeButton(hwnd_, "Record clicks...", 0, 0, 100, 30,
+    btnAddStep_ = makeButton(hwnd_, "Add step", 0, 0, 90, 40, ID_BTN_ADD_STEP);
+    setTone(btnAddStep_, Tone::Secondary);
+    setButtonIcon(btnAddStep_, "plus");
+    btnEditStep_ = makeButton(hwnd_, "Change", 0, 0, 68, 40, ID_BTN_EDIT_STEP);
+    btnDelStep_ = makeButton(hwnd_, "Remove step", 0, 0, 78, 40, ID_BTN_DEL_STEP);
+    setTone(btnDelStep_, Tone::Danger);
+    btnUp_ = makeButton(hwnd_, "Move up", 0, 0, 52, 40, ID_BTN_UP);
+    btnDown_ = makeButton(hwnd_, "Move down", 0, 0, 62, 40, ID_BTN_DOWN);
+    btnTest_ = makeButton(hwnd_, "Try it", 0, 0, 100, 40, ID_BTN_TEST);
+    btnRecord_ = makeButton(hwnd_, "Record clicks", 0, 0, 100, 48,
                             ID_BTN_RECORD);
-    btnSType_ = makeButton(hwnd_, "+ Type text", 0, 0, 100, 30, ID_BTN_S_TYPE);
-    btnSKeys_ = makeButton(hwnd_, "+ Press keys", 0, 0, 100, 30, ID_BTN_S_KEYS);
-    btnSWait_ = makeButton(hwnd_, "+ Wait", 0, 0, 100, 30, ID_BTN_S_WAIT);
+    btnSType_ = makeButton(hwnd_, "Type text", 0, 0, 100, 48, ID_BTN_S_TYPE);
+    btnSKeys_ = makeButton(hwnd_, "Press keys", 0, 0, 100, 48, ID_BTN_S_KEYS);
+    btnSWait_ = makeButton(hwnd_, "Wait", 0, 0, 100, 48, ID_BTN_S_WAIT);
+    for (HWND h : {btnRecord_, btnSType_, btnSKeys_, btnSWait_})
+        setTone(h, Tone::Secondary);
+    for (HWND h : {btnSType_, btnSKeys_, btnSWait_}) setButtonIcon(h, "plus");
 
     // ---- log
     logEdit_ = makeEdit(hwnd_, "", 0, 0, 100, 100, ID_LOG_EDIT, true, true);
@@ -657,6 +708,15 @@ void MainWindow::onCreate() {
     onForegroundChanged(GetForegroundWindow());
 
     layout();
+    // The keys only have places once the window has a size, so the first
+    // key can only be picked now - and an empty panel on the right is a
+    // poor first sight.
+    if (selectedTile_ < 0)
+        for (size_t i = 0; i < tiles_.size(); ++i)
+            if (tiles_[i].binding >= 0) {
+                selectedTile_ = (int)i;
+                break;
+            }
     refreshInspector();
     refreshModeButtons();
 
@@ -718,7 +778,7 @@ void MainWindow::reportLoadProblems() {
     pushLog("Could not read macros.json: " + config_.loadError);
     pushLog("  The file has not been touched. If anything is saved before it "
             "is fixed, it is copied to macros.json.bak first.");
-    setStatus("\xE2\x9A\xA0 Your buttons couldn't be loaded.", StatusTone::Warn);
+    setStatus("Your buttons couldn't be loaded. The file is kept as it was.", StatusTone::Danger);
     // Explained once the window is up: the fixes on offer reload the
     // settings, which can't happen halfway through creating the window.
     PostMessageW(hwnd_, WM_APP_LOADPROBLEM, 0, 0);
@@ -757,6 +817,42 @@ void MainWindow::onDpiChanged(UINT dpi, const RECT* suggested) {
 }
 
 // ------------------------------------------------------------------ layout
+namespace {
+
+// Width of `text` in the given font, in device pixels.
+int textPx(HWND ref, const std::string& text, int px, int weight) {
+    HDC dc = GetDC(ref);
+    if (!dc) return 0;
+    HGDIOBJ old = SelectObject(dc, uiFontWeight(px, weight));
+    std::wstring w = widen(text);
+    SIZE sz{};
+    GetTextExtentPoint32W(dc, w.c_str(), (int)w.size(), &sz);
+    SelectObject(dc, old);
+    ReleaseDC(ref, dc);
+    return sz.cx;
+}
+
+// A pill sized to its label: the pills' own 16px bold, 18px either side and
+// the edges.
+int pillW(HWND ref, const std::string& text) {
+    return textPx(ref, text, 16, 700) + S(18) * 2 + S(24);
+}
+
+const Color kWhite(255, 255, 255, 255);
+
+}  // namespace
+
+bool MainWindow::bannerShown() const {
+    return !statusText_.empty() && !bannerDismissed_ &&
+           statusTone_ != StatusTone::Good;
+}
+
+BannerKind MainWindow::bannerKind() const {
+    return statusTone_ == StatusTone::Danger ? BannerKind::Danger
+           : statusTone_ == StatusTone::Warn ? BannerKind::Warning
+                                             : BannerKind::Info;
+}
+
 void MainWindow::layout() {
     RECT rc;
     GetClientRect(hwnd_, &rc);
@@ -764,158 +860,243 @@ void MainWindow::layout() {
 
     const bool sm = simple();
     auto show = [](HWND h, bool on) { ShowWindow(h, on ? SW_SHOW : SW_HIDE); };
+    // Advanced mode's own controls are compact (docs/REDESIGN.md section 6);
+    // everything Simple mode shows is the full 48px.
+    const int ctl = sm ? tk::kTargetMin : tk::kTargetCompact;
+    const int ctlH = S(ctl);
+    const tk::Text btnText = sm ? tk::Text::Button : tk::Text::CompactBold;
 
     rcToolbar_ = {0, 0, W_, S(kToolbarH)};
-    rcLog_ = {0, H_ - S(sm ? kLogHSimple : kLogH), W_, H_};
+    // Simple mode keeps no log: what it would say is in the banner and the
+    // toasts.
+    rcLog_ = sm ? RECT{0, H_, W_, H_} : RECT{0, H_ - S(kLogH), W_, H_};
     rcSidebar_ = {0, S(kToolbarH), S(kSidebarW), rcLog_.top};
     rcInspector_ = {W_ - S(kInspectorW), S(kToolbarH), W_, rcLog_.top};
     rcDeck_ = {rcSidebar_.right, S(kToolbarH), rcInspector_.left, rcLog_.top};
 
-    // toolbar buttons, right-aligned
-    int by = (S(kToolbarH) - S(34)) / 2;
-    int x = W_ - S(kPad) - S(92);
-    MoveWindow(btnSettings_, x, by, S(92), S(34), TRUE);
-    // Simple | Advanced, side by side so they read as one switch.
-    x -= S(8) + S(96);
-    MoveWindow(btnAdvanced_, x, by, S(96), S(34), TRUE);
-    x -= S(2) + S(76);
-    MoveWindow(btnSimple_, x, by, S(76), S(34), TRUE);
-    x -= S(8) + S(176);
-    MoveWindow(btnFloating_, x, by, S(176), S(34), TRUE);
-    layoutEngineButton();
-
-    // Deck header. A combo box's window height controls how far its list
-    // drops down, not the height of the closed control - sizing it to 28px
-    // would leave the dropdown unusable.
-    MoveWindow(deckCombo_, rcDeck_.left + S(kPad), rcDeck_.top + S(14), S(240),
-               S(28) * 9, TRUE);
-    show(deckCombo_, !sm);
-
-    // inspector
-    const int ix = rcInspector_.left + S(kPad);
-    const int iw = S(kInspectorW) - S(kPad) * 2;
-    int y = rcInspector_.top + S(58);
-    MoveWindow(titleEdit_, ix, y, iw, S(26), TRUE);
-    y += S(34);
-    // Simple mode has no icons, so the colour takes the icon's place.
-    MoveWindow(btnIcon_, ix, y, S(100), S(28), TRUE);
-    MoveWindow(btnColor_, sm ? ix : ix + S(108), y, S(100), S(28), TRUE);
-    show(btnIcon_, !sm);
-    y += S(50);
-
-    // Simple mode puts its four "+" buttons here, two rows of two, above the
-    // "What it does" caption, which then takes the gesture buttons' band.
-    const int hw = (iw - S(6)) / 2;
-    const int x2 = ix + hw + S(6);
-    if (sm) {
-        MoveWindow(btnRecord_, ix, y, hw, S(30), TRUE);
-        MoveWindow(btnSKeys_, x2, y, hw, S(30), TRUE);
-        MoveWindow(btnSType_, ix, y + S(36), hw, S(30), TRUE);
-        MoveWindow(btnSWait_, x2, y + S(36), hw, S(30), TRUE);
-        y += S(kSimpleAddRowsH);
+    // The banner, while there is one, heads the middle column: above the keys
+    // it is about, without squeezing the panel beside them.
+    rcBanner_ = RECT{};
+    rcBannerDismiss_ = RECT{};
+    deckTop_ = rcDeck_.top;
+    if (bannerShown()) {
+        const int left = rcDeck_.left + S(kPad), right = rcDeck_.right - S(kPad);
+        const int dw = textPx(hwnd_, "Dismiss", 18, 600) + S(40);
+        // Tall enough for the whole sentence, in the banner's 17px bold,
+        // between its icon and the Dismiss button.
+        const int textW = (right - left) - S(16 + 22 + 12) - S(16) - (dw + S(8));
+        int textH = 0;
+        if (HDC dc = GetDC(hwnd_)) {
+            HGDIOBJ old = SelectObject(dc, uiFontWeight(17, 700));
+            RECT tr{0, 0, std::max(S(80), textW), 0};
+            std::wstring t = W(statusText_);
+            DrawTextW(dc, t.c_str(), -1, &tr,
+                      DT_CALCRECT | DT_WORDBREAK | DT_NOPREFIX);
+            textH = tr.bottom - tr.top;
+            SelectObject(dc, old);
+            ReleaseDC(hwnd_, dc);
+        }
+        const int h = std::max(S(kBannerH), textH + S(24));
+        rcBanner_ = {left, rcDeck_.top + S(16), right, rcDeck_.top + S(16) + h};
+        const int dh = S(tk::kTargetMin);
+        const int dy = rcBanner_.top + (h - dh) / 2;
+        rcBannerDismiss_ = {rcBanner_.right - S(8) - dw, dy, rcBanner_.right - S(8),
+                            dy + dh};
+        deckTop_ = rcBanner_.bottom;
     }
 
-    MoveWindow(btnGesturePress_, ix, y, S(76), S(26), TRUE);
-    MoveWindow(btnGestureUp_, ix + S(80), y, S(76), S(26), TRUE);
-    MoveWindow(btnGestureDown_, ix + S(160), y, S(76), S(26), TRUE);
-    show(btnGesturePress_, !sm);
-    show(btnGestureUp_, !sm);
-    show(btnGestureDown_, !sm);
-    y += S(32);
+    // ---- top bar: three pills at the right, the listen button before them
+    const int bh = S(tk::kTargetMin);
+    const int by = (S(kToolbarH) - bh) / 2;
+    int x = W_ - S(kPad);
+    const int wSettings = pillW(hwnd_, "Settings");
+    x -= wSettings;
+    MoveWindow(btnSettings_, x, by, wSettings, bh, TRUE);
+    const int wAdv = pillW(hwnd_, "Advanced"), wSim = pillW(hwnd_, "Simple");
+    x -= S(12) + wAdv;
+    MoveWindow(btnAdvanced_, x, by, wAdv, bh, TRUE);
+    x -= wSim;
+    MoveWindow(btnSimple_, x, by, wSim, bh, TRUE);
+    const int wFloat = pillW(hwnd_, "Floating buttons");
+    x -= S(12) + wFloat;
+    MoveWindow(btnFloating_, x, by, wFloat, bh, TRUE);
+    toolbarPillsLeft_ = x;
+    layoutEngineButton();
 
-    // Below the list: one row of buttons in Simple mode, three in Advanced.
-    int listBottom = rcInspector_.bottom - S(kPad) - S(34) * (sm ? 1 : 3) - S(8);
-    MoveWindow(stepList_, ix, y, iw, std::max(S(60), listBottom - y), TRUE);
-    int by2 = listBottom + S(8);
-    int by3 = by2 + S(36);
-    int by4 = by3 + S(36);
+    // ---- deck header. A combo box's window height controls how far its
+    // list drops down; the closed box is set by setComboHeight.
+    MoveWindow(deckCombo_, rcDeck_.left + S(kPad), deckTop_ + S(16), S(260),
+               S(40) * 9, TRUE);
+    show(deckCombo_, !sm);
+
+    // ---- the selected key, on the right
+    const int ix = rcInspector_.left + S(kPad);
+    const int iw = S(kInspectorW) - S(kPad) * 2;
+    int y = rcInspector_.top + S(24);
+    insHeadY_ = y;                         // heading, 32
+    y += S(32) + S(16);
+    insNameY_ = y;                         // "Name on the button", 20
+    y += S(20) + S(6);
+    MoveWindow(titleEdit_, ix, y, iw, ctlH, TRUE);
+    setTextStyle(titleEdit_, sm ? tk::Text::Body : tk::Text::Compact);
+    y += ctlH + S(16);
+    insColourY_ = y;                       // "Colour - Walnut", 20
+    y += S(20) + S(6);
+    const int sgap = (iw - ctlH * 7) / 6;
+    for (size_t i = 0; i < swatches_.size(); ++i)
+        MoveWindow(swatches_[i], ix + (int)i * (ctlH + sgap), y, ctlH, ctlH,
+                   TRUE);
+    y += ctlH + S(20);
+    show(btnColor_, false);
+
+    const int hw = (iw - S(12)) / 2;
+    const int x2 = ix + hw + S(12);
     if (sm) {
-        // Try it and take one out.
-        MoveWindow(btnTest_, ix, by2, hw, S(30), TRUE);
-        MoveWindow(btnDelStep_, x2, by2, hw, S(30), TRUE);
+        show(btnIcon_, false);
+        MoveWindow(btnRecord_, ix, y, hw, ctlH, TRUE);
+        MoveWindow(btnSKeys_, x2, y, hw, ctlH, TRUE);
+        MoveWindow(btnSType_, ix, y + ctlH + S(12), hw, ctlH, TRUE);
+        MoveWindow(btnSWait_, x2, y + ctlH + S(12), hw, ctlH, TRUE);
+        y += ctlH * 2 + S(12) + S(24);
     } else {
-        MoveWindow(btnAddStep_, ix, by2, S(94), S(30), TRUE);
-        MoveWindow(btnEditStep_, ix + S(100), by2, S(64), S(30), TRUE);
-        MoveWindow(btnDelStep_, ix + S(170), by2, S(78), S(30), TRUE);
-        MoveWindow(btnUp_, ix, by3, S(56), S(30), TRUE);
-        MoveWindow(btnDown_, ix + S(62), by3, S(66), S(30), TRUE);
-        MoveWindow(btnTest_, ix + iw - S(104), by3, S(104), S(30), TRUE);
-        MoveWindow(btnRecord_, ix, by4, iw, S(30), TRUE);
+        // Advanced's panel holds more, so the two picture-and-recording
+        // buttons share a row.
+        show(btnIcon_, true);
+        MoveWindow(btnIcon_, ix, y, hw, ctlH, TRUE);
+        MoveWindow(btnRecord_, x2, y, hw, ctlH, TRUE);
+        y += ctlH + S(12);
+        const int gw = iw / 3;
+        MoveWindow(btnGesturePress_, ix, y, gw, ctlH, TRUE);
+        MoveWindow(btnGestureUp_, ix + gw, y, gw, ctlH, TRUE);
+        MoveWindow(btnGestureDown_, ix + gw * 2, y, iw - gw * 2, ctlH, TRUE);
+        y += ctlH + S(20);
+    }
+    for (HWND h : {btnGesturePress_, btnGestureUp_, btnGestureDown_})
+        show(h, !sm);
+
+    captionY_ = y;                         // "WHAT IT DOES", 18
+    y += S(18) + S(8);
+    const int rows = sm ? 1 : 2;
+    const int listBottom = rcInspector_.bottom - S(kPad) - ctlH * rows -
+                           S(8) * (rows - 1) - S(16);
+    MoveWindow(stepList_, ix, y, iw, std::max(S(80), listBottom - y), TRUE);
+    setListRowHeight(stepList_, ctl);
+    setTextStyle(stepList_, sm ? tk::Text::Body : tk::Text::Compact);
+
+    const int by2 = listBottom + S(16);
+    if (sm) {
+        MoveWindow(btnTest_, ix, by2, hw, ctlH, TRUE);
+        MoveWindow(btnDelStep_, x2, by2, hw, ctlH, TRUE);
+    } else {
+        const int tw = (iw - S(8) * 2) / 3;
+        auto col = [&](int c) { return ix + c * (tw + S(8)); };
+        MoveWindow(btnAddStep_, col(0), by2, tw, ctlH, TRUE);
+        MoveWindow(btnEditStep_, col(1), by2, tw, ctlH, TRUE);
+        MoveWindow(btnDelStep_, col(2), by2, tw, ctlH, TRUE);
+        const int by3 = by2 + ctlH + S(8);
+        MoveWindow(btnUp_, col(0), by3, tw, ctlH, TRUE);
+        MoveWindow(btnDown_, col(1), by3, tw, ctlH, TRUE);
+        MoveWindow(btnTest_, col(2), by3, tw, ctlH, TRUE);
     }
     for (HWND h : {btnSType_, btnSKeys_, btnSWait_}) show(h, sm);
     for (HWND h : {btnAddStep_, btnEditStep_, btnUp_, btnDown_}) show(h, !sm);
-    setText(btnRecord_, sm ? "+ Record clicks" : "Record clicks...");
-    setText(btnTest_, sm ? "Try it" : "Test run");
+    for (HWND h : {btnSType_, btnSKeys_, btnSWait_, btnRecord_, btnTest_,
+                   btnDelStep_, btnAddStep_, btnEditStep_, btnUp_, btnDown_,
+                   btnIcon_})
+        setTextStyle(h, btnText);
+    for (HWND h : {btnGesturePress_, btnGestureUp_, btnGestureDown_})
+        setTextStyle(h, tk::Text::CompactBold);
+    // Simple's four ways to add a step all start with "+"; Advanced records
+    // clicks from a button of its own.
+    setButtonIcon(btnRecord_, sm ? "plus" : "click");
 
-    // log - in Simple mode only its status line is left
-    MoveWindow(logEdit_, S(kPad), rcLog_.top + S(26), W_ - S(kPad) * 2,
-               S(kLogH) - S(26) - S(10), TRUE);
+    // ---- the activity log, Advanced only
+    MoveWindow(logEdit_, S(kPad), rcLog_.top + S(44), W_ - S(kPad) * 2,
+               S(kLogH) - S(44) - S(16), TRUE);
+    setTextStyle(logEdit_, tk::Text::Compact);
     show(logEdit_, !sm);
 
     layoutDeck();
+    showInspectorControls();
     InvalidateRect(hwnd_, nullptr, FALSE);
 }
 
+void MainWindow::showInspectorControls() {
+    const bool sm = simple();
+    const bool has = selectedBinding() != nullptr;
+    auto show = [](HWND h, bool on) {
+        if (h) ShowWindow(h, on ? SW_SHOW : SW_HIDE);
+    };
+    show(titleEdit_, has);
+    for (HWND h : swatches_) show(h, has);
+    show(btnColor_, false);
+    show(stepList_, has);
+    show(btnTest_, has);
+    show(btnDelStep_, has);
+    show(btnRecord_, has);
+    for (HWND h : {btnSType_, btnSKeys_, btnSWait_}) show(h, has && sm);
+    for (HWND h : {btnIcon_, btnGesturePress_, btnGestureUp_, btnGestureDown_,
+                   btnAddStep_, btnEditStep_, btnUp_, btnDown_})
+        show(h, has && !sm);
+
+    // Listening is for keypads. With none, there is nothing to start - and
+    // the welcome card's "Get started" is this window's one main action.
+    bool keypads = false;
+    for (const auto& kb : config_.keyboards)
+        if (!kb.softwareOnly) keypads = true;
+    show(btnEngine_, keypads || engine_.running());
+}
+
 std::string MainWindow::engineButtonLabel() const {
-    if (!engine_.running()) return "Start Listening";
+    if (!engine_.running()) return "Start listening";
     // Show the way out only while there is something to escape from, and only
     // when the shortcut really is ours - if another program claimed it,
     // printing it here would be a lie.
     if (hotkeyRegistered_ && !activeHotkey_.empty())
-        return "Stop Listening  (" + keys::prettyCombo(activeHotkey_) + ")";
-    return "Stop Listening";
+        return "Stop listening (" + keys::prettyCombo(activeHotkey_) + ")";
+    return "Stop listening";
 }
 
 void MainWindow::layoutEngineButton() {
     if (!btnEngine_ || !hwnd_) return;
     const std::string label = engineButtonLabel();
     setText(btnEngine_, label);
+    // The one main action while nothing is listening; once it is, stopping
+    // is a quiet choice, not the thing this window is for.
+    setTone(btnEngine_, engine_.running() ? Tone::Quiet : Tone::Primary);
+    setTextStyle(btnEngine_, tk::Text::Button);
 
-    RECT rc;
-    GetClientRect(hwnd_, &rc);
-    const int by = (S(kToolbarH) - S(34)) / 2;
-    const int w = std::max(S(132), textWidthOf(btnEngine_, label) + S(28));
-    // sits to the left of the floating-buttons toggle, the Simple | Advanced
-    // switch and Settings
-    const int x = rc.right - S(kPad) - S(92) - S(8) - S(96) - S(2) - S(76) -
-                  S(8) - S(176) - S(14) - w;
-    MoveWindow(btnEngine_, x, by, w, S(34), TRUE);
+    const int bh = S(tk::kTargetMin);
+    const int by = (S(kToolbarH) - bh) / 2;
+    const int w = std::max(S(160), textPx(hwnd_, label, 18, 600) + S(48));
+    MoveWindow(btnEngine_, toolbarPillsLeft_ - S(16) - w, by, w, bh, TRUE);
 }
 
 std::string MainWindow::listeningSummary() const {
-    if (config_.keyboards.empty()) return "Listening";
-    if (config_.keyboards.size() == 1) {
-        const cfg::Keyboard& k = config_.keyboards[0];
-        if (!k.block)
-            return "Listening to " + k.alias +
-                   " - its keys run macros and still type";
-        if (!k.blockAllKeys)
-            return "Listening to " + k.alias +
-                   " - only its macro keys stop typing";
-        return "Listening to " + k.alias +
-               " - its keys run macros and do not type";
-    }
-    int silent = 0;   // every key given up
-    int partial = 0;  // only the macro keys given up
-    for (const auto& k : config_.keyboards) {
-        if (!k.block) continue;
-        if (k.blockAllKeys) ++silent; else ++partial;
-    }
-    std::string s = "Listening to " + std::to_string(config_.keyboards.size()) +
-                    " keyboards";
-    if (silent) s += " - " + std::to_string(silent) + " of them do not type";
-    if (partial)
-        s += (silent ? ", " : " - ") + std::to_string(partial) +
-             " only on macro keys";
-    return s;
+    std::vector<const cfg::Keyboard*> pads;
+    for (const auto& k : config_.keyboards)
+        if (!k.softwareOnly) pads.push_back(&k);
+    if (pads.empty()) return "Listening";
+    if (pads.size() == 1) return "Listening to " + pads[0]->alias;
+    return "Listening to " + std::to_string(pads.size()) + " keypads";
 }
 
-// How far below the top of the deck area the tiles begin. The deck preset
-// combo sits in the first band and the page strip in the second, and both the
-// tile layout and the scroll clip have to agree about where that ends.
-constexpr int kDeckHeaderH = 90;
-constexpr int kPageStripY = 50;
-constexpr int kPageStripH = 26;
+// How far below deckTop_ the tiles begin, and where the page pills sit, in
+// design px. Advanced has the layout picker in the first band and the page
+// pills in the second; Simple has a line of help, then the pages only when
+// a keypad already has several.
+int MainWindow::deckHeaderH() const {
+    if (!simple()) return 16 + 40 + 12 + 40 + 16;
+    bool pages = false;
+    for (const cfg::Keyboard& kb : config_.keyboards)
+        if (kb.alias == currentAlias_) pages = kb.pages.size() > 1;
+    return pages ? 16 + 26 + 12 + 48 + 16 : 16 + 26 + 16;
+}
+
+int MainWindow::pageStripY() const { return simple() ? 16 + 26 + 12 : 16 + 40 + 12; }
+int MainWindow::pageStripH() const {
+    return simple() ? tk::kTargetMin : tk::kTargetCompact;
+}
 
 void MainWindow::layoutPages() {
     pageTabs_.clear();
@@ -926,38 +1107,42 @@ void MainWindow::layoutPages() {
     kb->normalizePages();
 
     // Simple mode makes no pages, but a deck that already has several still
-    // shows them, so a page changing by itself is never a mystery. No "+" and
-    // no padlock there: those are for building pages, in Advanced.
+    // shows them, so a page changing by itself is never a mystery. No "Add
+    // page" and no follow switch there: those are for building pages.
     if (simple() && kb->pages.size() < 2) return;
 
-    const int y = rcDeck_.top + S(pageStripY());
-    const int h = S(kPageStripH);
-    // The padlock is pinned to the right end, and the tabs stop short of it
-    // rather than sliding underneath.
-    const int pinW = S(30);
-    if (!simple())
-        rcPagePin_ = {rcDeck_.right - S(kPad) - pinW, y,
-                      rcDeck_.right - S(kPad), y + h};
+    const int y = deckTop_ + S(pageStripY());
+    const int h = S(pageStripH());
+    // The follow switch is pinned to the right end, and the page pills stop
+    // short of it rather than sliding underneath.
+    if (!simple()) {
+        const int pinW = pillW(hwnd_, "Follow the program in front") + S(26);
+        rcPagePin_ = {rcDeck_.right - S(kPad) - pinW, y, rcDeck_.right - S(kPad),
+                      y + h};
+    }
     const int limit =
-        simple() ? rcDeck_.right - S(kPad) : rcPagePin_.left - S(8);
+        simple() ? rcDeck_.right - S(kPad) : rcPagePin_.left - S(12);
 
-    HDC dc = GetDC(hwnd_);
-    Graphics g(dc);
     int x = rcDeck_.left + S(kPad);
-    auto place = [&](int index, const std::wstring& label) {
-        const int w = (int)measureText(g, label, 11, false).Width + S(26);
+    auto place = [&](int index, int w) {
         if (x + w > limit && !pageTabs_.empty()) return false;
         PageTab t;
         t.index = index;
         t.rect = {x, y, x + w, y + h};
         pageTabs_.push_back(t);
-        x += w + S(6);
+        x += w + S(8);
         return true;
     };
-    for (size_t i = 0; i < kb->pages.size(); ++i)
-        if (!place((int)i, W(kb->pages[i].displayName()))) break;
-    if (!simple()) place(-1, L"+");
-    ReleaseDC(hwnd_, dc);
+    for (size_t i = 0; i < kb->pages.size(); ++i) {
+        const cfg::Page& p = kb->pages[i];
+        // Room for the page's colour dot and for the mark of a page that a
+        // program brings up by itself.
+        const int w = pillW(hwnd_, p.displayName()) +
+                      (trim(p.color).empty() ? 0 : S(18)) +
+                      (p.rule.empty() ? 0 : S(24));
+        if (!place((int)i, w)) break;
+    }
+    if (!simple()) place(-1, pillW(hwnd_, "Add page") + S(26));
 }
 
 void MainWindow::layoutDeck() {
@@ -978,26 +1163,27 @@ void MainWindow::layoutDeck() {
     RECT area = rcDeck_;
     area.left += S(kPad);
     area.right -= S(kPad);
-    area.top += S(deckHeaderH());
+    area.top = deckTop_ + S(deckHeaderH());
     area.bottom -= S(kPad);
     const int availW = area.right - area.left;
     const int availH = area.bottom - area.top;
     if (availW < S(80) || availH < S(80)) return;
 
-    const int gap = S(12);
+    const int gap = S(tk::kSpace4);
     deckViewH_ = availH;
 
     if (preset->flow) {
         // Flow layout: every binding in order, plus a trailing "add" tile.
+        // Columns at least 150px, so a label in the key's 22px type fits.
         int count = (int)kb->active().bindings.size() + 1;
-        int cols = std::max(1, std::min(count, (availW + gap) / (S(120) + gap)));
+        int cols = std::max(1, std::min(count, (availW + gap) / (S(150) + gap)));
         int rows = (count + cols - 1) / cols;
         // Size tiles from the width alone and scroll if the rows overflow.
         // Squeezing them to fit the height instead is what made a deck with
         // many keys unusable - past about thirty they either vanished or ran
         // off the bottom into the log.
         int byWidth = (availW - gap * (cols - 1)) / cols;
-        int side = std::max(S(56), std::min(byWidth, S(150)));
+        int side = std::max(S(112), std::min(byWidth, S(180)));
         const int tileW = side, tileH = side;
 
         deckContentH_ = rows * tileH + gap * std::max(0, rows - 1);
@@ -1021,18 +1207,21 @@ void MainWindow::layoutDeck() {
         return;
     }
 
-    // Fixed presets are sized to fit, so they never scroll.
-    deckScroll_ = 0;
-
-    // Fixed grid: size tiles so the whole preset fits the available area.
+    // Fixed grid: size tiles so the whole preset fits the available area -
+    // but never smaller than a key whose label can still be read. Below
+    // that, the keys keep their size and the deck scrolls.
     int cols = preset->cols, rows = preset->rows;
     int tileW = (availW - gap * (cols - 1)) / cols;
     int tileH = (availH - gap * (rows - 1)) / rows;
-    int side = std::max(S(56), std::min({tileW, tileH, S(150)}));
+    // Always as many columns as fit across, though: a key cut off at the
+    // side can't be scrolled to.
+    int side = std::max(std::min(S(104), tileW), std::min({tileW, tileH, S(160)}));
     int gridW = side * cols + gap * (cols - 1);
-    int gridH = side * rows + gap * (rows - 1);
+    const int gridH = side * rows + gap * (rows - 1);
+    deckContentH_ = gridH;
+    deckScroll_ = std::max(0, std::min(deckScroll_, gridH - availH));
     int ox = area.left + std::max(0, (availW - gridW) / 2);
-    int oy = area.top;
+    int oy = area.top - deckScroll_;
 
     for (size_t i = 0; i < preset->slots.size(); ++i) {
         const cfg::DeckSlot& s = preset->slots[i];
@@ -1057,7 +1246,6 @@ void MainWindow::layoutDeck() {
         }
         tiles_.push_back(t);
     }
-    (void)gridH;
 }
 
 // ---------------------------------------------------------------- painting
@@ -1075,9 +1263,11 @@ void MainWindow::paint(HDC hdc) {
     {
         Graphics g(mem);
         g.SetSmoothingMode(SmoothingModeAntiAlias);
+        g.SetPixelOffsetMode(PixelOffsetModeHalf);
         g.SetTextRenderingHint(TextRenderingHintClearTypeGridFit);
+        const Tok& k = tok();
 
-        SolidBrush bg(theme().bg);
+        SolidBrush bg(k.surface);
         g.FillRectangle(&bg, 0, 0, W_, H_);
 
         paintToolbar(g);
@@ -1086,72 +1276,21 @@ void MainWindow::paint(HDC hdc) {
             paintWelcome(g);
         else
             paintDeck(g);
+        if (bannerShown()) paintStatusBanner(g);
+        paintInspector(g);
 
-        // inspector + log backgrounds
-        SolidBrush panel(theme().panel);
-        g.FillRectangle(&panel, toRectF(rcInspector_));
-        g.FillRectangle(&panel, toRectF(rcLog_));
-        Pen line(theme().borderSoft, 1.0f);
-        g.DrawLine(&line, (REAL)rcInspector_.left, (REAL)rcInspector_.top,
-                   (REAL)rcInspector_.left, (REAL)rcInspector_.bottom);
-        g.DrawLine(&line, 0.0f, (REAL)rcLog_.top, (REAL)W_, (REAL)rcLog_.top);
-
-        // inspector heading
-        cfg::Binding* b = selectedBinding();
-        RectF head((REAL)(rcInspector_.left + S(kPad)),
-                   (REAL)(rcInspector_.top + S(14)), (REAL)S(kInspectorW - kPad * 2),
-                   (REAL)S(22));
-        const cfg::Keyboard* headKb = currentKb();
-        if (b && simple() && headKb && headKb->softwareOnly)
-            drawText(g, L"On-screen button", head, 15, theme().text,
-                     Align::Left, true);
-        else if (b)
-            drawText(g, W("Key: " + keys::displayName(b->key)), head, 15,
-                     theme().text, Align::Left, true);
-        else
-            drawText(g, L"Nothing selected", head, 15, theme().textDim,
-                     Align::Left, true);
-
-        RectF sub((REAL)(rcInspector_.left + S(kPad)),
-                  (REAL)(rcInspector_.top + S(38)),
-                  (REAL)S(kInspectorW - kPad * 2), (REAL)S(18));
-        if (simple())
-            drawText(g, b ? L"Name on the button"
-                          : L"Pick a button to change what it does",
-                     sub, 12, theme().textFaint, Align::Left);
-        else
-            drawText(g, b ? L"Label shown on the key" : L"Pick a key on the deck",
-                     sub, 12, theme().textFaint, Align::Left);
-
-        // Where Advanced has its press / wheel buttons.
-        if (simple() && b) {
-            RectF cap((REAL)(rcInspector_.left + S(kPad)),
-                      (REAL)(rcInspector_.top +
-                             S(58 + 34 + 50 + kSimpleAddRowsH)),
-                      (REAL)S(kInspectorW - kPad * 2), (REAL)S(26));
-            drawText(g, L"WHAT IT DOES", cap, 11, theme().textFaint,
-                     Align::Left, true);
-        }
-
-        // log heading
-        // Simple mode keeps just the status line, without a heading.
-        const int statusX = simple() ? kPad : kPad + 74;
-        const int statusY = simple() ? 8 : 6;
         if (!simple()) {
-            RectF logHead((REAL)S(kPad), (REAL)(rcLog_.top + S(6)),
-                          (REAL)S(300), (REAL)S(18));
-            drawText(g, L"Activity", logHead, 12, theme().textDim, Align::Left,
-                     true);
-        }
-        if (!statusText_.empty()) {
-            RectF statusBox((REAL)S(statusX), (REAL)(rcLog_.top + S(statusY)),
-                            (REAL)(W_ - S(kPad + statusX)), (REAL)S(18));
-            const Color tone = statusTone_ == StatusTone::Good   ? theme().good
-                               : statusTone_ == StatusTone::Warn ? theme().warn
-                                                                 : theme().textDim;
-            drawText(g, W(statusText_), statusBox, 12, tone, Align::Left);
+            SolidBrush raised(k.surfaceRaised);
+            g.FillRectangle(&raised, toRectF(rcLog_));
+            Pen line(k.line, 1.0f);
+            g.DrawLine(&line, 0.0f, (REAL)rcLog_.top, (REAL)W_, (REAL)rcLog_.top);
+            drawStyled(g, L"Activity",
+                       RectF((REAL)S(kPad), (REAL)(rcLog_.top + S(16)), (REAL)S(300),
+                             (REAL)S(18)),
+                       tk::Text::Overline, k.inkMuted);
         }
 
+        paintToast(g);
         if (dragging_) paintDragGhost(g);
     }
 
@@ -1161,26 +1300,59 @@ void MainWindow::paint(HDC hdc) {
     DeleteDC(mem);
 }
 
-void MainWindow::paintToolbar(Graphics& g) {
-    SolidBrush panel(theme().panel);
-    g.FillRectangle(&panel, toRectF(rcToolbar_));
-    Pen line(theme().borderSoft, 1.0f);
-    g.DrawLine(&line, 0.0f, (REAL)rcToolbar_.bottom, (REAL)rcToolbar_.right,
-               (REAL)rcToolbar_.bottom);
+void MainWindow::paintInspector(Graphics& g) {
+    const Tok& k = tok();
+    SolidBrush raised(k.surfaceRaised);
+    g.FillRectangle(&raised, toRectF(rcInspector_));
+    Pen line(k.line, 1.0f);
+    g.DrawLine(&line, (REAL)rcInspector_.left, (REAL)rcInspector_.top,
+               (REAL)rcInspector_.left, (REAL)rcInspector_.bottom);
 
-    // logo mark
-    RectF mark((REAL)S(kPad), (REAL)S(14), (REAL)S(32), (REAL)S(32));
-    fillRounded(g, mark, S(8.0f), theme().accent);
-    RectF inner(mark.X + S(8.0f), mark.Y + S(8.0f), S(16.0f), S(16.0f));
-    SolidBrush white(Color(255, 255, 255, 255));
-    for (int i = 0; i < 4; ++i) {
-        REAL cw = S(6.0f), gp = S(4.0f);
-        g.FillRectangle(&white, inner.X + (i % 2) * (cw + gp),
-                        inner.Y + (i / 2) * (cw + gp), cw, cw);
+    const REAL ix = (REAL)(rcInspector_.left + S(kPad));
+    const REAL iw = (REAL)(S(kInspectorW) - S(kPad) * 2);
+    cfg::Binding* b = selectedBinding();
+    const cfg::Keyboard* kb = currentKb();
+
+    std::wstring head = L"Nothing selected";
+    if (b && kb && kb->softwareOnly) head = L"On-screen button";
+    else if (b) head = W(keys::displayName(b->key));
+    drawStyled(g, head, RectF(ix, (REAL)insHeadY_, iw, (REAL)S(32)),
+               tk::Text::Title, b ? k.ink : k.inkMuted);
+
+    if (!b) {
+        drawStyled(g,
+                   simple() ? L"Pick a button to change it."
+                            : L"Pick a key to change it.",
+                   RectF(ix, (REAL)insNameY_, iw, (REAL)S(26)), tk::Text::Body,
+                   k.inkMuted);
+        return;
     }
+    drawStyled(g, simple() ? L"Name on the button" : L"Label on the key",
+               RectF(ix, (REAL)insNameY_, iw, (REAL)S(20)), tk::Text::Label,
+               k.ink);
+    const tk::KeyColor& kc = tk::nearestKeyColor(b->color);
+    drawStyled(g, L"Colour: " + W(kc.name),
+               RectF(ix, (REAL)insColourY_, iw, (REAL)S(20)), tk::Text::Label,
+               k.ink);
+    const wchar_t* caption = L"What it does";
+    if (!simple() && gesture_ == 1) caption = L"When turned up";
+    if (!simple() && gesture_ == 2) caption = L"When turned down";
+    drawStyled(g, caption, RectF(ix, (REAL)captionY_, iw, (REAL)S(18)),
+               tk::Text::Overline, k.inkMuted);
+}
 
-    RectF title((REAL)S(kPad + 44), (REAL)S(12), (REAL)S(260), (REAL)S(20));
-    drawText(g, L"Dental Macros", title, 16, theme().text, Align::Left, true);
+void MainWindow::paintToolbar(Graphics& g) {
+    const Tok& k = tok();
+    SolidBrush raised(k.surfaceRaised);
+    g.FillRectangle(&raised, toRectF(rcToolbar_));
+    Pen line(k.line, 1.0f);
+    g.DrawLine(&line, 0.0f, (REAL)rcToolbar_.bottom - 0.5f, (REAL)rcToolbar_.right,
+               (REAL)rcToolbar_.bottom - 0.5f);
+
+    // No logo yet: the name, set in the title style.
+    drawStyled(g, L"Dental Macros",
+               RectF((REAL)S(kPad), (REAL)S(10), (REAL)S(320), (REAL)S(32)),
+               tk::Text::Title, k.ink);
 
     // Stop the status line before the buttons rather than at a fixed width -
     // the listen button changes size with its label.
@@ -1189,163 +1361,170 @@ void MainWindow::paintToolbar(Graphics& g) {
         RECT eb{};
         GetWindowRect(btnEngine_, &eb);
         MapWindowPoints(nullptr, hwnd_, (POINT*)&eb, 2);
-        statusRight = eb.left - S(12);
+        statusRight = eb.left - S(16);
     }
-    const int statusLeft = S(kPad + 44);
-    RectF status((REAL)statusLeft, (REAL)S(32),
-                 (REAL)std::max(S(120), statusRight - statusLeft), (REAL)S(18));
 
-    std::wstring statusText;
-    Color statusColor = theme().textDim;
-    if (engine_.running()) {
-        statusText = W(listeningSummary());
-        statusColor = theme().good;
-        if (!lastKeyText_.empty())
-            statusText += L"   \x2022   " + W(lastKeyText_);
-    } else if (config_.keyboards.empty()) {
-        statusText = L"No macro keyboard set up yet";
+    bool keypads = false;
+    for (const auto& kb : config_.keyboards)
+        if (!kb.softwareOnly) keypads = true;
+
+    // A word and a shape for every state: a filled dot while listening, an
+    // empty ring while not.
+    std::wstring text;
+    bool on = false;
+    if (config_.keyboards.empty()) {
+        text = L"No buttons set up yet";
+    } else if (!keypads) {
+        text = L"Your on-screen buttons are ready";
+        on = true;
+    } else if (engine_.running()) {
+        text = W(listeningSummary());
+        if (!lastKeyText_.empty()) text += L"   \x00B7   " + W(lastKeyText_);
+        on = true;
     } else {
-        statusText = L"Not listening - your macro keys type normally";
+        text = L"Not listening: your keypad types normally";
     }
-    drawText(g, statusText, status, 12, statusColor, Align::Left);
+    const REAL d = (REAL)S(12);
+    const REAL sy = (REAL)S(44);
+    const REAL dotY = sy + ((REAL)S(26) - d) / 2;
+    if (on) {
+        SolidBrush dot(k.success);
+        g.FillEllipse(&dot, (REAL)S(kPad), dotY, d, d);
+    } else {
+        Pen ring(k.lineStrong, Sf(2));
+        g.DrawEllipse(&ring, (REAL)S(kPad) + Sf(1), dotY + Sf(1), d - Sf(2),
+                      d - Sf(2));
+    }
+    const REAL tx = (REAL)(S(kPad) + S(20));
+    drawStyled(g, text,
+               RectF(tx, sy, (REAL)std::max(S(120), statusRight - (int)tx),
+                     (REAL)S(26)),
+               tk::Text::Body, on ? k.ink : k.inkMuted);
 }
 
 void MainWindow::paintSidebar(Graphics& g) {
-    SolidBrush panel(theme().panel);
-    g.FillRectangle(&panel, toRectF(rcSidebar_));
-    Pen line(theme().borderSoft, 1.0f);
-    g.DrawLine(&line, (REAL)rcSidebar_.right, (REAL)rcSidebar_.top,
-               (REAL)rcSidebar_.right, (REAL)rcSidebar_.bottom);
+    const Tok& k = tok();
+    SolidBrush raised(k.surfaceRaised);
+    g.FillRectangle(&raised, toRectF(rcSidebar_));
+    Pen line(k.line, 1.0f);
+    g.DrawLine(&line, (REAL)rcSidebar_.right - 0.5f, (REAL)rcSidebar_.top,
+               (REAL)rcSidebar_.right - 0.5f, (REAL)rcSidebar_.bottom);
 
     kbRows_.clear();
     palette_.clear();
 
-    int x = rcSidebar_.left + S(kPad);
-    int w = S(kSidebarW) - S(kPad) * 2;
-    int y = rcSidebar_.top + S(14);
+    const bool sm = simple();
+    const int x = rcSidebar_.left + S(kPad);
+    const int w = S(kSidebarW) - S(kPad) * 2;
+    int y = rcSidebar_.top + S(24);
 
-    drawText(g, simple() ? L"YOUR BUTTONS" : L"KEYBOARDS",
-             RectF((REAL)x, (REAL)y, (REAL)w, (REAL)S(16)), 11,
-             theme().textFaint, Align::Left, true);
-    y += S(24);
+    drawStyled(g, sm ? L"Your buttons" : L"Your keypads",
+               RectF((REAL)x, (REAL)y, (REAL)w, (REAL)S(18)), tk::Text::Overline,
+               k.inkMuted);
+    y += S(30);
 
+    // Each keypad is a small choice tile: its name, and a line saying how it
+    // is - the words, not a coloured dot, carry it.
+    const int rowH = S(sm ? 64 : 56);
     for (size_t i = 0; i < config_.keyboards.size(); ++i) {
         const cfg::Keyboard& kb = config_.keyboards[i];
         KbRow row;
         row.index = (int)i;
-        row.rect = {x, y, x + w, y + S(kRowH)};
+        row.rect = {x, y, x + w, y + rowH};
         kbRows_.push_back(row);
 
-        bool sel = kb.alias == currentAlias_;
-        bool hot = hoverKb_ == (int)i;
-        if (sel || hot)
-            fillRounded(g, toRectF(row.rect), S(6.0f),
-                        sel ? theme().accentDim : theme().panelAlt);
-        // A keypad gets a dot: green while it is attached, grey while it is
-        // switched off, asleep or unplugged. Software buttons have nothing to
-        // be attached, so no dot.
-        int textX = x + S(10);
+        const bool sel = kb.alias == currentAlias_;
+        const bool hot = hoverKb_ == (int)i;
         bool missing = false;
         if (!kb.softwareOnly) {
             auto it = present_.find(kb.alias);
             missing = it != present_.end() && !it->second;
-            const REAL d = (REAL)S(7);
-            SolidBrush dot(missing ? theme().textFaint : theme().good);
-            g.FillEllipse(&dot, (REAL)(x + S(10)),
-                          (REAL)y + ((REAL)S(kRowH) - d) / 2, d, d);
-            textX = x + S(24);
         }
-        RectF tr((REAL)textX, (REAL)y, (REAL)(x + w - S(10) - textX),
-                 (REAL)S(kRowH));
-        drawText(g, W(kb.alias), tr, 13,
-                 missing ? theme().textFaint
-                         : sel ? theme().text : theme().textDim,
-                 Align::Left, sel);
-        // No badge is the default, fully-blocking case. "pass" = nothing is
-        // taken from this keyboard; "some" = only the keys that run macros.
-        const wchar_t* badgeText =
-            kb.softwareOnly ? L"click"
-            : kb.isMouse && !kb.block ? L"mouse"
-            : !kb.block     ? L"pass"
-            : !kb.blockAllKeys ? L"some"
-                               : nullptr;
-        if (badgeText && !simple()) {
-            // Sized to its text rather than to a fixed box: "mouse" is longer
-            // than "some", and a clipped badge reads as a rendering bug.
-            const REAL bw =
-                measureText(g, badgeText, 8).Width + (REAL)S(8);
-            RectF badge((REAL)(x + w - S(8)) - bw, (REAL)(y + S(8)), bw,
-                        (REAL)S(14));
-            fillRounded(g, badge, S(4.0f), theme().panelAlt);
-            drawText(g, badgeText, badge, 8, theme().textFaint, Align::Center);
+        const RectF r = toRectF(row.rect);
+        const float radius = Sf((float)tk::kRadiusMd);
+        fillRounded(g, r, radius, sel ? k.primaryTint : k.surfaceRaised);
+        if (missing && !sel && !hot)
+            strokeRoundedDashed(g, r, radius, k.lineStrong, Sf(2));
+        else
+            strokeRounded(g, r, radius, sel || hot ? k.primary : k.line, Sf(2));
+
+        // The round check says which one is shown.
+        const REAL cd = (REAL)S(22);
+        RectF check(r.X + Sf(14), r.Y + (r.Height - cd) / 2, cd, cd);
+        if (sel) {
+            SolidBrush f(k.primary);
+            g.FillEllipse(&f, check);
+            drawUiIcon(g, "check",
+                       RectF(check.X + Sf(3), check.Y + Sf(3), cd - Sf(6), cd - Sf(6)),
+                       k.onPrimary);
+        } else {
+            Pen p(k.lineStrong, Sf(2));
+            g.DrawEllipse(&p, RectF(check.X + Sf(1), check.Y + Sf(1), cd - Sf(2),
+                                    cd - Sf(2)));
         }
-        y += S(kRowH) + S(2);
-    }
 
-    {
-        KbRow row;
-        row.index = -1;
-        row.rect = {x, y, x + w, y + S(kRowH)};
-        kbRows_.push_back(row);
-        bool hot = hoverKb_ == -2;
-        if (hot) fillRounded(g, toRectF(row.rect), S(6.0f), theme().panelAlt);
-        RectF plus((REAL)(x + S(10)), (REAL)(y + S(10)), (REAL)S(10),
-                   (REAL)S(10));
-        drawGlyphPlus(g, plus, theme().accent, S(1.6f));
-        RectF tr((REAL)(x + S(28)), (REAL)y, (REAL)(w - S(30)), (REAL)S(kRowH));
-        drawText(g, simple() ? L"Add a keypad" : L"Add a keyboard", tr, 13,
-                 theme().accent, Align::Left);
-        y += S(kRowH) + S(2);
+        std::string sub = kb.softwareOnly ? "On screen"
+                          : missing       ? "Not connected"
+                                          : "Connected";
+        if (!sm && !kb.softwareOnly && !missing) {
+            if (kb.isMouse && !kb.block) sub += ", a mouse";
+            else if (!kb.block) sub += ", also types";
+            else if (!kb.blockAllKeys) sub += ", button keys only";
+        }
+        const REAL tx = check.GetRight() + Sf(12);
+        const REAL tw = r.GetRight() - Sf(12) - tx;
+        const REAL nameH = (REAL)S(sm ? 24 : 20);
+        const REAL top = r.Y + (r.Height - nameH - Sf(20)) / 2;
+        drawStyled(g, W(kb.alias), RectF(tx, top, tw, nameH),
+                   sm ? tk::Text::Button : tk::Text::CompactBold,
+                   missing ? k.inkMuted : k.ink);
+        if (missing)
+            drawText(g, W(sub), RectF(tx, top + nameH, tw, Sf(20)), 15,
+                     k.warningInk, Align::Left, true);
+        else
+            drawStyled(g, W(sub), RectF(tx, top + nameH, tw, Sf(20)),
+                       tk::Text::Label, k.inkMuted);
+        y += rowH + S(8);
     }
+    y += S(8);
 
-    if (!simple()) {
-        // A spare mouse or a trackpad. Its own row rather than a checkbox in
-        // the keyboard scan, because you are looking for a different piece of
-        // hardware and the list you need is a different list.
+    // Ways to add more: Secondary buttons, painted here and hit-tested by
+    // the rows they leave in kbRows_ (-1 keypad, -2 on-screen, -3 mouse).
+    const int addH = S(sm ? tk::kTargetMin : tk::kTargetCompact);
+    auto addButton = [&](int index, int hoverId, const wchar_t* label) {
         KbRow row;
-        row.index = -3;
-        row.rect = {x, y, x + w, y + S(kRowH)};
+        row.index = index;
+        row.rect = {x, y, x + w, y + addH};
         kbRows_.push_back(row);
-        bool hot = hoverKb_ == -4;
-        if (hot) fillRounded(g, toRectF(row.rect), S(6.0f), theme().panelAlt);
-        RectF plus((REAL)(x + S(10)), (REAL)(y + S(10)), (REAL)S(10),
-                   (REAL)S(10));
-        drawGlyphPlus(g, plus, theme().accent, S(1.6f));
-        RectF tr((REAL)(x + S(28)), (REAL)y, (REAL)(w - S(30)), (REAL)S(kRowH));
-        drawText(g, L"Add a mouse or trackpad", tr, 13, theme().accent,
-                 Align::Left);
-        y += S(kRowH) + S(2);
-    }
-
-    {
-        // Buttons with no keyboard behind them. Worth its own row rather than
-        // an option inside the keyboard scan, because the whole point is that
-        // there is no device to go looking for.
-        KbRow row;
-        row.index = -2;
-        row.rect = {x, y, x + w, y + S(kRowH)};
-        kbRows_.push_back(row);
-        bool hot = hoverKb_ == -3;
-        if (hot) fillRounded(g, toRectF(row.rect), S(6.0f), theme().panelAlt);
-        RectF plus((REAL)(x + S(10)), (REAL)(y + S(10)), (REAL)S(10),
-                   (REAL)S(10));
-        drawGlyphPlus(g, plus, theme().accent, S(1.6f));
-        RectF tr((REAL)(x + S(28)), (REAL)y, (REAL)(w - S(30)), (REAL)S(kRowH));
-        drawText(g, simple() ? L"Add on-screen buttons" : L"Add software buttons",
-                 tr, 13, theme().accent, Align::Left);
-        y += S(kRowH) + S(14);
-    }
+        ButtonState st;
+        st.hover = hoverKb_ == hoverId;
+        paintButton(g, toRectF(row.rect), label, ButtonKind::Secondary, st,
+                    k.surfaceRaised,
+                    tk::spec(sm ? tk::Text::Button : tk::Text::CompactBold),
+                    "plus");
+        y += addH + S(8);
+    };
+    addButton(-1, -2, L"Add a keypad");
+    // A spare mouse or a trackpad. Its own button rather than a checkbox in
+    // the keyboard scan, because you are looking for a different piece of
+    // hardware and the list you need is a different list.
+    if (!sm) addButton(-3, -4, L"Add a mouse or trackpad");
+    // Buttons with no keyboard behind them. Worth its own button rather than
+    // an option inside the keyboard scan, because the whole point is that
+    // there is no device to go looking for.
+    addButton(-2, -3, L"Add on-screen buttons");
 
     // ---- action palette - Advanced only: Simple mode adds steps with the
     // inspector's four buttons instead of dragging.
-    if (simple()) {
+    if (sm) {
         paletteContentH_ = 0;
         return;
     }
-    drawText(g, L"DRAG ONTO A KEY",
-             RectF((REAL)x, (REAL)y, (REAL)w, (REAL)S(16)), 11,
-             theme().textFaint, Align::Left, true);
-    y += S(22);
+    y += S(16);
+    drawStyled(g, L"Drag onto a key",
+               RectF((REAL)x, (REAL)y, (REAL)w, (REAL)S(18)), tk::Text::Overline,
+               k.inkMuted);
+    y += S(26);
 
     const int paletteTop = y;
     const int paletteBottom = rcSidebar_.bottom - S(8);
@@ -1355,98 +1534,126 @@ void MainWindow::paintSidebar(Graphics& g) {
     g.GetClip(&oldClip);
     g.SetClip(Rect(x, paletteTop, w, std::max(0, paletteBottom - paletteTop)));
 
+    const int prow = S(tk::kTargetCompact);
     std::string lastCat;
     for (const auto& a : cfg::actionDefs()) {
         if (a.category != lastCat) {
             lastCat = a.category;
             if (py + S(18) > paletteTop - S(20) && py < paletteBottom)
-                drawText(g, W(lastCat),
-                         RectF((REAL)x, (REAL)py, (REAL)w, (REAL)S(18)), 10,
-                         theme().textFaint, Align::Left);
-            py += S(20);
+                drawStyled(g, W(lastCat),
+                           RectF((REAL)x, (REAL)py + S(4), (REAL)w, (REAL)S(18)),
+                           tk::Text::Overline, k.inkMuted);
+            py += S(26);
         }
         PaletteRow row;
         row.actionId = a.id;
-        row.rect = {x, py, x + w, py + S(26)};
+        row.rect = {x, py, x + w, py + prow};
         palette_.push_back(row);
 
-        if (py + S(26) > paletteTop && py < paletteBottom) {
-            bool hot = hoverPalette_ == (int)palette_.size() - 1;
-            if (hot) fillRounded(g, toRectF(row.rect), S(5.0f), theme().panelAlt);
-            RectF ic((REAL)(x + S(6)), (REAL)(py + S(5)), (REAL)S(16),
-                     (REAL)S(16));
-            drawActionIcon(g, a.id, ic, hot ? theme().accent : theme().textDim);
-            RectF tr((REAL)(x + S(30)), (REAL)py, (REAL)(w - S(34)),
-                     (REAL)S(26));
-            drawText(g, W(a.label), tr, 12,
-                     hot ? theme().text : theme().textDim, Align::Left);
+        if (py + prow > paletteTop && py < paletteBottom) {
+            const bool hot = hoverPalette_ == (int)palette_.size() - 1;
+            if (hot)
+                fillRounded(g, toRectF(row.rect), Sf((float)tk::kRadiusSm),
+                            k.surfaceSunken);
+            const REAL isz = (REAL)S(22);
+            RectF ic((REAL)(x + S(8)), (REAL)py + (prow - isz) / 2, isz, isz);
+            drawActionIcon(g, a.id, ic, hot ? k.primaryInk : k.ink);
+            RectF tr((REAL)(x + S(40)), (REAL)py, (REAL)(w - S(44)), (REAL)prow);
+            drawStyled(g, W(a.label), tr, tk::Text::Compact, k.ink);
         }
-        py += S(28);
+        py += prow + S(2);
     }
     paletteContentH_ = py + paletteScroll_ - paletteTop;
     g.SetClip(&oldClip);
 }
 
 void MainWindow::paintWelcome(Graphics& g) {
+    const Tok& k = tok();
     RECT a = rcDeck_;
-    int cx = (a.left + a.right) / 2;
-    int cy = (a.top + a.bottom) / 2;
+    a.top = deckTop_;
+    const int cx = (a.left + a.right) / 2;
+    const int cy = (a.top + a.bottom) / 2;
 
-    RectF box((REAL)(cx - S(230)), (REAL)(cy - S(120)), (REAL)S(460),
-              (REAL)S(240));
-    fillRounded(g, box, S(12.0f), theme().panel);
-    strokeRounded(g, box, S(12.0f), theme().borderSoft, 1.0f);
+    // A sheet on the page: one heading, one line, one big main action.
+    const int sw = std::min(S(520), (int)(a.right - a.left) - S(kPad) * 2);
+    RectF box((REAL)(cx - sw / 2), (REAL)(cy - S(150)), (REAL)sw, (REAL)S(300));
+    paintShadow(g, box, Sf((float)tk::kRadiusLg), Shadow::Soft);
+    fillRounded(g, box, Sf((float)tk::kRadiusLg), k.surfaceRaised);
+    strokeRounded(g, box, Sf((float)tk::kRadiusLg), k.line, 1.0f);
 
-    RectF icon((REAL)(cx - S(24)), (REAL)(cy - S(92)), (REAL)S(48), (REAL)S(48));
-    drawActionIcon(g, "keys", icon, theme().accent);
+    const REAL pad = (REAL)S(tk::kSpace6);
+    drawStyled(g, L"Set up your first button",
+               RectF(box.X + pad, box.Y + pad, box.Width - pad * 2, (REAL)S(32)),
+               tk::Text::Title, k.ink);
+    drawStyled(g,
+               L"Make buttons that type and click for you: on your screen, or "
+               L"on a spare keypad while you keep typing normally on your main "
+               L"keyboard.",
+               RectF(box.X + pad, box.Y + pad + S(44), box.Width - pad * 2,
+                     (REAL)S(84)),
+               tk::Text::Body, k.inkMuted, Align::Left, false, true);
 
-    drawText(g, L"Set up your first button",
-             RectF((REAL)(cx - S(210)), (REAL)(cy - S(34)), (REAL)S(420),
-                   (REAL)S(26)),
-             17, theme().text, Align::Center, true);
-    drawText(g,
-             L"Make buttons that type and click for you - on your screen, or "
-             L"on a spare keypad while you keep typing normally on your main "
-             L"keyboard.",
-             RectF((REAL)(cx - S(200)), (REAL)(cy - S(4)), (REAL)S(400),
-                   (REAL)S(56)),
-             12, theme().textDim, Align::Center, false, false, true);
+    rcWelcomeBtn_ = {(int)(box.X + pad), (int)(box.GetBottom() - pad) - S(64),
+                     (int)(box.GetRight() - pad), (int)(box.GetBottom() - pad)};
+    ButtonState st;
+    st.hover = ptIn(rcWelcomeBtn_, dragPos_);
+    paintButton(g, toRectF(rcWelcomeBtn_), L"Get started", ButtonKind::Primary,
+                st, k.surfaceRaised, tk::spec(tk::Text::ButtonBig));
+}
 
-    rcWelcomeBtn_ = {cx - S(90), cy + S(60), cx + S(90), cy + S(96)};
-    bool hot = ptIn(rcWelcomeBtn_, dragPos_);
-    fillRounded(g, toRectF(rcWelcomeBtn_), S(8.0f),
-                hot ? mix(theme().accent, Color(255, 255, 255, 255), 0.12f)
-                    : theme().accent);
-    drawText(g, L"Get started", toRectF(rcWelcomeBtn_), 13,
-             Color(255, 255, 255, 255), Align::Center, true);
+void MainWindow::paintStatusBanner(Graphics& g) {
+    const BannerKind kind = bannerKind();
+    const RectF r = toRectF(rcBanner_);
+    const RectF d = toRectF(rcBannerDismiss_);
+    std::string text = statusText_;
+    // The banner has its own icon; the warning sign the text started with
+    // for the old status line is not needed twice.
+    const std::string warnSign = "\xE2\x9A\xA0 ";
+    if (text.rfind(warnSign, 0) == 0) text = text.substr(warnSign.size());
+    paintBanner(g, r, kind, W(text), r.GetRight() - d.X);
+    ButtonState st;
+    st.hover = hoverDismiss_;
+    paintButton(g, d, L"Dismiss", ButtonKind::Quiet, st, bannerFill(kind));
+}
+
+void MainWindow::paintToast(Graphics& g) {
+    if (toastText_.empty()) return;
+    const std::wstring text = W(toastText_);
+    const REAL h = (REAL)S(48);
+    RECT area = rcDeck_;
+    const REAL w = std::min(toastWidth(g, text), (REAL)(area.right - area.left - S(48)));
+    RectF r((REAL)(area.left + area.right) / 2 - w / 2,
+            (REAL)area.bottom - S(kPad) - h, w, h);
+    ui::paintToast(g, r, text, toastGood_);
 }
 
 void MainWindow::paintDeck(Graphics& g) {
     cfg::Keyboard* kb = currentKb();
     if (!kb) return;
+    const Tok& k = tok();
 
     if (!simple()) {
-        RectF hint((REAL)(rcDeck_.left + S(kPad) + S(252)),
-                   (REAL)(rcDeck_.top + S(14)),
-                   (REAL)std::max(0, (int)(rcDeck_.right - rcDeck_.left) - S(280)),
-                   (REAL)S(28));
-        drawText(g, L"Click a key to edit it  \x2022  drag an action onto it  "
-                    L"\x2022  right-click for more",
-                 hint, 11, theme().textFaint, Align::Left);
-    } else if (pageTabs_.empty()) {
-        RectF hint((REAL)(rcDeck_.left + S(kPad)), (REAL)(rcDeck_.top + S(14)),
+        const int hx = rcDeck_.left + S(kPad) + S(260) + S(16);
+        RectF hint((REAL)hx, (REAL)(deckTop_ + S(16)),
+                   (REAL)std::max(0, (int)rcDeck_.right - S(kPad) - hx),
+                   (REAL)S(40));
+        drawStyled(g, L"Click a key to change it, or drag an action onto it.",
+                   hint, tk::Text::Compact, k.inkMuted, Align::Left, true, true);
+    } else {
+        RectF hint((REAL)(rcDeck_.left + S(kPad)), (REAL)(deckTop_ + S(16)),
                    (REAL)std::max(0, (int)(rcDeck_.right - rcDeck_.left) -
                                          S(kPad * 2)),
-                   (REAL)S(28));
-        drawText(g, L"Click a button to change what it does  \x2022  "
-                    L"right-click it to rename or remove it",
-                 hint, 11, theme().textFaint, Align::Left);
+                   (REAL)S(26));
+        drawStyled(g, L"Click a button to change it. Right-click it to rename "
+                      L"or delete it.",
+                   hint, tk::Text::Body, k.inkMuted);
     }
 
     // Tiles can be scrolled, so keep them inside the deck area rather than
-    // letting them paint over the header, the sidebar or the log.
+    // letting them paint over the header, the sidebar or the log. The clip
+    // leaves room for the selection ring outside a key.
     RECT clip = rcDeck_;
-    clip.top += S(deckHeaderH() - 4);
+    clip.top = deckTop_ + S(deckHeaderH()) - S(8);
     Region oldClip;
     g.GetClip(&oldClip);
     g.SetClip(Rect(clip.left, clip.top, clip.right - clip.left,
@@ -1460,11 +1667,16 @@ void MainWindow::paintDeck(Graphics& g) {
     if (deckContentH_ > deckViewH_) {
         const int hidden = deckContentH_ - deckViewH_ - deckScroll_;
         if (hidden > 0) {
-            RectF more((REAL)(rcDeck_.right - S(150)),
-                       (REAL)(rcDeck_.bottom - S(20)), (REAL)S(136),
-                       (REAL)S(16));
-            drawText(g, L"scroll for more keys \x2193", more, 10,
-                     theme().textFaint, Align::Right);
+            // On a chip of its own, so it reads over the keys it sits on.
+            const std::wstring t = L"Scroll for more keys \x2193";
+            const REAL w = measureText(g, t, 15, true).Width + Sf(32);
+            const REAL h = (REAL)S(32);
+            RectF chip((REAL)(rcDeck_.left + rcDeck_.right) / 2 - w / 2,
+                       (REAL)rcDeck_.bottom - S(12) - h, w, h);
+            paintShadow(g, chip, h / 2, Shadow::Soft);
+            fillRounded(g, chip, h / 2, k.surfaceRaised);
+            strokeRounded(g, chip, h / 2, k.line, Sf(1));
+            drawStyled(g, t, chip, tk::Text::Label, k.inkMuted, Align::Center);
         }
     }
 }
@@ -1472,198 +1684,200 @@ void MainWindow::paintDeck(Graphics& g) {
 void MainWindow::paintPages(Graphics& g) {
     cfg::Keyboard* kb = currentKb();
     if (!kb || pageTabs_.empty()) return;
+    const Tok& k = tok();
 
     for (size_t i = 0; i < pageTabs_.size(); ++i) {
         const PageTab& t = pageTabs_[i];
-        RectF r = toRectF(t.rect);
+        const RectF r = toRectF(t.rect);
         const bool hover = hoverPageTab_ == (int)i;
-        const bool add = t.index < 0;
-        const bool current = !add && t.index == kb->activePage;
-
-        if (add) {
-            RectF plus(r.X + r.Width / 2 - S(6.0f),
-                       r.Y + r.Height / 2 - S(6.0f), S(12.0f), S(12.0f));
-            drawGlyphPlus(g, plus, hover ? theme().accent : theme().textFaint,
-                          S(1.6f));
-            if (hover)
-                strokeRounded(g, r, S(6.0f), theme().accent, 1.0f);
+        if (t.index < 0) {
+            paintPill(g, r, L"Add page", false, hover, false, k.surface, "plus");
             continue;
         }
-
         const cfg::Page& page = kb->pages[(size_t)t.index];
-        // A page's own colour is what tells you which one you are on at a
-        // glance - the same job the RGB does on a hardware pad. It only
-        // paints the tab it belongs to, so an unconfigured strip stays quiet.
-        Color base = current ? readableTileColor(page.color, theme().accentDim)
-                             : (hover ? theme().tileHover : theme().panelAlt);
-        fillRounded(g, r, S(6.0f), base);
-        if (current) strokeRounded(g, r, S(6.0f), theme().accent, S(1.4f));
-
-        RectF label(r.X + S(9.0f), r.Y, r.Width - S(18.0f), r.Height);
-        drawText(g, W(page.displayName()), label, 11,
-                 current ? theme().text : theme().textDim, Align::Center,
-                 current);
-
-        // A dot marks a page that an application can bring up by itself, so
-        // the ones that switch on their own are told apart from the ones that
-        // only ever switch because you asked.
+        const bool current = t.index == kb->activePage;
+        // The current page is the active pill. Its own colour, if it has
+        // one, is a dot beside the name - never the only sign of which page
+        // it is.
+        paintPill(g, r, L"", current, hover, false, k.surface);
+        const Color ink = current || hover ? k.primaryInk : k.ink;
+        REAL x = r.X + Sf(18);
+        if (!trim(page.color).empty()) {
+            const REAL d = Sf(10);
+            SolidBrush dot(readableTileColor(page.color, k.primary));
+            g.FillEllipse(&dot, x, r.Y + (r.Height - d) / 2, d, d);
+            x += Sf(18);
+        }
+        const std::wstring name = W(page.displayName());
+        const REAL tw = measureText(g, name, 16, true).Width + Sf(4);
+        drawText(g, name, RectF(x, r.Y, tw + Sf(4), r.Height), 16, ink,
+                 Align::Left, true);
+        // A page that a program brings up by itself carries that program's
+        // window mark.
         if (!page.rule.empty()) {
-            RectF dot(r.GetRight() - S(8.0f), r.Y + S(6.0f), S(4.0f), S(4.0f));
-            SolidBrush b(current ? theme().text : theme().textFaint);
-            g.FillEllipse(&b, dot);
+            const REAL isz = Sf(16);
+            drawActionIcon(g, "window_focus",
+                           RectF(x + tw + Sf(6), r.Y + (r.Height - isz) / 2, isz, isz),
+                           ink);
         }
     }
 
-    // The padlock: shut means the deck stops following the application in
-    // front. Drawn as a shackle over a body rather than shipped as an image,
-    // like every other glyph here. Simple mode has none.
+    // The follow switch: on, the deck follows the program in front.
     if (IsRectEmpty(&rcPagePin_)) return;
     const bool follow = config_.settings.switchPageWithApp;
-    RectF pin = toRectF(rcPagePin_);
-    const bool pinHover = hoverPageTab_ == -2;
-    if (pinHover) fillRounded(g, pin, S(6.0f), theme().tileHover);
-    Color pc = follow ? theme().good : theme().textFaint;
-    const float bw = S(11.0f), bh = S(8.0f);
-    RectF body(pin.X + (pin.Width - bw) / 2, pin.Y + pin.Height / 2 - S(1.0f),
-               bw, bh);
-    fillRounded(g, body, S(2.0f), pc);
-    Pen pen(pc, S(1.6f));
-    const float ar = S(3.6f);
-    // An open shackle leans out to one side; a shut one sits square on top.
-    RectF arc(body.X + body.Width / 2 - ar - (follow ? 0.0f : S(3.0f)),
-              body.Y - ar * 2 + S(1.0f), ar * 2, ar * 2);
-    g.DrawArc(&pen, arc, 180.0f, follow ? 180.0f : 150.0f);
+    paintPill(g, toRectF(rcPagePin_), L"Follow the program in front", follow,
+              hoverPageTab_ == -2, false, k.surface, follow ? "check" : "");
 }
 
 void MainWindow::paintTile(Graphics& g, const DeckTile& tile,
                            cfg::Keyboard* kb) {
+    const Tok& k = tok();
     RectF r = toRectF(tile.rect);
-    const float radius = S(10.0f);
-    int index = (int)(&tile - tiles_.data());
-    bool hover = hoverTile_ == index;
-    bool selected = selectedTile_ == index;
+    const float radius = Sf((float)tk::kRadiusMd);
+    const int index = (int)(&tile - tiles_.data());
+    const bool hover = hoverTile_ == index;
+    const bool selected = selectedTile_ == index;
 
     const cfg::Binding* b =
         tile.binding >= 0 && tile.binding < (int)kb->active().bindings.size()
             ? &kb->active().bindings[(size_t)tile.binding]
             : nullptr;
 
-    // recently-fired glow
-    float fire = 0.0f;
+    // A key that just ran does the press: a quick shrink to 96%, the only
+    // motion the design system allows a macro key.
     if (b) {
         auto it = lastFire_.find(currentAlias_ + "|" + b->key);
-        if (it != lastFire_.end()) {
-            DWORD age = GetTickCount() - it->second;
-            if (age < 450) fire = 1.0f - age / 450.0f;
+        if (it != lastFire_.end() && GetTickCount() - it->second < 160) {
+            const float dw = r.Width * 0.04f, dh = r.Height * 0.04f;
+            r = RectF(r.X + dw / 2, r.Y + dh / 2, r.Width - dw, r.Height - dh);
         }
+    }
+
+    // The selected key: the focus ring, outside the key with a 2px gap.
+    if (selected) {
+        const float out = Sf((float)(tk::kFocusGap + tk::kFocusRing));
+        RectF ring(r.X - out, r.Y - out, r.Width + out * 2, r.Height + out * 2);
+        strokeRounded(g, ring, radius + out, k.focusRing,
+                      Sf((float)tk::kFocusRing));
     }
 
     if (!b) {
-        fillRounded(g, r, radius, theme().tileEmpty);
-        strokeRoundedDashed(g, r, radius, hover ? theme().accent : theme().border,
-                            S(1.4f));
-        RectF plus(r.X + r.Width / 2 - S(9.0f), r.Y + r.Height / 2 - S(9.0f),
-                   S(18.0f), S(18.0f));
-        drawGlyphPlus(g, plus, hover ? theme().accent : theme().textFaint,
-                      S(1.8f));
-        if (!tile.key.empty() && !kb->softwareOnly) {
-            RectF kr(r.X, r.GetBottom() - S(22.0f), r.Width, S(16.0f));
-            drawText(g, W(keys::displayName(tile.key)), kr, 10,
-                     theme().textFaint, Align::Center);
-        }
-        if (selected) strokeRounded(g, r, radius, theme().accent, S(2.0f));
+        // An empty slot: no fill, a dashed edge, a plus and the key's name.
+        if (hover) fillRounded(g, r, radius, k.surfaceRaised);
+        strokeRoundedDashed(g, r, radius, hover ? k.primary : k.lineStrong, Sf(2));
+        const bool named = !tile.key.empty() && !kb->softwareOnly;
+        const std::wstring label =
+            named ? W(keys::displayName(tile.key)) : std::wstring(L"Add a button");
+        const REAL isz = Sf(22);
+        const REAL cy = r.Y + r.Height / 2 - Sf(12);
+        drawUiIcon(g, "plus", RectF(r.X + (r.Width - isz) / 2, cy - isz / 2, isz, isz),
+                   hover ? k.primaryInk : k.inkMuted);
+        drawStyled(g, label,
+                   RectF(r.X + Sf(6), cy + isz / 2 + Sf(6), r.Width - Sf(12), Sf(20)),
+                   tk::Text::Label, hover ? k.primaryInk : k.inkMuted,
+                   Align::Center);
         return;
     }
 
-    Color base = readableTileColor(b->color, hover ? theme().tileHover
-                                                   : theme().tile);
-    if (hover && trim(b->color).empty())
-        base = theme().tileHover;
-    if (fire > 0)
-        base = mix(base, theme().good, fire * 0.55f);
+    Color base = readableTileColor(b->color, theme().tile);
+    // Hover lifts a key one shade, as bundle.css's .sme-msg:hover does.
+    if (hover) base = mix(base, kWhite, 0.08f);
+    paintShadow(g, r, radius, hover || selected ? Shadow::Hover : Shadow::Soft);
     fillRounded(g, r, radius, base);
-    strokeRounded(g, r, radius,
-                  selected ? theme().accent
-                           : withAlpha(theme().border, 140),
-                  selected ? S(2.0f) : 1.0f);
 
-    // key badge - meaningless on a button that has no key behind it
+    // The key badge, top left - meaningless on a button with no key behind
+    // it. bundle.css .sme-key: white at 22% behind white text.
+    const REAL tagH = Sf(22);
+    REAL badgeRight = r.X;
     if (!kb->softwareOnly) {
-        RectF badge(r.X + S(7.0f), r.Y + S(6.0f), 0, S(15.0f));
-        std::wstring keyLabel = W(keys::displayName(b->key));
-        SizeF ks = measureText(g, keyLabel, 9, true);
-        badge.Width = ks.Width + S(10.0f);
-        fillRounded(g, badge, S(4.0f), withAlpha(Color(255, 0, 0, 0), 70));
-        drawText(g, keyLabel, badge, 9, withAlpha(theme().text, 220),
-                 Align::Center, true);
+        const std::wstring keyLabel = W(keys::displayName(b->key));
+        const REAL bw = std::min(measureText(g, keyLabel, 13, true).Width + Sf(16),
+                                 r.Width - Sf(16));
+        RectF badge(r.X + Sf(8), r.Y + Sf(8), bw, tagH);
+        fillRounded(g, badge, Sf((float)tk::kRadiusSm), withAlpha(kWhite, 56));
+        drawText(g, keyLabel, badge, 13, kWhite, Align::Center, true);
+        badgeRight = badge.GetRight();
+    }
+    // A key you can also turn says so, in words, top right.
+    if (b->isDial()) {
+        const REAL tw = measureText(g, L"Turn", 12, true).Width + Sf(16);
+        if (r.GetRight() - Sf(8) - tw > badgeRight + Sf(4)) {
+            RectF tag(r.GetRight() - Sf(8) - tw, r.Y + Sf(8), tw, tagH);
+            fillRounded(g, tag, tagH / 2, withAlpha(kWhite, 56));
+            drawText(g, L"Turn", tag, 12, kWhite, Align::Center, true);
+        }
     }
 
-    // icon: custom image if set, otherwise the first step's action glyph
-    float iconSize = std::min(r.Width, r.Height) * 0.36f;
-    RectF iconBox(r.X + (r.Width - iconSize) / 2, r.Y + r.Height * 0.24f,
-                  iconSize, iconSize);
-    // A "lib:" icon is drawn from code and never touches the image cache.
-    if (isLibraryIcon(b->icon) &&
-        drawLibraryIcon(g, libraryIconId(b->icon), iconBox,
-                        withAlpha(Color(255, 255, 255, 255), 235))) {
-        // drawn
+    // Top to bottom: the badge row, the icon (36px on a key with room for
+    // it), then two lines of label. On a small key the icon gives way first,
+    // so the name - what the key is for - always fits.
+    const float labelPx = r.Width >= Sf(150) ? 22.0f : r.Width >= Sf(110) ? 17.0f
+                                                                       : 15.0f;
+    const REAL lineH = Sf(labelPx * 1.3f);
+    const REAL top = r.Y + (kb->softwareOnly ? Sf(12) : Sf(8) + tagH + Sf(4));
+    const REAL room = r.GetBottom() - Sf(6) - lineH * 2 - Sf(4) - top;
+    const REAL isz = std::max(0.0f, std::min(Sf(36), room));
+    RectF iconBox(r.X + (r.Width - isz) / 2, top, isz, isz);
+    if (isz < Sf(18)) iconBox = RectF(r.X + r.Width / 2, top, 0, 0);
+    const bool unfinished = b->steps.empty() && !b->isDial();
+    if (unfinished) {
+        // In the URGENT tag's style, so a half-made key can't be missed.
+        const std::wstring t = L"No steps yet";
+        const REAL tw = std::min(measureText(g, t, 12, true).Width + Sf(16),
+                                 r.Width - Sf(12));
+        RectF tag(r.X + (r.Width - tw) / 2, top + std::max(0.0f, (isz - tagH) / 2),
+                  tw, tagH);
+        fillRounded(g, tag, tagH / 2, kWhite);
+        drawText(g, t, tag, 12, k.dangerInk, Align::Center, true);
+        if (iconBox.Height < tagH) iconBox.Height = tagH;
+    } else if (iconBox.Width <= 0) {
+        // No room for an icon on a key this small.
+    } else if (isLibraryIcon(b->icon) &&
+               drawLibraryIcon(g, libraryIconId(b->icon), iconBox, kWhite)) {
+        // A "lib:" icon is drawn from code and never touches the image cache.
     } else if (Image* img = b->icon.empty() || isLibraryIcon(b->icon)
                                 ? nullptr
                                 : icons_.get(b->icon)) {
         // preserve aspect ratio inside the box
-        float iw = (float)img->GetWidth(), ih = (float)img->GetHeight();
+        const float iw = (float)img->GetWidth(), ih = (float)img->GetHeight();
         if (iw > 0 && ih > 0) {
-            float scale = std::min(iconBox.Width / iw, iconBox.Height / ih);
+            const float scale = std::min(iconBox.Width / iw, iconBox.Height / ih);
             RectF dst(iconBox.X + (iconBox.Width - iw * scale) / 2,
                       iconBox.Y + (iconBox.Height - ih * scale) / 2, iw * scale,
                       ih * scale);
             g.DrawImage(img, dst);
         }
     } else if (!b->steps.empty()) {
-        drawActionIcon(g, b->steps[0].action, iconBox,
-                       withAlpha(Color(255, 255, 255, 255), 235));
+        drawActionIcon(g, b->steps[0].action, iconBox, kWhite);
     } else {
-        RectF q(iconBox.X, iconBox.Y, iconBox.Width, iconBox.Height);
-        drawText(g, L"?", q, iconSize * 0.8f / dpiScale(),
-                 withAlpha(theme().textFaint, 200), Align::Center, true);
+        drawActionIcon(g, "scroll", iconBox, kWhite);
     }
 
-    // A tile you can also turn says so, in the corner the key badge does
-    // not use. Without it a dial is a feature nobody discovers.
-    if (b->isDial()) {
-        RectF mark(r.GetRight() - S(20.0f), r.Y + S(7.0f), S(12.0f), S(14.0f));
-        drawGlyphDial(g, mark, withAlpha(theme().text, 170));
-    }
-
-    // label
-    RectF label(r.X + S(5.0f), r.GetBottom() - S(30.0f), r.Width - S(10.0f),
-                S(26.0f));
-    drawText(g, W(b->displayTitle()), label, 11,
-             Color(255, 255, 255, 255), Align::Center, false, true, true);
-
-    if (b->steps.empty() && !b->isDial()) {
-        RectF warn(r.X, r.Y + r.Height * 0.60f, r.Width, S(14.0f));
-        drawText(g, L"no steps yet", warn, 9, theme().warn, Align::Center);
-    } else if (b->steps.empty()) {
-        // A dial with nothing on its press is finished, not half-built: it
-        // does its job when you scroll it. Saying "no steps yet" here would
-        // be telling the user to fix something that is not broken.
-        RectF hint(r.X, r.Y + r.Height * 0.60f, r.Width, S(14.0f));
-        drawText(g, L"scroll to use", hint, 9, theme().textFaint,
-                 Align::Center);
-    }
+    // MessageButton labels are 22px bold; a key too narrow for that gets a
+    // smaller size, still bold, so two words still fit across it.
+    const REAL labelTop = iconBox.Height > 0 ? iconBox.GetBottom() + Sf(4) : top;
+    RectF label(r.X + Sf(6), labelTop, r.Width - Sf(12),
+                r.GetBottom() - Sf(4) - labelTop);
+    drawText(g, W(b->displayTitle()), label, labelPx, kWhite, Align::Center,
+             true, true, true);
 }
 
 void MainWindow::paintDragGhost(Graphics& g) {
     const cfg::ActionDef* def = cfg::findAction(dragAction_);
     if (!def) return;
-    RectF chip((REAL)(dragPos_.x + S(10)), (REAL)(dragPos_.y + S(8)),
-               (REAL)S(170), (REAL)S(30));
-    fillRounded(g, chip, S(6.0f), withAlpha(theme().accent, 235));
-    RectF ic(chip.X + S(8.0f), chip.Y + S(7.0f), S(16.0f), S(16.0f));
-    drawActionIcon(g, dragAction_, ic, Color(255, 255, 255, 255));
-    RectF tr(chip.X + S(30.0f), chip.Y, chip.Width - S(34.0f), chip.Height);
-    drawText(g, W(def->label), tr, 12, Color(255, 255, 255, 255), Align::Left);
+    const std::wstring label = W(def->label);
+    const REAL h = (REAL)S(40);
+    const REAL w = measureText(g, label, 15, true).Width + Sf(22 + 8 + 32);
+    RectF chip((REAL)(dragPos_.x + S(12)), (REAL)(dragPos_.y + S(10)), w, h);
+    paintShadow(g, chip, h / 2, Shadow::Sheet);
+    fillRounded(g, chip, h / 2, tok().primary);
+    const REAL isz = Sf(22);
+    drawActionIcon(g, dragAction_,
+                   RectF(chip.X + Sf(14), chip.Y + (h - isz) / 2, isz, isz),
+                   tok().onPrimary);
+    drawText(g, label, RectF(chip.X + Sf(14) + isz + Sf(8), chip.Y,
+                             w - isz - Sf(36), h),
+             15, tok().onPrimary, Align::Left, true);
 }
 
 // ------------------------------------------------------------ model access
@@ -1716,8 +1930,16 @@ void MainWindow::refreshInspector() {
 
     setText(titleEdit_, has ? b->title : "");
     EnableWindow(titleEdit_, has);
+    // An empty, greyed name box reads as something to fill in. With nothing
+    // picked there is nothing to name, so the panel shows only its heading.
+    showInspectorControls();
     EnableWindow(btnIcon_, has);
     EnableWindow(btnColor_, has);
+    // The tick goes on the colour the key is drawn in: the nearest of the
+    // seven to whatever it has saved.
+    const tk::KeyColor* chosen = has ? &tk::nearestKeyColor(b->color) : nullptr;
+    for (size_t i = 0; i < swatches_.size(); ++i)
+        setSwatchSelected(swatches_[i], chosen == &tk::keyColors()[i]);
     EnableWindow(btnAddStep_, has);
     EnableWindow(btnRecord_, has);
     for (HWND h : {btnSType_, btnSKeys_, btnSWait_}) EnableWindow(h, has);
@@ -1830,8 +2052,9 @@ void MainWindow::saveConfig() {
     if (!saved) {
         pushLog("Could not save settings: " + err);
         const fe::Problem p = fe::saveProblem(config_.lastSaveError);
-        setStatus("\xE2\x9A\xA0 Your changes haven't been saved.",
-                  StatusTone::Warn);
+        setStatus("Your changes haven't been saved. They are kept until "
+                  "saving works again.",
+                  StatusTone::Danger);
         // Never a dialog while closing - there is nothing left to show it on.
         if (p != saveProblemShown_ && !destroying_) {
             saveProblemShown_ = p;
@@ -1873,8 +2096,8 @@ void MainWindow::addMouse() {
     pushLog("Added mouse \"" + alias + "\".");
     if (config_.pointerCount <= 1)
         pushLog(
-            "  It is the only pointer attached, so left click stays yours - "
-            "Dental Macros will not take it however this deck is configured.");
+            "  It is the only pointer attached, so left click stays yours. "
+            "Dental Macros won't take it, however the mouse is set up.");
     layout();
 }
 
@@ -1931,16 +2154,15 @@ void MainWindow::refreshGestureButtons() {
     EnableWindow(btnGesturePress_, has);
     EnableWindow(btnGestureUp_, has);
     EnableWindow(btnGestureDown_, has);
-    setPrimary(btnGesturePress_, gesture_ == 0);
-    setPrimary(btnGestureUp_, gesture_ == 1);
-    setPrimary(btnGestureDown_, gesture_ == 2);
+    setPillActive(btnGesturePress_, gesture_ == 0);
+    setPillActive(btnGestureUp_, gesture_ == 1);
+    setPillActive(btnGestureDown_, gesture_ == 2);
     // A dot on a direction that already carries something, so a tile's other
     // gestures are visible without clicking through all three.
     setText(btnGestureUp_,
-            std::string("Wheel \u2191") +
-                (b && !b->scrollUp.empty() ? " \u2022" : ""));
+            std::string("Turn up") + (b && !b->scrollUp.empty() ? " \u2022" : ""));
     setText(btnGestureDown_,
-            std::string("Wheel \u2193") +
+            std::string("Turn down") +
                 (b && !b->scrollDown.empty() ? " \u2022" : ""));
 }
 
@@ -1982,9 +2204,11 @@ void MainWindow::assignKeyToTile(int tileIndex) {
         // Blank slot on a generic grid (or the flow "+" tile): ask the user to
         // press the key they want this tile to be.
         KeyCaptureResult r = captureKey(
-            hwnd_, kb->isMouse ? "Which button?" : "Which key?",
-            std::string("Press the ") + (kb->isMouse ? "button" : "key") +
-                " on \"" + kb->alias + "\" that should run this macro.",
+            hwnd_, kb->isMouse ? "Pick a button" : "Pick a key",
+            std::string(kb->isMouse ? "Press the button you want to use"
+                                    : "Press the key you want to use") +
+                "\nPress it on \"" + kb->alias +
+                "\". This button will run whenever you do.",
             kb->match);
         if (!r.ok) return;
         key = r.keyName;
@@ -2007,9 +2231,9 @@ void MainWindow::assignKeyToTile(int tileIndex) {
                 selectTile((int)i);
                 break;
             }
-        showMessage(hwnd_, "Already used",
+        showMessage(hwnd_, "That key already has a button",
                     "\"" + keys::displayName(key) +
-                        "\" already runs a macro on this keyboard.");
+                        "\" already runs a button on this keypad. Pick another key, or change that button instead.");
         return;
     }
 
@@ -2209,13 +2433,14 @@ void MainWindow::loadCopy() {
     int keys = 0;
     for (const auto& k : probe.keyboards) keys += totalBindings(k);
     const size_t decks = probe.keyboards.size();
-    if (!askYesNo(hwnd_, "Load this copy?",
-                  "It has " + std::to_string(decks) +
-                      (decks == 1 ? " set" : " sets") + " of buttons and " +
-                      std::to_string(keys) + (keys == 1 ? " button" : " buttons") +
-                      ".\n\nThey will replace the buttons you have now. Your "
-                      "current settings are saved in the backups folder "
-                      "first, so you can go back."))
+    if (!confirm(hwnd_, "Load this copy?",
+                 "It has " + std::to_string(decks) +
+                     (decks == 1 ? " set" : " sets") + " of buttons and " +
+                     std::to_string(keys) + (keys == 1 ? " button" : " buttons") +
+                     ". They will replace the buttons you have now. Your "
+                     "current buttons are saved in the backups folder first, "
+                     "so you can go back.",
+                 "Load copy", "Keep my buttons"))
         return;
 
     if (config_.dirty) saveConfig();
@@ -2266,8 +2491,22 @@ void MainWindow::openSettings() {
 
 void MainWindow::updateFloatingButton() {
     if (!btnFloating_) return;
-    setText(btnFloating_, mini_.visible() ? "Hide floating buttons"
-                                          : "Show floating buttons");
+    // A pill that is on while they are on screen.
+    setPillActive(btnFloating_, mini_.visible());
+}
+
+void MainWindow::setKeyColor(int index) {
+    cfg::Binding* b = selectedBinding();
+    if (!b || index < 0 || index >= (int)tk::keyColors().size()) return;
+    b->color = tk::keyColors()[(size_t)index].hex;
+    modelChanged(false);
+}
+
+void MainWindow::showToast(const std::string& text, bool good) {
+    toastText_ = text;
+    toastGood_ = good;
+    SetTimer(hwnd_, kToastTimer, kToastMs, nullptr);
+    InvalidateRect(hwnd_, &rcDeck_, FALSE);
 }
 
 void MainWindow::testRun() {
@@ -2285,8 +2524,10 @@ void MainWindow::testRun() {
 void MainWindow::clearTile() {
     cfg::Binding* b = selectedBinding();
     if (!b) return;
-    if (!askYesNo(hwnd_, "Clear this key",
-                  "Remove every step from \"" + b->displayTitle() + "\"?"))
+    if (!confirm(hwnd_,
+                 "Remove every step from \"" + b->displayTitle() + "\"?",
+                 "The button stays, with nothing for it to do.", "Remove steps",
+                 "Keep them", true))
         return;
     b->steps.clear();
     // Clearing a tile means the whole tile, dial gestures included. Leaving
@@ -2303,8 +2544,8 @@ void MainWindow::deleteBinding() {
     int bi = tiles_[(size_t)selectedTile_].binding;
     if (bi < 0 || bi >= (int)kb->active().bindings.size()) return;
     std::string name = kb->active().bindings[(size_t)bi].displayTitle();
-    if (!askYesNo(hwnd_, "Remove this key",
-                  "Remove \"" + name + "\" from the deck?"))
+    if (!confirm(hwnd_, "Delete the \"" + name + "\" button?", "",
+                 "Delete button", "Keep it", true))
         return;
     kb->active().bindings.erase(kb->active().bindings.begin() + bi);
     selectedTile_ = -1;
@@ -2334,12 +2575,10 @@ void MainWindow::chooseTileColor() {
 void MainWindow::toggleEngine() {
     if (engine_.running()) {
         engine_.stop();
-        setTone(btnEngine_, Tone::Good);
     } else {
         try {
             engine_.updateConfig(config_);
             engine_.start();
-            setTone(btnEngine_, Tone::Danger);
         } catch (const fe::Error& e) {
             pushLog(std::string("Could not start listening: ") + e.what());
             showFriendly(hwnd_, fe::explain(e.problem, e.subject, e.what()));
@@ -2380,10 +2619,13 @@ void MainWindow::importYaml() {
 
     int keys = 0;
     for (const auto& kb : imported.keyboards) keys += totalBindings(kb);
-    if (!askYesNo(hwnd_, "Import",
-                  "Found " + std::to_string(imported.keyboards.size()) +
-                      " keyboard(s) and " + std::to_string(keys) +
-                      " macro(s).\n\nAdd them to Dental Macros?"))
+    const size_t pads = imported.keyboards.size();
+    if (!confirm(hwnd_,
+                 "Add " + std::to_string(pads) +
+                     (pads == 1 ? " keypad" : " keypads") + " and " +
+                     std::to_string(keys) + (keys == 1 ? " button?" : " buttons?"),
+                 "They are added next to the buttons you have now.",
+                 "Add them", "Cancel"))
         return;
 
     for (auto& kb : imported.keyboards) {
@@ -2401,9 +2643,10 @@ void MainWindow::importYaml() {
 
 void MainWindow::reloadConfig() {
     if (config_.dirty &&
-        !askYesNo(hwnd_, "Reload macros.json",
-                  "There are unsaved changes. Reloading from disk throws "
-                  "them away.\n\nReload anyway?"))
+        !confirm(hwnd_, "Throw away your unsaved changes?",
+                 "Reloading reads your buttons again from macros.json, as "
+                 "they were last saved.",
+                 "Reload and throw away", "Keep my changes", true))
         return;
 
     const bool wasRunning = engine_.running();
@@ -2477,16 +2720,18 @@ void MainWindow::duplicateBinding(int tileIndex) {
         kb->isMouse ? "Duplicate to which button?" : "Duplicate to which key?";
     KeyCaptureResult r = captureKey(
         hwnd_, title,
-        std::string("Press the ") + (kb->isMouse ? "button" : "key") +
-            " on \"" + kb->alias + "\" that should get a copy of \"" +
-            source.displayTitle() + "\".",
+        std::string(kb->isMouse ? "Press the button for the copy"
+                                : "Press the key for the copy") +
+            "\nThe copy of \"" + source.displayTitle() +
+            "\" goes on whichever " + (kb->isMouse ? "button" : "key") +
+            " you press on \"" + kb->alias + "\".",
         kb->match);
     if (!r.ok) return;
 
     if (kb->findKey(r.keyName)) {
-        showMessage(hwnd_, "Already used",
+        showMessage(hwnd_, "That key already has a button",
                     "\"" + keys::displayName(r.keyName) +
-                        "\" already runs a macro on this keyboard.");
+                        "\" already runs a button on this keypad. Pick another key, or change that button instead.");
         return;
     }
 
@@ -2506,8 +2751,8 @@ void MainWindow::duplicateBinding(int tileIndex) {
         }
     if (!shown)
         pushLog("Copied to " + keys::displayName(r.keyName) +
-                " - that key is not part of this deck layout, so it has no "
-                "tile here. It still works.");
+                ". That key isn't on this keypad's layout, so it doesn't "
+                "show here, but it still works.");
 }
 
 void MainWindow::copySteps() {
@@ -2563,7 +2808,8 @@ void MainWindow::addPage() {
     if (!kb) return;
     std::string name =
         kb->uniquePageName("Page " + std::to_string(kb->pages.size() + 1));
-    if (!askText(hwnd_, "New page", "Name for this page:", name)) return;
+    if (!askText(hwnd_, "Add page", "What should the new page be called?",
+                 name, "", "Add page")) return;
     cfg::Page page;
     page.name = kb->uniquePageName(name);
     kb->pages.push_back(std::move(page));
@@ -2591,16 +2837,19 @@ void MainWindow::removePage(int pageIndex) {
     cfg::Keyboard* kb = currentKb();
     if (!kb || pageIndex < 0 || pageIndex >= (int)kb->pages.size()) return;
     if (kb->pages.size() == 1) {
-        showMessage(hwnd_, "Remove page",
-                    "A deck always has at least one page. Add another one "
-                    "before removing this.");
+        showMessage(hwnd_, "This is the only page",
+                    "A keypad always has at least one page. Add another page "
+                    "before you delete this one.");
         return;
     }
     const std::string removed = kb->pages[(size_t)pageIndex].displayName();
-    if (!askYesNo(hwnd_, "Remove page",
-                  "Remove \"" + removed + "\" and all " +
-                      std::to_string(kb->pages[(size_t)pageIndex].bindings.size()) +
-                      " of its keys?"))
+    const size_t onPage = kb->pages[(size_t)pageIndex].bindings.size();
+    if (!confirm(hwnd_,
+                 "Delete the \"" + removed + "\" page" +
+                     (onPage == 0 ? std::string("?")
+                                  : " and its " + std::to_string(onPage) +
+                                        (onPage == 1 ? " button?" : " buttons?")),
+                 "", "Delete page", "Keep it", true))
         return;
     kb->pages.erase(kb->pages.begin() + pageIndex);
     if (kb->activePage == pageIndex || kb->activePage >= (int)kb->pages.size())
@@ -2634,28 +2883,29 @@ void MainWindow::editPageAppRule(int pageIndex) {
                   return lower(a.exe) < lower(b.exe);
               });
 
-    HMENU m = CreatePopupMenu();
-    AppendMenuW(m, MF_STRING, IDM_PAGE_APP_CLEAR, L"No application rule");
-    AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
-    for (size_t i = 0; i < uniq.size() && i < 60; ++i)
-        AppendMenuW(m, MF_STRING, (UINT_PTR)(IDM_PAGE_APP_PICK + i),
-                    W(uniq[i].exe + "   -   " + uniq[i].title).c_str());
-
-    POINT pt;
-    GetCursorPos(&pt);
-    const int cmd = (int)TrackPopupMenu(
-        m, TPM_RETURNCMD | TPM_LEFTALIGN | TPM_TOPALIGN, pt.x, pt.y, 0, hwnd_,
-        nullptr);
-    DestroyMenu(m);
-    if (!cmd) return;
-
     cfg::Page& page = kb->pages[(size_t)pageIndex];
-    if (cmd == IDM_PAGE_APP_CLEAR) {
+    std::vector<ListChoice> items;
+    items.push_back({"No program", "This page comes up only when you pick it"});
+    int current = page.rule.empty() ? 0 : -1;
+    for (size_t i = 0; i < uniq.size(); ++i) {
+        items.push_back({uniq[i].exe, uniq[i].title});
+        if (iequals(uniq[i].exe, page.rule.exe)) current = (int)i + 1;
+    }
+    int chosen = current;
+    if (!chooseFromList(hwnd_, "Page follows a program",
+                        "Which program should bring up this page?",
+                        "When it comes to the front, the buttons switch to \"" +
+                            page.displayName() + "\". Only programs that are "
+                            "open now are listed.",
+                        items, chosen, "Save"))
+        return;
+
+    if (chosen == 0) {
         page.rule = cfg::AppRule{};
         pushLog("\"" + page.displayName() +
                 "\" no longer follows an application.");
     } else {
-        const size_t i = (size_t)(cmd - IDM_PAGE_APP_PICK);
+        const size_t i = (size_t)(chosen - 1);
         if (i >= uniq.size()) return;
         page.rule = cfg::AppRule{};
         // Deliberately only the executable. Adding the class as well would
@@ -2673,27 +2923,27 @@ void MainWindow::pageContextMenu(int pageIndex, POINT screenPt) {
     if (!kb || pageIndex < 0 || pageIndex >= (int)kb->pages.size()) return;
 
     HMENU m = CreatePopupMenu();
-    AppendMenuW(m, MF_STRING, IDM_PAGE_RENAME, L"Rename this page...");
+    AppendMenuW(m, MF_STRING, IDM_PAGE_RENAME, L"Rename page...");
     AppendMenuW(m, MF_STRING, IDM_PAGE_APP,
-                L"Show this page for an application...");
+                L"Bring up this page for a program...");
     if (!kb->pages[(size_t)pageIndex].rule.empty())
         AppendMenuW(m, MF_STRING, IDM_PAGE_APP_CLEAR,
-                    L"Stop following an application");
+                    L"Stop following the program");
     AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
-    AppendMenuW(m, MF_STRING, IDM_PAGE_COLOR, L"Page colour...");
+    AppendMenuW(m, MF_STRING, IDM_PAGE_COLOR, L"Change page colour...");
     if (!kb->pages[(size_t)pageIndex].color.empty())
-        AppendMenuW(m, MF_STRING, IDM_PAGE_COLOR_CLEAR, L"Clear the colour");
+        AppendMenuW(m, MF_STRING, IDM_PAGE_COLOR_CLEAR, L"Remove page colour");
     AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
-    AppendMenuW(m, MF_STRING, IDM_PAGE_DUPLICATE, L"Duplicate this page");
+    AppendMenuW(m, MF_STRING, IDM_PAGE_DUPLICATE, L"Duplicate page");
     AppendMenuW(m, MF_STRING | (pageIndex > 0 ? 0u : (UINT)MF_GRAYED),
-                IDM_PAGE_LEFT, L"Move left");
+                IDM_PAGE_LEFT, L"Move page left");
     AppendMenuW(m,
                 MF_STRING | (pageIndex + 1 < (int)kb->pages.size()
                                  ? 0u
                                  : (UINT)MF_GRAYED),
-                IDM_PAGE_RIGHT, L"Move right");
+                IDM_PAGE_RIGHT, L"Move page right");
     AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
-    AppendMenuW(m, MF_STRING, IDM_PAGE_REMOVE, L"Remove this page");
+    AppendMenuW(m, MF_STRING, IDM_PAGE_REMOVE, L"Delete page...");
 
     const int cmd = (int)TrackPopupMenu(
         m, TPM_RETURNCMD | TPM_LEFTALIGN | TPM_TOPALIGN, screenPt.x, screenPt.y,
@@ -2705,7 +2955,8 @@ void MainWindow::pageContextMenu(int pageIndex, POINT screenPt) {
     switch (cmd) {
         case IDM_PAGE_RENAME: {
             std::string name = page.name;
-            if (askText(hwnd_, "Rename page", "Name for this page:", name)) {
+            if (askText(hwnd_, "Rename page", "What should this page be called?",
+                        name, "", "Save name")) {
                 const std::string want = trim(name);
                 // uniquePageName would put a number after a name that is only
                 // taken by this very page, so ask only when it really moved.
@@ -2875,15 +3126,14 @@ void MainWindow::applyToggleHotkey() {
                     ", so start/stop listening is " +
                     keys::prettyCombo(activeHotkey_) + " for now.");
             setStatus("Your off switch is " + keys::prettyCombo(activeHotkey_) +
-                          " for now - another program is using " +
+                          " for now, because another program is using " +
                           keys::prettyCombo(combo) + ".",
                       StatusTone::Warn);
         } else {
             pushLog("Another program already owns " + keys::prettyCombo(combo) +
                     " - pick a different start/stop shortcut in Settings.");
-            setStatus("\xE2\x9A\xA0 The emergency off switch isn't working - "
-                      "another program is using it. Choose another in "
-                      "Settings.",
+            setStatus("The off switch isn't working, because another "
+                      "program is using it. Choose another in Settings.",
                       StatusTone::Warn);
         }
     }
@@ -2894,11 +3144,11 @@ void MainWindow::applyToggleHotkey() {
 
 void MainWindow::addSoftwareDeck() {
     std::string name = "Buttons";
-    if (!askText(hwnd_, "Software buttons",
+    if (!askText(hwnd_, "Add on-screen buttons",
                  "What should this set of buttons be called?", name,
-                 "They live on the deck and on the always-on-top palette. "
-                 "No keyboard is involved, so nothing is taken from anything "
-                 "you type."))
+                 "You press them in this window or on the floating buttons. "
+                 "No keypad is needed.",
+                 "Add buttons"))
         return;
     cfg::Keyboard kb;
     kb.alias = config_.uniqueAlias(name.empty() ? "Buttons" : name);
@@ -2910,8 +3160,8 @@ void MainWindow::addSoftwareDeck() {
     saveConfig();
     engine_.updateConfig(config_);
     selectKeyboard(config_.keyboards.back().alias);
-    pushLog("Added software buttons \"" + config_.keyboards.back().alias +
-            "\". Nothing is taken from any keyboard.");
+    pushLog("Added on-screen buttons \"" + config_.keyboards.back().alias +
+            "\". No keypad is involved.");
     layout();
 }
 
@@ -2920,10 +3170,12 @@ void MainWindow::keyboardContextMenu(int index, POINT pt) {
     cfg::Keyboard& kb = config_.keyboards[(size_t)index];
 
     HMENU m = CreatePopupMenu();
-    AppendMenuW(m, MF_STRING, IDM_KB_RENAME, L"Rename...");
-    if (!simple()) {
+    AppendMenuW(m, MF_STRING, IDM_KB_RENAME,
+                kb.softwareOnly ? L"Rename these buttons..." : L"Rename keypad...");
+    if (!simple() && !kb.softwareOnly) {
+        // Ticked means the keys don't type: the same words as Settings.
         AppendMenuW(m, MF_STRING | (kb.block ? MF_CHECKED : 0), IDM_KB_BLOCK,
-                    L"Block these keys from apps");
+                    L"Stop its button keys from typing");
         // Greyed rather than hidden when the keyboard blocks nothing at all:
         // the option still describes this keyboard, it just has nothing to
         // act on.
@@ -2931,14 +3183,14 @@ void MainWindow::keyboardContextMenu(int index, POINT pt) {
                     MF_STRING | (kb.blockAllKeys ? MF_CHECKED : 0) |
                         (kb.block ? 0 : MF_GRAYED),
                     IDM_KB_BLOCK_ALL,
-                    L"      Turn off all normal input, not just macro keys");
+                    L"      Stop every key from typing");
     }
     if (!kb.softwareOnly)
         AppendMenuW(m, MF_STRING, IDM_KB_REMATCH,
-                    simple() ? L"Find this keypad again..."
-                             : L"Re-detect this keyboard...");
+                    L"Find this keypad again...");
     AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
-    AppendMenuW(m, MF_STRING, IDM_KB_REMOVE, L"Remove this keyboard");
+    AppendMenuW(m, MF_STRING, IDM_KB_REMOVE,
+                kb.softwareOnly ? L"Delete these buttons..." : L"Delete keypad...");
     int cmd = (int)TrackPopupMenu(m, TPM_RETURNCMD | TPM_LEFTALIGN, pt.x, pt.y,
                                   0, hwnd_, nullptr);
     DestroyMenu(m);
@@ -2946,7 +3198,9 @@ void MainWindow::keyboardContextMenu(int index, POINT pt) {
     switch (cmd) {
         case IDM_KB_RENAME: {
             std::string name = kb.alias;
-            if (askText(hwnd_, "Rename keyboard", "New name:", name)) {
+            if (askText(hwnd_, "Rename keypad",
+                        "What should this keypad be called?", name, "",
+                        "Save name")) {
                 std::string old = kb.alias;
                 kb.alias = config_.uniqueAlias(name);
                 if (currentAlias_ == old) currentAlias_ = kb.alias;
@@ -2968,16 +3222,16 @@ void MainWindow::keyboardContextMenu(int index, POINT pt) {
                         ? "\"" + kb.alias +
                               "\" now gives up every key while listening."
                         : "\"" + kb.alias +
-                              "\" now gives up only the keys that run macros - "
-                              "the rest type normally.");
+                              "\" now gives up only the keys that have a "
+                              "button. The rest type normally.");
             // Unlike the master toggle this needs no restart: the hook asks
             // the config afresh on every keystroke.
             break;
         case IDM_KB_REMATCH: {
             KeyCaptureResult r = captureKey(
-                hwnd_, "Re-detect keyboard",
-                "Press a key on the keyboard you want \"" + kb.alias +
-                    "\" to mean.",
+                hwnd_, "Find this keypad again",
+                "Press a key on the keypad\n\"" + kb.alias +
+                    "\" will mean whichever keypad you press it on.",
                 "", false, false);
             if (r.ok && !r.devicePath.empty()) {
                 auto all = dev::listKeyboards();
@@ -3004,10 +3258,14 @@ void MainWindow::keyboardContextMenu(int index, POINT pt) {
             break;
         }
         case IDM_KB_REMOVE: {
-            if (!askYesNo(hwnd_, "Remove keyboard",
-                          "Remove \"" + kb.alias + "\" and all " +
-                              std::to_string(totalBindings(kb)) +
-                              " of its keys?"))
+            const int all = totalBindings(kb);
+            if (!confirm(hwnd_,
+                         "Remove \"" + kb.alias + "\"" +
+                             (all == 0 ? std::string("?")
+                                       : " and its " + std::to_string(all) +
+                                             (all == 1 ? " button?" : " buttons?")),
+                         "The keypad itself goes back to typing normally.",
+                         "Remove keypad", "Keep it", true))
                 break;
             std::string removed = kb.alias;
             config_.keyboards.erase(config_.keyboards.begin() + index);
@@ -3033,39 +3291,40 @@ void MainWindow::tileContextMenu(int tileIndex, POINT pt) {
 
     HMENU m = CreatePopupMenu();
     if (!b) {
-        AppendMenuW(m, MF_STRING, IDM_TILE_REKEY, L"Assign a key here...");
+        AppendMenuW(m, MF_STRING, IDM_TILE_REKEY, L"Add a button here...");
     } else {
-        AppendMenuW(m, MF_STRING, IDM_TILE_RENAME, L"Rename...");
+        AppendMenuW(m, MF_STRING, IDM_TILE_RENAME, L"Rename button...");
         if (!simple()) {
-            AppendMenuW(m, MF_STRING, IDM_TILE_ICON, L"Choose an icon...");
+            AppendMenuW(m, MF_STRING, IDM_TILE_ICON, L"Change icon...");
             if (!b->icon.empty())
                 AppendMenuW(m, MF_STRING, IDM_TILE_ICON_CLEAR,
-                            L"Remove the icon");
+                            L"Remove icon");
         }
-        AppendMenuW(m, MF_STRING, IDM_TILE_COLOR, L"Choose a colour...");
+        AppendMenuW(m, MF_STRING, IDM_TILE_COLOR, L"Change colour...");
         if (!b->color.empty())
             AppendMenuW(m, MF_STRING, IDM_TILE_COLOR_CLEAR,
-                        L"Use the default colour");
+                        L"Use the standard colour");
         AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
         AppendMenuW(m, MF_STRING | (b->steps.empty() ? MF_GRAYED : 0),
-                    IDM_TILE_TEST, simple() ? L"Try it" : L"Test run");
+                    IDM_TILE_TEST, L"Try it");
         if (!simple()) {
-        AppendMenuW(m, MF_STRING, IDM_TILE_DUPLICATE, L"Duplicate to another key...");
+        AppendMenuW(m, MF_STRING, IDM_TILE_DUPLICATE, L"Copy to another key...");
         AppendMenuW(m, MF_STRING | (b->steps.empty() ? MF_GRAYED : 0),
-                    IDM_TILE_COPY_STEPS, L"Copy the steps");
+                    IDM_TILE_COPY_STEPS, L"Copy steps");
         AppendMenuW(m, MF_STRING | (stepClipboard_.empty() ? MF_GRAYED : 0),
                     IDM_TILE_PASTE_STEPS,
                     stepClipboard_.empty()
                         ? L"Paste steps"
                         : (L"Paste " +
                            std::to_wstring(stepClipboard_.size()) +
-                           L" step(s)").c_str());
+                           (stepClipboard_.size() == 1 ? L" step" : L" steps"))
+                              .c_str());
         AppendMenuW(m, MF_STRING | (b->steps.empty() ? MF_GRAYED : 0),
-                    IDM_TILE_CLEAR, L"Clear all steps");
+                    IDM_TILE_CLEAR, L"Remove all steps...");
         }
         AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
         AppendMenuW(m, MF_STRING, IDM_TILE_REMOVE,
-                    simple() ? L"Remove this button" : L"Remove this key");
+                    L"Delete button...");
     }
     int cmd = (int)TrackPopupMenu(m, TPM_RETURNCMD | TPM_LEFTALIGN, pt.x, pt.y,
                                   0, hwnd_, nullptr);
@@ -3078,7 +3337,10 @@ void MainWindow::tileContextMenu(int tileIndex, POINT pt) {
         case IDM_TILE_RENAME: {
             if (!b) break;
             std::string t = b->title;
-            if (askText(hwnd_, "Rename key", "Label for this key:", t)) {
+            if (askText(hwnd_, "Rename button",
+                        "What should this button say?", t,
+                        "Short words fit best, like 'Next patient'",
+                        "Save name")) {
                 b->title = t;
                 modelChanged(false);
                 refreshInspector();
@@ -3203,8 +3465,8 @@ void MainWindow::setSimpleMode(bool on) {
 }
 
 void MainWindow::refreshModeButtons() {
-    setPrimary(btnSimple_, simple());
-    setPrimary(btnAdvanced_, !simple());
+    setPillActive(btnSimple_, simple());
+    setPillActive(btnAdvanced_, !simple());
 }
 
 // Select the list row that shows step `index` - in Simple mode a row can
@@ -3227,7 +3489,7 @@ void MainWindow::addSimpleStep(int which) {
     step.params = js::Value::object();
     if (which == 0) {
         std::string text;
-        if (!askLongText(hwnd_, "Type text", "What should it type?", text,
+        if (!askLongText(hwnd_, "Add text", "What should it type?", text,
                          "Press Enter for a new line."))
             return;
         step.action = "type";
@@ -3254,8 +3516,9 @@ void MainWindow::addSimpleStep(int which) {
 std::string MainWindow::askCombo() {
     KeyCaptureResult r = captureKey(
         hwnd_, "Press keys",
-        "Press the keys now - for example, hold Ctrl and press S.", "", true,
-        false);
+        "Press the keys you want it to press\nFor example, hold Ctrl and "
+        "press S.",
+        "", true, false);
     if (!r.ok) return "";
     return r.combo.empty() ? r.keyName : r.combo;
 }
@@ -3272,7 +3535,7 @@ void MainWindow::editSimpleRow(int row) {
         case smp::Kind::Type: {
             std::string text = step.params.str("text");
             if (!askLongText(hwnd_, "Type text", "What should it type?", text,
-                             "Press Enter for a new line."))
+                             "Press Enter for a new line.", "Save text"))
                 return;
             step.params["text"] = text;
             break;
@@ -3290,9 +3553,9 @@ void MainWindow::editSimpleRow(int row) {
             break;
         }
         case smp::Kind::Clicks:
-            if (!askYesNo(hwnd_, "Record these clicks again?",
-                          "The clicks you record now will replace these "
-                          "ones."))
+            if (!confirm(hwnd_, "Record these clicks again?",
+                         "The clicks you record now will replace these ones.",
+                         "Record again", "Cancel"))
                 return;
             recordClicks((int)r.first, (int)r.count);
             return;
@@ -3326,13 +3589,6 @@ void MainWindow::removeSimpleRow(int row) {
     updateStepButtons();
 }
 
-int MainWindow::deckHeaderH() const {
-    // Simple mode has no layout picker, so one band: the page tabs when the
-    // deck has more than one page, a hint when it doesn't.
-    return simple() ? 50 : kDeckHeaderH;
-}
-
-int MainWindow::pageStripY() const { return simple() ? 14 : kPageStripY; }
 
 // --------------------------------------------------------- keypad presence
 // Look for every keypad's device, and say so when one comes or goes. A
@@ -3367,14 +3623,14 @@ void MainWindow::checkDevices(bool announce) {
 
     if (goneCount > 1) {
         pushLog(std::to_string(goneCount) + " keypads aren't connected.");
-        setStatus("\xE2\x9A\xA0 " + std::to_string(goneCount) +
-                      " keypads aren't connected - the grey dots on the "
-                      "left. Switch them on, or plug them back in.",
+        setStatus(std::to_string(goneCount) +
+                      " keypads aren't connected. Their buttons won't work "
+                      "until you switch them on or plug them back in.",
                   StatusTone::Warn);
     } else if (!gone.empty()) {
         pushLog("\"" + gone + "\" isn't connected.");
-        setStatus("\xE2\x9A\xA0 " + gone + " isn't connected. Switch it on, "
-                  "or plug it back in.",
+        setStatus(gone + " isn't connected. Its buttons won't work until you "
+                  "switch it on or plug it back in.",
                   StatusTone::Warn);
     } else if (!back.empty()) {
         pushLog("\"" + back + "\" is connected again.");
@@ -3388,10 +3644,30 @@ void MainWindow::checkDevices(bool announce) {
 // plain words - a button that ran, one that stopped and why, a save that
 // failed. The log underneath keeps the technical detail.
 void MainWindow::setStatus(const std::string& text, StatusTone tone) {
+    // A success is a toast and leaves whatever problem banner there is alone
+    // - except that a success that is the problem going away ("connected
+    // again", "saving works again") clears the banner it answers. Those are
+    // the only Good statuses that come straight after a Warn or Danger of
+    // their own, so any Good clears the banner.
+    // Before the window's controls exist there is nothing to lay out yet;
+    // onCreate lays everything out once they do.
+    const bool ready = btnSettings_ != nullptr;
+    statusFromRun_ = false;
+    if (tone == StatusTone::Good) {
+        const bool hadBanner = bannerShown();
+        statusText_.clear();
+        statusTone_ = StatusTone::Good;
+        showToast(text, true);
+        if (hadBanner && ready) layout();
+        return;
+    }
+    const bool layoutChanges = !bannerShown();
     statusText_ = text;
     statusTone_ = tone;
-    RECT head{0, rcLog_.top, rcLog_.right, rcLog_.top + S(26)};
-    InvalidateRect(hwnd_, &head, FALSE);
+    bannerDismissed_ = false;
+    if (!ready) return;
+    if (layoutChanges) layout();
+    else InvalidateRect(hwnd_, &rcBanner_, FALSE);
 }
 
 void MainWindow::drainOutcomes() {
@@ -3402,12 +3678,20 @@ void MainWindow::drainOutcomes() {
     }
     for (const eng::Outcome& o : batch) {
         if (o.ok) {
-            setStatus("\xE2\x9C\x93 \"" + o.button + "\" ran.", StatusTone::Good);
+            // A button working again answers a "stopped" banner, but not one
+            // about anything else - a keypad that is still unplugged, say.
+            if (statusFromRun_ && bannerShown()) {
+                statusText_.clear();
+                statusFromRun_ = false;
+                layout();
+            }
+            showToast("\xE2\x9C\x93 \"" + o.button + "\" ran", true);
             continue;
         }
         const std::string line = fe::stoppedLine(o.button, o.step, o.problem,
                                                  o.subject, o.technical);
-        setStatus("\xE2\x9A\xA0 " + line, StatusTone::Warn);
+        setStatus(line, StatusTone::Warn);
+        statusFromRun_ = true;
         // Buttons mostly run with this window out of sight - pressed on the
         // keypad or the floating buttons - where the status line can't be seen.
         if (!IsWindowVisible(hwnd_) || IsIconic(hwnd_))
@@ -3553,7 +3837,7 @@ void MainWindow::drainKeyEvents() {
         if (!e.down) continue;
         if (e.alias.empty()) continue;
         lastKeyText_ = "Last key: " + keys::displayName(e.keyName) + " on " +
-                       e.alias + (e.hasMacro ? "" : " (no macro)");
+                       e.alias + (e.hasMacro ? "" : " (no button)");
         lastFire_[e.alias + "|" + e.keyName] = GetTickCount();
         if (e.alias == currentAlias_) mini_.noteFired(e.keyName);
         repaint = true;
@@ -3676,9 +3960,9 @@ void MainWindow::trayMenu() {
     AppendMenuW(m, MF_STRING, IDM_TRAY_TOGGLE,
                 engine_.running() ? L"Stop listening" : L"Start listening");
     AppendMenuW(m, MF_STRING | (mini_.visible() ? MF_CHECKED : 0), IDM_TRAY_MINI,
-                L"Buttons on top of everything");
+                L"Show floating buttons");
     AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
-    AppendMenuW(m, MF_STRING, IDM_TRAY_EXIT, L"Exit");
+    AppendMenuW(m, MF_STRING, IDM_TRAY_EXIT, L"Exit Dental Macros");
     POINT p;
     GetCursorPos(&p);
     SetForegroundWindow(hwnd_);
@@ -3697,10 +3981,10 @@ bool MainWindow::confirmExit() {
         // Hiding without one leaves a running program the user can reach
         // solely through Task Manager.
         if (!addTray()) {
-            showMessage(hwnd_, "No notification-area icon",
+            showMessage(hwnd_, "No icon in the notification area",
                         "Windows would not give Dental Macros an icon in the "
                         "notification area, so closing the window would leave "
-                        "it running with no way back.\n\nExiting instead.",
+                        "it running with no way back. Dental Macros will close instead.",
                         true);
             return true;
         }
@@ -3735,8 +4019,9 @@ LRESULT CALLBACK MainWindow::wndProc(HWND hwnd, UINT msg, WPARAM wp,
 
         case WM_GETMINMAXINFO: {
             auto* mmi = (MINMAXINFO*)lp;
-            mmi->ptMinTrackSize.x = S(940);
-            mmi->ptMinTrackSize.y = S(600);
+            // All three columns grew with the design system's sizes.
+            mmi->ptMinTrackSize.x = S(1080);
+            mmi->ptMinTrackSize.y = S(700);
             return 0;
         }
 
@@ -3815,6 +4100,12 @@ LRESULT CALLBACK MainWindow::wndProc(HWND hwnd, UINT msg, WPARAM wp,
             return TRUE;
 
         case WM_TIMER:
+            if (wp == kToastTimer) {
+                KillTimer(hwnd, kToastTimer);
+                self->toastText_.clear();
+                InvalidateRect(hwnd, &self->rcDeck_, FALSE);
+                return 0;
+            }
             if (wp == kDeviceCheckTimer) {
                 KillTimer(hwnd, kDeviceCheckTimer);
                 self->checkDevices(true);
@@ -3902,10 +4193,17 @@ LRESULT CALLBACK MainWindow::wndProc(HWND hwnd, UINT msg, WPARAM wp,
                         self->hoverKb_ =
                             r.index >= 0 ? r.index : r.index - 1;
             }
+            const bool oldDismiss = self->hoverDismiss_;
+            self->hoverDismiss_ = ptIn(self->rcBannerDismiss_, p);
+            // The welcome card's button is painted, so its hover is too.
+            static bool overWelcome = false;
+            const bool welcome = ptIn(self->rcWelcomeBtn_, p);
             if (self->dragging_ || oldTile != self->hoverTile_ ||
                 oldPal != self->hoverPalette_ || oldKb != self->hoverKb_ ||
-                oldPage != self->hoverPageTab_)
+                oldPage != self->hoverPageTab_ ||
+                oldDismiss != self->hoverDismiss_ || welcome != overWelcome)
                 InvalidateRect(hwnd, nullptr, FALSE);
+            overWelcome = welcome;
 
             TRACKMOUSEEVENT tme{sizeof(tme), TME_LEAVE, hwnd, 0};
             TrackMouseEvent(&tme);
@@ -3916,6 +4214,8 @@ LRESULT CALLBACK MainWindow::wndProc(HWND hwnd, UINT msg, WPARAM wp,
             self->hoverTile_ = self->hoverPalette_ = -1;
             self->hoverKb_ = -1;
             self->hoverPageTab_ = -1;
+            self->hoverDismiss_ = false;
+            self->dragPos_ = POINT{-1, -1};
             InvalidateRect(hwnd, nullptr, FALSE);
             return 0;
 
@@ -3923,6 +4223,12 @@ LRESULT CALLBACK MainWindow::wndProc(HWND hwnd, UINT msg, WPARAM wp,
             POINT p{GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};
             SetFocus(hwnd);
 
+            if (ptIn(self->rcBannerDismiss_, p)) {
+                self->bannerDismissed_ = true;
+                self->hoverDismiss_ = false;
+                self->layout();
+                return 0;
+            }
             if (self->config_.keyboards.empty()) {
                 if (ptIn(self->rcWelcomeBtn_, p)) self->runSetup();
                 return 0;
@@ -4007,8 +4313,9 @@ LRESULT CALLBACK MainWindow::wndProc(HWND hwnd, UINT msg, WPARAM wp,
                 if (ptIn(t.rect, p) && t.index >= 0) {
                     if (cfg::Keyboard* kb = self->currentKb()) {
                         std::string name = kb->pages[(size_t)t.index].name;
-                        if (askText(hwnd, "Rename page", "Name for this page:",
-                                    name)) {
+                        if (askText(hwnd, "Rename page",
+                                    "What should this page be called?", name,
+                                    "", "Save name")) {
                             const std::string want = trim(name);
                             kb->pages[(size_t)t.index].name =
                                 (kb->pageByName(want) == t.index)
@@ -4054,6 +4361,10 @@ LRESULT CALLBACK MainWindow::wndProc(HWND hwnd, UINT msg, WPARAM wp,
 
         case WM_COMMAND: {
             int id = LOWORD(wp), notify = HIWORD(wp);
+            if (id >= ID_SWATCH_FIRST && id <= ID_SWATCH_LAST) {
+                if (notify == BN_CLICKED) self->setKeyColor(id - ID_SWATCH_FIRST);
+                return 0;
+            }
             switch (id) {
                 case ID_GESTURE_PRESS:
                     if (notify == BN_CLICKED) self->setGesture(0);

@@ -602,7 +602,7 @@ void Engine::runStep(const cfg::Step& s) {
     if (a == "page_goto") {
         if (runningAlias_.empty())
             throw std::runtime_error(
-                "a page step only means something on a deck's own key");
+                "a page step only works when its own keypad's button runs it");
         const std::string dir = trim(p.str("direction", "named"));
         const std::string name = trim(p.str("page"));
         int target = resolvePage(runningAlias_, name, dir);
@@ -634,7 +634,7 @@ void Engine::start() {
     }
     if (snapshot.keyboards.empty())
         throw std::runtime_error(
-            "There is no macro keyboard to listen to yet. Add one first.");
+            "There's no keypad to listen to yet. Add one first.");
 
     stopping_.store(false);
     if (!worker_.joinable()) worker_ = std::thread([this] { workerMain(); });
@@ -696,28 +696,29 @@ void Engine::start() {
     // Say what is actually happening. With only software buttons configured
     // nothing is being listened to, and claiming otherwise is how someone
     // ends up hunting for latency that is not there.
-    log(anyPhysical ? (anyMouse ? "Listening for macro keys and buttons."
-                                : "Listening for macro keys.")
-                    : "Ready. Nothing is being read from any keyboard.");
+    log(anyPhysical ? (anyMouse ? "Listening to your keypads and mice."
+                                : "Listening to your keypads.")
+                    : "Ready. Nothing is read from any keypad.");
     for (const auto& k : snapshot.keyboards) {
         int bound = 0;
         for (const auto& pg : k.pages)
             for (const auto& b : pg.bindings)
                 if (!b.steps.empty()) ++bound;
         log("  " + k.alias + " - " + std::to_string(bound) +
-            (bound == 1 ? " macro, " : " macros, ") +
+            (bound == 1 ? " button, " : " buttons, ") +
             (k.pages.size() > 1
                  ? "across " + std::to_string(k.pages.size()) + " pages, "
                  : "") +
-            (k.softwareOnly    ? "clicked on screen, no keyboard involved"
+            (k.softwareOnly    ? "pressed on screen, no keypad involved"
              : !k.block        ? (k.isMouse ? "buttons also work normally"
                                             : "keys also type normally")
              : k.blockAllKeys  ? (k.isMouse
-                                      ? "every button blocked from apps"
-                                      : "every key blocked from apps")
-             : k.isMouse       ? "only macro buttons blocked, the rest still "
-                                 "work"
-                               : "only macro keys blocked, the rest still type"));
+                                      ? "no button works normally"
+                                      : "no key types")
+             : k.isMouse       ? "buttons with a shortcut are taken, the rest "
+                                 "still work"
+                               : "keys with a button are taken, the rest still "
+                                 "type"));
     }
 }
 
@@ -728,7 +729,7 @@ void Engine::stop() {
         listenerActive_.store(false);
         running_.store(false);
         presses_.clear();
-        log("Stopped listening - macro keys type normally again.");
+        log("Stopped listening. Keypad keys type normally again.");
     }
     stopping_.store(true);
     jobCv_.notify_all();
