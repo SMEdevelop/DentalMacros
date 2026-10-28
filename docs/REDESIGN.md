@@ -464,6 +464,14 @@ config format (other than how colours are drawn) or actions changes.
 3. **Standard Windows menus**, in their light style, with only the wording
    changed (§3.14, cheaper option).
 4. **App icon recoloured** to denim and cream (§3.15).
+5. **Drawn at 82% (28 October 2026).** After trying it, the full sizes read
+   too big, so the whole app draws the design system at `kUiSize` = 0.82
+   (src/theme.h): body text comes out at 14px, buttons at about 39px tall,
+   which is the text size the app had before the redesign. Every size and
+   gap shrinks together, so the look is unchanged. Exceptions: the main
+   window still opens 1280 x 880, so the keypad gets the room; the floating
+   buttons stay at their own 30–46px; key icons are about a third of the
+   key again, as before the redesign, and key names are 14/12/11px.
 
 ## 7. Status
 

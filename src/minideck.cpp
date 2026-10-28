@@ -224,6 +224,7 @@ void MiniDeck::clampOnScreen(int& x, int& y, int w, int h) const {
 
 void MiniDeck::relayout() {
     if (!hwnd_) return;
+    const FullSize fullSize;  // the floating buttons keep their own sizes
 
     const int tile = S(place_.tile);
     const int gap = S(kGap);
@@ -371,6 +372,7 @@ void MiniDeck::paintButton(void* graphics, size_t index) {
 }
 
 void MiniDeck::paint(HDC hdc) {
+    const FullSize fullSize;
     RECT rc{};
     GetClientRect(hwnd_, &rc);
     const int w = rc.right, h = rc.bottom;

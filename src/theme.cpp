@@ -11,7 +11,7 @@ using namespace Gdiplus;
 
 namespace ui {
 namespace {
-float g_dpi = 1.0f;
+float g_dpi = kUiSize;
 
 GraphicsPath* roundedPath(const RectF& r, float radius) {
     auto* p = new GraphicsPath();
@@ -144,7 +144,13 @@ const Theme& theme() {
     return t;
 }
 
-void setDpiScale(float s) { g_dpi = (s > 0.1f && s < 8.0f) ? s : 1.0f; }
+float g_rawDpi = 1.0f;
+void setDpiScale(float s) {
+    g_rawDpi = (s > 0.1f && s < 8.0f) ? s : 1.0f;
+    g_dpi = g_rawDpi * kUiSize;
+}
+FullSize::FullSize() : saved(g_dpi) { g_dpi = g_rawDpi; }
+FullSize::~FullSize() { g_dpi = saved; }
 float dpiScale() { return g_dpi; }
 int S(int px) { return (int)std::lround(px * g_dpi); }
 float Sf(float px) { return px * g_dpi; }
