@@ -25,7 +25,7 @@ if not exist build mkdir build
 
 echo  Building the icon exporter...
 g++ -std=c++17 -O1 -DUNICODE -D_UNICODE -D_WIN32_WINNT=0x0A00 -Isrc ^
-  tools\make_icon.cpp src\theme.cpp src\util.cpp ^
+  tools\make_icon.cpp src\theme.cpp src\tokens.cpp src\util.cpp ^
   -o build\make_icon.exe ^
   -lgdiplus -lgdi32 -luser32 -lole32 -ladvapi32 -lshell32
 if errorlevel 1 ( echo  BUILD FAILED & exit /b 1 )

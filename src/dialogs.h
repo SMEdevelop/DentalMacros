@@ -70,8 +70,19 @@ std::string aboutText();
 // line), and a pause picked from four buttons.
 bool askLongText(HWND parent, const std::string& title,
                  const std::string& prompt, std::string& value,
-                 const std::string& hint = "");
+                 const std::string& hint = "",
+                 const std::string& okText = "Add text");
 bool chooseWait(HWND parent, double& seconds);
+
+// One of several things, as a column of large tiles. `selected` is where it
+// starts (-1 for nothing) and the answer. False if cancelled.
+struct ListChoice {
+    std::string title, sub;
+};
+bool chooseFromList(HWND parent, const std::string& windowTitle,
+                    const std::string& heading, const std::string& detail,
+                    const std::vector<ListChoice>& items, int& selected,
+                    const std::string& okText = "Save");
 
 // ---- first-run setup
 struct SetupContext {
@@ -99,8 +110,8 @@ struct SetupResult {
 bool runSetupWizard(HWND owner, const SetupContext& ctx, SetupResult& out);
 
 // A problem explained: its title, what to do, and - when there is one - a
-// button that fixes it. "Copy details" puts the technical text on the
-// clipboard for whoever helps. Returns true if the fix button was pressed.
+// button that fixes it. "More details" shows the technical text and puts it
+// on the clipboard for whoever helps. Returns true if the fix button was pressed.
 bool showFriendly(HWND parent, const fe::Friendly& f);
 
 bool chooseImageFile(HWND parent, std::string& relPath);

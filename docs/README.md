@@ -5,12 +5,15 @@ Reference material. Nothing here is compiled or shipped with the application.
 | File | What it is |
 |---|---|
 | `ui-preview.png` | The tiles and action icons, rendered by `tests/render_preview.cpp`. `run_tests.bat` refreshes it. The main README shows it. |
+| `screenshot-main.png`, `screenshot-setup.png` | The main window in Simple mode and the first step of setup, taken from a test copy with sample buttons. Retake them by hand after a change to either screen. |
+| `REDESIGN.md` | The move to the SMEdevelop design system, screen by screen, with what was built. |
+| `ONBOARDING.md` | The first-run setup and Simple mode plan. |
 
 ## Where click recording came from
 
 A recorded click is an absolute screen coordinate. It only lands where it was
 recorded while the target window is exactly where it was — which is why click
-macros usually stop working after a day. Dental Macros's **Record clicks...** is
+macros usually stop working after a day. Dental Macros's **Record clicks** is
 modelled on an earlier AutoHotkey v2 auto-clicker script (not included here),
 which solves it by remembering the window on the first recorded click and
 forcing it back to that exact position and size before replaying.
