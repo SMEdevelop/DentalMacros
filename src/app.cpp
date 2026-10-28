@@ -135,6 +135,8 @@ constexpr int kInspectorW = 344;
 constexpr int kLogH = 132;
 // Simple mode keeps only the status line of the activity area.
 constexpr int kLogHSimple = 34;
+// Simple mode's two rows of "+" buttons above the step list, in design px.
+constexpr int kSimpleAddRowsH = 72;
 constexpr int kPad = 14;
 constexpr int kRowH = 30;
 
@@ -801,7 +803,18 @@ void MainWindow::layout() {
     show(btnIcon_, !sm);
     y += S(50);
 
-    // In Simple mode this band carries the "What it does" caption instead.
+    // Simple mode puts its four "+" buttons here, two rows of two, above the
+    // "What it does" caption, which then takes the gesture buttons' band.
+    const int hw = (iw - S(6)) / 2;
+    const int x2 = ix + hw + S(6);
+    if (sm) {
+        MoveWindow(btnRecord_, ix, y, hw, S(30), TRUE);
+        MoveWindow(btnSKeys_, x2, y, hw, S(30), TRUE);
+        MoveWindow(btnSType_, ix, y + S(36), hw, S(30), TRUE);
+        MoveWindow(btnSWait_, x2, y + S(36), hw, S(30), TRUE);
+        y += S(kSimpleAddRowsH);
+    }
+
     MoveWindow(btnGesturePress_, ix, y, S(76), S(26), TRUE);
     MoveWindow(btnGestureUp_, ix + S(80), y, S(76), S(26), TRUE);
     MoveWindow(btnGestureDown_, ix + S(160), y, S(76), S(26), TRUE);
@@ -810,22 +823,16 @@ void MainWindow::layout() {
     show(btnGestureDown_, !sm);
     y += S(32);
 
-    int listBottom = rcInspector_.bottom - S(kPad) - S(34) * 3 - S(8);
+    // Below the list: one row of buttons in Simple mode, three in Advanced.
+    int listBottom = rcInspector_.bottom - S(kPad) - S(34) * (sm ? 1 : 3) - S(8);
     MoveWindow(stepList_, ix, y, iw, std::max(S(60), listBottom - y), TRUE);
     int by2 = listBottom + S(8);
     int by3 = by2 + S(36);
     int by4 = by3 + S(36);
     if (sm) {
-        // Two columns: the four things Simple mode can add, then try it and
-        // take one out.
-        const int hw = (iw - S(6)) / 2;
-        const int x2 = ix + hw + S(6);
-        MoveWindow(btnSType_, ix, by2, hw, S(30), TRUE);
-        MoveWindow(btnSKeys_, x2, by2, hw, S(30), TRUE);
-        MoveWindow(btnRecord_, ix, by3, hw, S(30), TRUE);
-        MoveWindow(btnSWait_, x2, by3, hw, S(30), TRUE);
-        MoveWindow(btnTest_, ix, by4, hw, S(30), TRUE);
-        MoveWindow(btnDelStep_, x2, by4, hw, S(30), TRUE);
+        // Try it and take one out.
+        MoveWindow(btnTest_, ix, by2, hw, S(30), TRUE);
+        MoveWindow(btnDelStep_, x2, by2, hw, S(30), TRUE);
     } else {
         MoveWindow(btnAddStep_, ix, by2, S(94), S(30), TRUE);
         MoveWindow(btnEditStep_, ix + S(100), by2, S(64), S(30), TRUE);
@@ -1119,7 +1126,8 @@ void MainWindow::paint(HDC hdc) {
         // Where Advanced has its press / wheel buttons.
         if (simple() && b) {
             RectF cap((REAL)(rcInspector_.left + S(kPad)),
-                      (REAL)(rcInspector_.top + S(58 + 34 + 50)),
+                      (REAL)(rcInspector_.top +
+                             S(58 + 34 + 50 + kSimpleAddRowsH)),
                       (REAL)S(kInspectorW - kPad * 2), (REAL)S(26));
             drawText(g, L"WHAT IT DOES", cap, 11, theme().textFaint,
                      Align::Left, true);
@@ -3140,9 +3148,8 @@ void MainWindow::runSetup() {
     config_.keyboards.push_back(std::move(kb));
 
     config_.settings.simpleMode = true;
-    // A keypad only works while listening, so listen from now on. On-screen
-    // buttons work without it.
-    if (!r.onScreen) config_.settings.startEngineOnLaunch = true;
+    // Listen from now on, whichever kind of buttons were set up.
+    config_.settings.startEngineOnLaunch = true;
     if (r.runAtLogin != runAtLoginEnabled()) {
         std::string err;
         if (!setRunAtLogin(r.runAtLogin, &err))
@@ -3163,7 +3170,7 @@ void MainWindow::runSetup() {
             break;
         }
 
-    if (!r.onScreen && !engine_.running()) toggleEngine();
+    if (!engine_.running()) toggleEngine();
     refreshMiniDeck();
     if (r.onScreen && r.floating && !mini_.visible()) toggleMiniDeck();
 

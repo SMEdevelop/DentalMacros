@@ -529,7 +529,13 @@ void Config::load(const std::string& file) {
             s->boolean("blockAllKeysByDefault", true);
         settings.matchConfidence = s->num("matchConfidence", kDefaultConfidence);
         settings.layoutsDir = s->str("layoutsDir", "layouts");
-        settings.startEngineOnLaunch = s->boolean("startEngineOnLaunch", false);
+        // Files saved before listening became the default all say false,
+        // because it was never offered as on. They switch on once; the marker
+        // then keeps whatever was chosen after that.
+        settings.startEngineOnLaunch =
+            s->find("listenOnByDefault")
+                ? s->boolean("startEngineOnLaunch", true)
+                : true;
         settings.switchPageWithApp = s->boolean("switchPageWithApp", true);
         settings.minimizeToTray = s->boolean("minimizeToTray", true);
         settings.startMinimized = s->boolean("startMinimized", false);
@@ -689,6 +695,7 @@ std::string Config::toJson() const {
     s["matchConfidence"] = settings.matchConfidence;
     s["layoutsDir"] = settings.layoutsDir;
     s["startEngineOnLaunch"] = settings.startEngineOnLaunch;
+    s["listenOnByDefault"] = true;
     s["switchPageWithApp"] = settings.switchPageWithApp;
     s["minimizeToTray"] = settings.minimizeToTray;
     s["startMinimized"] = settings.startMinimized;

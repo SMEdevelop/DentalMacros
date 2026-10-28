@@ -189,7 +189,9 @@ struct Settings {
     bool blockAllKeysByDefault = true;
     double matchConfidence = 0.85;
     std::string layoutsDir = "layouts";
-    bool startEngineOnLaunch = false;
+    // On by default: buttons that do nothing until someone finds "Start
+    // Listening" look broken.
+    bool startEngineOnLaunch = true;
     bool minimizeToTray = true;
     bool startMinimized = false;
     // Whether a deck follows the application in front, switching to the page

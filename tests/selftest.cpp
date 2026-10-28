@@ -839,7 +839,7 @@ static void testConfig() {
     cfg::Config c;
     c.path = path;
     c.settings.matchConfidence = 0.77;
-    c.settings.startEngineOnLaunch = true;
+    c.settings.startEngineOnLaunch = false;
 
     cfg::Keyboard kb;
     kb.alias = "Test pad";
@@ -871,7 +871,21 @@ static void testConfig() {
     ok(loaded.keyboards.size() == 1, "keeps the keyboard");
     ok(std::fabs(loaded.settings.matchConfidence - 0.77) < 1e-9,
        "keeps settings");
-    ok(loaded.settings.startEngineOnLaunch, "keeps boolean settings");
+    ok(!loaded.settings.startEngineOnLaunch,
+       "keeps boolean settings, including listening turned off");
+
+    // Listening is on by default, and files saved before that switch on once.
+    ok(cfg::Settings().startEngineOnLaunch, "a new setup starts listening");
+    {
+        const std::string p = appPath("selftest-listen.json");
+        writeFileAtomic(p, "{ \"settings\": { \"startEngineOnLaunch\": false }, "
+                           "\"keyboards\": [] }");
+        cfg::Config old;
+        old.load(p);
+        ok(old.settings.startEngineOnLaunch,
+           "an older file's 'off' turns into listening");
+        DeleteFileW(widen(p).c_str());
+    }
 
     if (!loaded.keyboards.empty()) {
         const cfg::Keyboard& k = loaded.keyboards[0];
